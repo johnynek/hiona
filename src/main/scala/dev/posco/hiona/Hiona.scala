@@ -1,5 +1,7 @@
 package dev.posco.hiona
 
+import cats.Monoid
+import cats.data.NonEmptyList
 
 /**
  *
@@ -9,39 +11,25 @@ package dev.posco.hiona
  */
 
 object Hiona {
-  // read/write CSV/TSV
-  sealed trait Row[A] {
-    def columns: Int
-    def writeToStrings(a: A, offset: Int, dest: Array[String]): Unit
-    def fromStrings(s: Seq[String]): Option[A]
-    def zip[B](that: Row[B]): Row[(A, B)] = ???
-    def imap[B](toFn: A => Option[B])(fromFn: B => A): Row[B] = ???
-  }
-
-  object Row {
-    // we know that at least one of columns is non-empty for all values
-    sealed trait NonEmptyRow[A] extends Row[A]
-
-    implicit case object UnitRow extends Row[Unit] {
-      val someUnit: Some[Unit] = Some(())
-
-      def columns = 0
-      def writeToStrings(a: Unit, offset: Int, dest: Array[String]) = ()
-      def fromStrings(s: Seq[String]): Option[Unit] = someUnit
-    }
-  }
-
   sealed trait Timestamp
   sealed trait Duration
-  sealed trait Monoid[A] {
-    def empty: A
-    def combine(left: A, right: A): A
+
+  implicit case object UnitMonoid extends Monoid[Unit] {
+    def empty = ()
+    def combine(left: Unit, right: Unit) = empty
   }
 
-  object Monoid {
-    implicit case object UnitMonoid extends Monoid[Unit] {
-      def empty = ()
-      def combine(left: Unit, right: Unit) = empty
+  trait Validator[A] {
+    def validate(a: A): Either[Validator.Error, Timestamp]
+  }
+
+  object Validator {
+    sealed trait Error {
+      def message: String
+    }
+
+    case class MissingTimestamp[A](from: A) extends Error {
+      def message = s"value $from has a missing timestamp"
     }
   }
 
@@ -57,21 +45,31 @@ object Hiona {
 
     final def withTime: Event[(A, Timestamp)] =
       Event.WithTime(this)
+
+    final def ++[A1 >: A](that: Event[A1]): Event[A1] =
+      Event.Concat(this, that)
   }
 
   object Event {
-    sealed trait NonSource[A] extends Event[A] {
+    sealed trait NonSource[+A] extends Event[A] {
       type Prior
       def previous: Event[Prior]
     }
 
-    def source[A: Row](name: String): Event[A] =
-      Source(name, implicitly[Row[A]])
+    def source[A: Row: Validator](name: String): Event[A] =
+      Source(name, implicitly[Row[A]], implicitly[Validator[A]])
 
     def empty[A]: Event[A] = Empty
 
     case object Empty extends Event[Nothing]
-    case class Source[A](name: String, row: Row[A]) extends Event[A]
+    case class Source[A](name: String, row: Row[A], validator: Validator[A]) extends Event[A]
+    case class Concat[A](left: Event[A], right: Event[A]) extends Event[A]
+
+
+    def sourcesOf[A](ev: Event[A]): Map[String, NonEmptyList[Source[_]]] = ???
+
+    // assign an integer to every node in the graph by equality
+    def index[A](ev: Event[A]): (Array[Event[_]], Map[Event[_], Int]) = ???
 
     case class Mapped[A, B](init: Event[A], fn: A => B) extends NonSource[B] {
       type Prior = A
@@ -93,7 +91,6 @@ object Hiona {
     case class Lookup[K, V, W](
       event: Event[(K, V)],
       feature: Feature[K, W],
-      rowV: Row[V],
       order: LookupOrder) extends NonSource[(K, (V, W))] {
       type Prior = (K, V)
       def previous = event
@@ -116,38 +113,35 @@ object Hiona {
   }
 
   implicit class KeyedEvent[K, V](val ev: Event[(K, V)]) extends AnyVal {
-    final def lookupAfter[W](that: Feature[K, W])(implicit rv: Row[V]): Event[(K, (V, W))] =
-      Event.Lookup(ev, that, rv, LookupOrder.After)
+    final def lookupAfter[W](that: Feature[K, W]): Event[(K, (V, W))] =
+      Event.Lookup(ev, that, LookupOrder.After)
 
-    final def lookupBefore[W](that: Feature[K, W])(implicit rv: Row[V]): Event[(K, (V, W))] =
-      Event.Lookup(ev, that, rv, LookupOrder.Before)
+    final def lookupBefore[W](that: Feature[K, W]): Event[(K, (V, W))] =
+      Event.Lookup(ev, that, LookupOrder.Before)
 
     final def valueWithTime: Event[(K, (V, Timestamp))] =
       Event.ValueWithTime(ev)
 
-    final def sum(implicit k: Row[K], v: Row[V], m: Monoid[V]): Feature[K, V] =
-      Feature.Summed(k, v, ev, m)
+    final def sum(implicit m: Monoid[V]): Feature[K, V] =
+      Feature.Summed(ev, m)
 
-    // TODO: Row[Option[V]] is subtle. Probably want some notion of non-nullable Rows
-    final def latest(within: Duration)(implicit k: Row[K], v: Row[Option[V]]): Feature[K, Option[V]] =
-      Feature.Latest(k, v, ev)
+    final def latest(within: Duration): Feature[K, Option[V]] =
+      Feature.Latest(ev)
 
     final def values: Event[V] =
       Event.Mapped(ev, Event.Second[V]())
   }
 
   sealed abstract class Feature[K, V] {
-    def keyRow: Row[K]
-    def valueRow: Row[V]
 
     final def zip[W](that: Feature[K, W]): Feature[K, (V, W)] =
       Feature.Zipped(this, that)
 
-    final def map[W: Row](fn: V => W): Feature[K, W] =
+    final def map[W](fn: V => W): Feature[K, W] =
       mapWithKey(Feature.ValueMap(fn))
 
-    final def mapWithKey[W: Row](fn: (K, V) => W): Feature[K, W] =
-      Feature.Mapped(implicitly[Row[W]], this, fn)
+    final def mapWithKey[W](fn: (K, V) => W): Feature[K, W] =
+      Feature.Mapped(this, fn)
   }
 
   object Feature {
@@ -158,19 +152,12 @@ object Hiona {
       def apply(a: Any) = result
     }
 
-    def const[K, V](v: V)(implicit rk: Row[K], rv: Row[V]): Feature[K, V] =
+    def const[K, V](v: V): Feature[K, V] =
       Event.empty[(K, Unit)].sum.map(ConstFn(v))
 
-    case class Summed[K, V](keyRow: Row[K], valueRow: Row[V], event: Event[(K, V)], monoid: Monoid[V]) extends Feature[K, V]
-    case class Latest[K, V](keyRow: Row[K], valueRow: Row[Option[V]], event: Event[(K, V)]) extends Feature[K, Option[V]]
-
-    case class Mapped[K, V, W](valueRow: Row[W], initial: Feature[K, V], fn: (K, V) => W) extends Feature[K, W] {
-      def keyRow = initial.keyRow
-    }
-
-    case class Zipped[K, V, W](left: Feature[K, V], right: Feature[K, W]) extends Feature[K, (V, W)] {
-      def keyRow = left.keyRow
-      val valueRow = left.valueRow.zip(right.valueRow)
-    }
+    case class Summed[K, V](event: Event[(K, V)], monoid: Monoid[V]) extends Feature[K, V]
+    case class Latest[K, V](event: Event[(K, V)]) extends Feature[K, Option[V]]
+    case class Mapped[K, V, W](initial: Feature[K, V], fn: (K, V) => W) extends Feature[K, W]
+    case class Zipped[K, V, W](left: Feature[K, V], right: Feature[K, W]) extends Feature[K, (V, W)]
   }
 }
