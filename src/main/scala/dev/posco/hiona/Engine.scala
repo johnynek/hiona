@@ -1,6 +1,6 @@
 package dev.posco.hiona
 
-import cats.Parallel
+import cats.{Monoid, Parallel}
 import cats.data.NonEmptyList
 import cats.effect.{ContextShift, IO, Resource}
 import cats.effect.concurrent.Ref
@@ -190,10 +190,72 @@ object Engine {
           fromEvent(ev).map(ConcatMapEmitter(_, fn))
         case Event.ValueWithTime(ev) =>
           fromEvent(ev).map(ValueWithTimeEmitter(_))
-        case Event.Lookup(_, _, _) =>
-          ???
+        case Event.Lookup(ev, feat, order) =>
+          (fromEvent(ev), FeatureState.fromFeature(feat))
+            .mapN(LookupEmitter(_, _, order))
       }
   }
+
+  sealed abstract class Reader[K, V] {
+    def apply(k: K): V
+  }
+
+  object Reader {
+    case class FromMap[K, V](toMap: Map[K, V], default: V) extends Reader[K, V] {
+
+      def apply(k: K) =
+        toMap.get(k) match {
+          case Some(v) => v
+          case None => default
+        }
+    }
+
+    case class FromMapOption[K, V](toMap: Map[K, V]) extends Reader[K, Option[V]] {
+      def apply(k: K) = toMap.get(k)
+    }
+
+    case class Mapped[K, V, W](r: Reader[K, V], fn: (K, V) => W) extends Reader[K, W] {
+      def apply(k: K) = {
+        val v = r(k)
+        fn(k, v)
+      }
+    }
+    case class Zipped[K, V, W](left: Reader[K, V], right: Reader[K, W]) extends Reader[K, (V, W)] {
+      def apply(k: K) = (left(k), right(k))
+    }
+  }
+
+  sealed abstract class FeatureState[K, V] {
+    // consume these events and return the full state before and after these events
+    def feed[I](from: Event.Source[I], item: I, ts: Timestamp, seq: Long): IO[(Reader[K, V], Reader[K, V])]
+  }
+
+  object FeatureState {
+    import Impl._
+
+    def fromFeature[K, V](f: Feature[K, V]): IO[FeatureState[K, V]] =
+      f match {
+        case Feature.Summed(ev, monoid) =>
+          (Emitter.fromEvent(ev),
+            Ref.of[IO, (Long, Map[K, V], Map[K, V])](
+              (Long.MinValue, Map.empty, Map.empty)))
+            .mapN(SummedFS(_, _, monoid))
+
+        case f@Feature.Latest(_) =>
+          def go[B](l: Feature.Latest[K, B]): IO[FeatureState[K, Option[B]]] =
+            (Emitter.fromEvent(l.event),
+              Ref.of[IO, (Long, Map[K, B], Map[K, B])](
+                (Long.MinValue, Map.empty, Map.empty)))
+              .mapN(LatestFS[K, B](_, _))
+
+          go(f)
+        case Feature.Mapped(feat, fn) =>
+          fromFeature(feat).map(MappedFS(_, fn))
+        case Feature.Zipped(left, right) =>
+          (fromFeature(left), fromFeature(right)).mapN(ZippedFS(_, _))
+      }
+  }
+
 
   private object Impl {
     case class MapToConcat[A, B](fn: A => B) extends Function1[A, Iterable[B]] {
@@ -248,6 +310,103 @@ object Engine {
       // we could cache here, but maybe not needed
       def feed[I](from: Event.Source[I], item: I, ts: Timestamp, seq: Long): IO[List[B]] =
         prev.feed(from, item, ts, seq).map(_.flatMap(fn))
+    }
+
+    case class LookupEmitter[K, V, W](ev: Emitter[(K, V)], fs: FeatureState[K, W], order: LookupOrder) extends Emitter[(K, (V, W))] {
+      def feed[I](from: Event.Source[I], item: I, ts: Timestamp, seq: Long): IO[List[(K, (V, W))]] =
+        (ev.feed(from, item, ts, seq), fs.feed(from, item, ts, seq))
+          .mapN { case (evs, (before, after)) =>
+            val reader = if (order.isBefore) before else after
+
+            evs.map { case (k, v) =>
+              (k, (v, reader(k)))
+            }
+          }
+    }
+
+    case class SummedFS[K, V](
+      emitter: Emitter[(K, V)],
+      state: Ref[IO, (Long, Map[K, V], Map[K, V])],
+      monoid: Monoid[V]) extends FeatureState[K, V] {
+
+      private val empty = monoid.empty
+
+      def feed[I](from: Event.Source[I], item: I, ts: Timestamp, seq: Long) =
+        state
+          .access
+          .flatMap { case ((seq0, before, after), set) =>
+            if (seq0 < seq) {
+              // we need to process this
+              emitter.feed(from, item, ts, seq)
+                .flatMap { kvs =>
+                  val after1 = kvs.foldLeft(after) { case (state, (k, v)) =>
+                    state.get(k) match {
+                      case Some(v0) => state.updated(k, monoid.combine(v0, v))
+                      case None => state.updated(k, v)
+                    }
+                  }
+
+                  set((seq, after, after1))
+                    .flatMap {
+                      case true =>
+                        IO.pure((Reader.FromMap(after, empty), Reader.FromMap(after1, empty)))
+                      case false =>
+                        // loop:
+                        feed(from, item, ts, seq)
+                    }
+                }
+            }
+            else {
+              // we have already processed this event
+              IO.pure((Reader.FromMap(before, empty), Reader.FromMap(after, empty)))
+            }
+          }
+
+    }
+
+    case class LatestFS[K, V](
+      emitter: Emitter[(K, V)],
+      state: Ref[IO, (Long, Map[K, V], Map[K, V])]) extends FeatureState[K, Option[V]] {
+      def feed[I](from: Event.Source[I], item: I, ts: Timestamp, seq: Long) =
+        state
+          .access
+          .flatMap { case ((seq0, before, after), set) =>
+            if (seq0 < seq) {
+              // we need to process this
+              emitter.feed(from, item, ts, seq)
+                .flatMap { kvs =>
+                  val after1 = after ++ kvs
+
+                  set((seq, after, after1))
+                    .flatMap {
+                      case true =>
+                        IO.pure((Reader.FromMapOption(after), Reader.FromMapOption(after1)))
+                      case false =>
+                        // loop:
+                        feed(from, item, ts, seq)
+                    }
+                }
+            }
+            else {
+              // we have already processed this event
+              IO.pure((Reader.FromMapOption(before), Reader.FromMapOption(after)))
+            }
+          }
+    }
+
+    case class MappedFS[K, V, W](fs: FeatureState[K, V], fn: (K, V) => W) extends FeatureState[K, W] {
+      def feed[I](from: Event.Source[I], item: I, ts: Timestamp, seq: Long) =
+        fs.feed(from, item, ts, seq)
+          .map { case (before, after) =>
+            (Reader.Mapped(before, fn), Reader.Mapped(after, fn))
+          }
+    }
+    case class ZippedFS[K, V, W](left: FeatureState[K, V], right: FeatureState[K, W]) extends FeatureState[K, (V, W)] {
+      def feed[I](from: Event.Source[I], item: I, ts: Timestamp, seq: Long) =
+        (left.feed(from, item, ts, seq), right.feed(from, item, ts, seq))
+          .mapN { case ((bv, av), (bw, aw)) =>
+            (Reader.Zipped(bv, bw), Reader.Zipped(av, aw))
+          }
     }
   }
 }
