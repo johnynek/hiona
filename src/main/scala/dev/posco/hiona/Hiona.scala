@@ -3,6 +3,9 @@ package dev.posco.hiona
 import cats.Monoid
 import cats.data.NonEmptyList
 
+import scala.concurrent.duration.Duration
+import cats.implicits._
+
 /**
  *
  * Build an in-memory runner that requires sorted-by time input events
@@ -11,12 +14,14 @@ import cats.data.NonEmptyList
  */
 
 object Hiona {
-  sealed trait Timestamp
-  sealed trait Duration
+  final case class Timestamp(epochMillis: Long)
 
-  implicit case object UnitMonoid extends Monoid[Unit] {
-    def empty = ()
-    def combine(left: Unit, right: Unit) = empty
+  object Timestamp {
+    implicit val orderingForTimestamp: Ordering[Timestamp] =
+      new Ordering[Timestamp] {
+        def compare(left: Timestamp, right: Timestamp): Int =
+          java.lang.Long.compare(left.epochMillis, right.epochMillis)
+      }
   }
 
   trait Validator[A] {
@@ -24,12 +29,10 @@ object Hiona {
   }
 
   object Validator {
-    sealed trait Error {
-      def message: String
-    }
+    sealed trait Error extends Exception
 
     case class MissingTimestamp[A](from: A) extends Error {
-      def message = s"value $from has a missing timestamp"
+      override def getMessage = s"value $from has a missing timestamp"
     }
   }
 
@@ -66,10 +69,15 @@ object Hiona {
     case class Concat[A](left: Event[A], right: Event[A]) extends Event[A]
 
 
-    def sourcesOf[A](ev: Event[A]): Map[String, NonEmptyList[Source[_]]] = ???
-
-    // assign an integer to every node in the graph by equality
-    def index[A](ev: Event[A]): (Array[Event[_]], Map[Event[_], Int]) = ???
+    def sourcesOf[A](ev: Event[A]): Map[String, NonEmptyList[Source[_]]] =
+      ev match {
+        case src@Source(_, _, _) => Map(src.name -> NonEmptyList(src, Nil))
+        case Concat(left, right) =>
+          Monoid[Map[String, NonEmptyList[Source[_]]]]
+            .combine(sourcesOf(left), sourcesOf(right))
+        case Empty => Map.empty
+        case ns: NonSource[_] => sourcesOf(ns.previous)
+      }
 
     case class Mapped[A, B](init: Event[A], fn: A => B) extends NonSource[B] {
       type Prior = A

@@ -13,6 +13,8 @@ lazy val root = (project in file("."))
       cats,
       catsEffect,
       delimited,
+      shapeless,
     ),
+    scalacOptions += "-Ypartial-unification",
     addCompilerPlugin("com.olegpy" %% "better-monadic-for" % "0.3.1")
   )

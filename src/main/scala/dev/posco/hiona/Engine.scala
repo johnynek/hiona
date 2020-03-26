@@ -17,126 +17,40 @@ object Engine {
     event: Event[A],
     output: Path)(implicit ctx: ContextShift[IO]): IO[Unit] = {
 
-    val ioFeeder = Feeder.fromInputs(inputs, event) match {
-      case Left(err) => err.toError
-      case Right(feeder) => IO.pure(feeder)
-    }
+    Emitter.fromEvent(event).flatMap { emitter =>
 
-    (ioFeeder, Emitter.fromEvent(event)).mapN { (feeder, emitter) =>
+      val outRes = Row.writerRes(output)
+      val feedRes = Feeder.fromInputs(inputs, event)
 
-      val batchSize = 1000
+      outRes
+        .product(feedRes)
+        .use { case (writer, feeder) =>
 
-      def write(res: List[A], out: PrintWriter): IO[Unit] = ???
+          val batchSize = 1000
 
-      def loop(batch: Array[Point], seq: Long, out: PrintWriter): IO[Unit] = {
-        if (batch.isEmpty) IO.unit
-        else {
-          val stepWrite =
-            for {
-              pair <- emitter.feedAll(batch, seq)
-              (items, nextSeq) = pair
-              _ <- write(items, out)
-            } yield nextSeq
+          def loop(batch: Seq[Point], seq: Long, out: Iterable[A] => IO[Unit]): IO[Unit] = {
+            if (batch.isEmpty) IO.unit
+            else {
+              val stepWrite =
+                for {
+                  pair <- emitter.feedAll(batch, seq)
+                  (items, nextSeq) = pair
+                  _ <- out(items)
+                } yield nextSeq
 
-          // we can in parallel read the next batch and do this write
-          Parallel.parProduct(feeder.nextBatch(batchSize), stepWrite)
-            .flatMap { case (b, nextSeq) =>
-              loop(b, nextSeq, out)
+              // we can in parallel read the next batch and do this write
+              Parallel.parProduct(feeder.nextBatch(batchSize), stepWrite)
+                .flatMap { case (b, nextSeq) =>
+                  loop(b, nextSeq, out)
+                }
             }
+          }
+
+          for {
+            batch <- feeder.nextBatch(batchSize)
+            _ <- loop(batch, 0L, writer)
+          } yield ()
         }
-      }
-
-      val out: Resource[IO, PrintWriter] = ???
-
-      out.use { pw =>
-        for {
-          batch <- feeder.nextBatch(batchSize)
-          _ <- loop(batch, 0L, pw)
-        } yield ()
-      }
-    }
-    .flatten
-  }
-
-  sealed abstract class Point
-  object Point {
-    case class Sourced[A](src: Event.Source[A], value: A, ts: Timestamp) extends Point
-  }
-
-  sealed abstract class Feeder {
-    def nextBatch(n: Int): IO[Array[Point]]
-  }
-
-  object Feeder {
-    sealed abstract class Error extends Exception {
-      def toError[A]: IO[A] = IO.raiseError(this)
-    }
-
-    case class DuplicateEventSources(dups: NonEmptyList[Event.Source[_]]) extends Error {
-      override def getMessage(): String = toString
-    }
-
-    case class MismatchInputs(missingPaths: Set[String], extraPaths: Set[String]) extends Error {
-      override def getMessage(): String = toString
-    }
-
-    sealed abstract class Src {
-      type A
-      def eventSource: Event.Source[A]
-
-      override def hashCode = eventSource.hashCode
-      override def equals(that: Any) =
-        that match {
-          case s: Src => eventSource == s.eventSource
-          case _ => false
-        }
-
-    }
-
-    object Src {
-      def apply[A1](src: Event.Source[A1]): Src { type A = A1 } =
-        new Src {
-          type A = A1
-          def eventSource = src
-        }
-    }
-
-
-    private case class SourceMapFeeder(table: Map[String, (Path, Src)]) extends Feeder {
-      def nextBatch(n: Int): IO[Array[Point]] = ???
-    }
-
-    def fromInputs(paths: Map[String, Path], ev: Event[Any]): Either[Error, Feeder] = {
-      val srcs = Event.sourcesOf(ev)
-      val badSrcs = srcs.filter { case (_, nel) => nel.tail.nonEmpty }
-
-      if (badSrcs.nonEmpty) {
-        Left(DuplicateEventSources(badSrcs.iterator.map(_._2).reduce(_.concatNel(_))))
-      }
-      else {
-        val srcMap: Map[String, Event.Source[_]] =
-          srcs
-            .iterator
-            .map { case (n, singleton) => (n, singleton.head) }
-            .toMap
-
-        // we need exactly the same names
-
-        val missing = srcMap.keySet -- paths.keySet
-        val extra = paths.keySet -- srcMap.keySet
-        if (missing.nonEmpty || extra.nonEmpty) {
-          Left(MismatchInputs(missing, extra))
-        }
-        else {
-          // the keyset is exactly the same:
-          val table = paths
-            .iterator
-            .map { case (name, path) => (name, (path, Src(srcMap(name)))) }
-            .toMap[String, (Path, Src)]
-
-          Right(SourceMapFeeder(table))
-        }
-      }
     }
   }
 
@@ -153,18 +67,21 @@ object Engine {
         case Point.Sourced(src, v, ts) => feed(src, v, ts, seq)
       }
 
-    final def feedAll(batch: Array[Point], seq: Long): IO[(List[O], Long)] = {
-      def loop(idx: Int, seq: Long, acc: List[O]): IO[(List[O], Long)] =
-        if (idx < batch.length) {
-          feedPoint(batch(idx), seq)
-            .flatMap { outs =>
-              loop(idx + 1, seq + 1L, outs ::: acc)
-            }
+    final def feedAll(batch: Iterable[Point], seq: Long): IO[(List[O], Long)] =
+      IO.suspend {
+        val iter = batch.iterator
+        def loop(seq: Long, acc: List[O]): IO[(List[O], Long)] = {
+          if (iter.hasNext) {
+            feedPoint(iter.next(), seq)
+              .flatMap { outs =>
+                loop(seq + 1L, outs reverse_::: acc)
+              }
+          }
+          else IO.pure((acc.reverse, seq))
         }
-        else IO.pure((acc.reverse, seq))
 
-      loop(0, seq, Nil)
-    }
+        loop(seq, Nil)
+      }
   }
 
   object Emitter {
