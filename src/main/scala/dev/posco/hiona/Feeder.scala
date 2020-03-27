@@ -7,15 +7,20 @@ import java.nio.file.Path
 import java.util.{Comparator, PriorityQueue}
 import net.tixxit.delimited.{DelimitedError, DelimitedParser, DelimitedFormat, Row => DRow}
 
-import Hiona.{Event, Timestamp, Validator}
+import Hiona.{Duration, Event, Timestamp, Validator}
 
 import cats.implicits._
 
 sealed abstract class Point {
   def ts: Timestamp
+  def offset: Duration
+  def name: String
 }
+
 object Point {
-  case class Sourced[A](src: Event.Source[A], value: A, ts: Timestamp) extends Point
+  case class Sourced[A](src: Event.Source[A], value: A, ts: Timestamp, offset: Duration) extends Point {
+    def name: String = src.name
+  }
 }
 
 sealed abstract class Feeder {
@@ -52,14 +57,14 @@ object Feeder {
     missingPaths: Set[String],
     extraPaths: Set[String]) extends Error(s"mismatch inputs: missing=$missingPaths, extra = $extraPaths")
 
-  private case class IteratorFeeder[A](event: Event.Source[A], iter: Iterator[Either[DelimitedError, DRow]]) extends Feeder {
+  private case class IteratorFeeder[A](event: Event.Source[A], offset: Duration, iter: Iterator[Either[DelimitedError, DRow]]) extends Feeder {
     protected def unsafeNext(): Point = {
       if (iter.hasNext) {
         iter.next() match {
           case Right(drow) =>
             val a = event.row.unsafeFromStrings(0, drow)
             event.validator.validate(a) match {
-              case Right(ts) => Point.Sourced(event, a, ts)
+              case Right(ts) => Point.Sourced(event, a, ts, offset)
               case Left(err) => throw err
             }
 
@@ -70,17 +75,17 @@ object Feeder {
     }
   }
 
-  private case class MultiPointFeeder[A](
-    queue: PriorityQueue[(Timestamp, A, Point, Feeder)]) extends Feeder {
+  private case class MultiPointFeeder(
+    queue: PriorityQueue[(Point, Feeder)]) extends Feeder {
 
     protected def unsafeNext(): Point =
       queue.poll match {
         case null => null
-        case (_, nm, point, feeder) =>
+        case (point, feeder) =>
           // get the next point out of the feeder and push it back in.
           val nextPoint = feeder.unsafeNext()
           if (nextPoint != null) {
-            queue.add((nextPoint.ts, nm, nextPoint, feeder))
+            queue.add((nextPoint, feeder))
           }
 
           point
@@ -88,28 +93,29 @@ object Feeder {
   }
 
   // this allocates mutable state so it has to be in IO
-  def multiFeeder[A: Ordering](it: Iterable[(A, Feeder)]): IO[Feeder] = {
-    val cmp = new Comparator[(Timestamp, A, Point, Feeder)] {
-      val ordA = implicitly[Ordering[A]]
+  def multiFeeder(it: Iterable[Feeder]): IO[Feeder] = {
+    val cmp = new Comparator[(Point, Feeder)] {
       val ordT = Timestamp.orderingForTimestamp
 
-      def compare(left: (Timestamp, A, Point, Feeder), right: (Timestamp, A, Point, Feeder)) = {
-        val ts = ordT.compare(left._1, right._1)
-        if (ts == 0) ordA.compare(left._2, right._2)
-        else ts
+      def compare(left: (Point, Feeder), right: (Point, Feeder)) = {
+        val lpoint = left._1
+        val rpoint = right._1
+        val res = Duration.compareDiff(lpoint.ts, lpoint.offset, rpoint.ts, rpoint.offset)
+        if (res == 0) lpoint.name.compare(rpoint.name)
+        else res
       }
     }
 
     it
       .toList
-      .traverse { case (nm, feeder) =>
+      .traverse { feeder =>
         // read the first timestamp from each feeder
         // since we go in order
         feeder.next.map { pointOpt =>
           pointOpt
             .toList
             .map { point =>
-              (point.ts, nm, point, feeder)
+              (point, feeder)
             }
         }
       }
@@ -117,7 +123,7 @@ object Feeder {
         val init = init0.flatten
         val size = init.size
         IO {
-          val queue = new PriorityQueue[(Timestamp, A, Point, Feeder)](size, cmp)
+          val queue = new PriorityQueue[(Point, Feeder)](size, cmp)
           // now insert all the items into the queue by checking the first items in each feeder
           init.foreach(queue.add(_))
 
@@ -126,7 +132,7 @@ object Feeder {
       }
   }
 
-  def fromPath[A](path: Path, src: Event.Source[A]): Resource[IO, Feeder] = {
+  def fromPath[A](path: Path, src: Event.Source[A], offset: Duration): Resource[IO, Feeder] = {
     val resBR = Resource.make(IO {
       new BufferedReader(new FileReader(path.toFile))
     }) { br => IO(br.close()) }
@@ -139,7 +145,7 @@ object Feeder {
           // skip the header
           it.next()
         }
-        IteratorFeeder(src, it)
+        IteratorFeeder(src, offset, it)
       })
     }
   }
@@ -172,8 +178,7 @@ object Feeder {
           .toList
           .traverse {
             case (name, path) =>
-              fromPath(path, srcMap(name))
-                .map { feeder => (name, feeder) }
+              fromPath(path, srcMap(name), Duration.Zero)
           }
           .flatMap { feeds => Resource.liftF(multiFeeder(feeds)) }
       }

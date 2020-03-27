@@ -12,12 +12,13 @@ import cats.implicits._
 import Hiona._
 
 object Engine {
+
   def run[A: Row](
     inputs: Map[String, Path],
     event: Event[A],
     output: Path)(implicit ctx: ContextShift[IO]): IO[Unit] = {
 
-    Emitter.fromEvent(event).flatMap { emitter =>
+    Emitter.fromEvent(event, Duration.Zero).flatMap { emitter =>
 
       val outRes = Row.writerRes(output)
       val feedRes = Feeder.fromInputs(inputs, event)
@@ -60,19 +61,14 @@ object Engine {
     // have a 1:1 mapping of Int to Event[_]. Then we can index sources
     // into an array to get a bit better performance here
     // since we can add all the sources into an identically indexed array
-    def feed[I](from: Event.Source[I], item: I, ts: Timestamp, seq: Long): IO[List[O]]
-
-    final def feedPoint(p: Point, seq: Long): IO[List[O]] =
-      p match {
-        case Point.Sourced(src, v, ts) => feed(src, v, ts, seq)
-      }
+    def feed(p: Point, seq: Long): IO[List[O]]
 
     final def feedAll(batch: Iterable[Point], seq: Long): IO[(List[O], Long)] =
       IO.suspend {
         val iter = batch.iterator
         def loop(seq: Long, acc: List[O]): IO[(List[O], Long)] = {
           if (iter.hasNext) {
-            feedPoint(iter.next(), seq)
+            feed(iter.next(), seq)
               .flatMap { outs =>
                 loop(seq + 1L, outs reverse_::: acc)
               }
@@ -87,28 +83,28 @@ object Engine {
   object Emitter {
     import Impl._
 
-    def fromEvent[A](ev: Event[A]): IO[Emitter[A]] =
+    def fromEvent[A](ev: Event[A], offset: Duration): IO[Emitter[A]] =
       ev match {
         case Event.Empty => IO.pure(EmptyEmitter)
-        case src@Event.Source(_, _, _) => IO.pure(SourceEmitter(src))
+        case src@Event.Source(_, _, _) => IO.pure(SourceEmitter(src, offset))
         case Event.Concat(left, right) =>
-          (fromEvent(left), fromEvent(right), Ref.of[IO, (Long, List[A])]((Long.MinValue, Nil)))
+          (fromEvent(left, offset), fromEvent(right, offset), Ref.of[IO, (Long, List[A])]((Long.MinValue, Nil)))
             .mapN(ConcatEmitter(_, _, _))
         case Event.WithTime(ev) =>
-          fromEvent(ev).map(WithTimeEmitter(_))
+          fromEvent(ev, offset).map(WithTimeEmitter(_))
         case Event.Mapped(ev, fn) =>
-          fromEvent(ev).map(ConcatMapEmitter(_, MapToConcat(fn)))
+          fromEvent(ev, offset).map(ConcatMapEmitter(_, MapToConcat(fn)))
         case f: Event.Filtered[a] =>
           def go[B1](ev: Event[B1], fn: B1 => Boolean): IO[Emitter[B1]] =
-            fromEvent(ev).map(ConcatMapEmitter(_, FilterToConcat(fn)))
+            fromEvent(ev, offset).map(ConcatMapEmitter(_, FilterToConcat(fn)))
 
           go[a](f.previous, f.fn)
         case Event.ConcatMapped(ev, fn) =>
-          fromEvent(ev).map(ConcatMapEmitter(_, fn))
+          fromEvent(ev, offset).map(ConcatMapEmitter(_, fn))
         case Event.ValueWithTime(ev) =>
-          fromEvent(ev).map(ValueWithTimeEmitter(_))
+          fromEvent(ev, offset).map(ValueWithTimeEmitter(_))
         case Event.Lookup(ev, feat, order) =>
-          (fromEvent(ev), FeatureState.fromFeature(feat))
+          (fromEvent(ev, offset), FeatureState.fromFeature(feat, offset))
             .mapN(LookupEmitter(_, _, order))
       }
   }
@@ -144,32 +140,32 @@ object Engine {
 
   sealed abstract class FeatureState[K, V] {
     // consume these events and return the full state before and after these events
-    def feed[I](from: Event.Source[I], item: I, ts: Timestamp, seq: Long): IO[(Reader[K, V], Reader[K, V])]
+    def feed(point: Point, seq: Long): IO[(Reader[K, V], Reader[K, V])]
   }
 
   object FeatureState {
     import Impl._
 
-    def fromFeature[K, V](f: Feature[K, V]): IO[FeatureState[K, V]] =
+    def fromFeature[K, V](f: Feature[K, V], offset: Duration): IO[FeatureState[K, V]] =
       f match {
         case Feature.Summed(ev, monoid) =>
-          (Emitter.fromEvent(ev),
+          (Emitter.fromEvent(ev, offset),
             Ref.of[IO, (Long, Map[K, V], Map[K, V])](
               (Long.MinValue, Map.empty, Map.empty)))
             .mapN(SummedFS(_, _, monoid))
 
         case f@Feature.Latest(_) =>
           def go[B](l: Feature.Latest[K, B]): IO[FeatureState[K, Option[B]]] =
-            (Emitter.fromEvent(l.event),
+            (Emitter.fromEvent(l.event, offset),
               Ref.of[IO, (Long, Map[K, B], Map[K, B])](
                 (Long.MinValue, Map.empty, Map.empty)))
               .mapN(LatestFS[K, B](_, _))
 
           go(f)
         case Feature.Mapped(feat, fn) =>
-          fromFeature(feat).map(MappedFS(_, fn))
+          fromFeature(feat, offset).map(MappedFS(_, fn))
         case Feature.Zipped(left, right) =>
-          (fromFeature(left), fromFeature(right)).mapN(ZippedFS(_, _))
+          (fromFeature(left, offset), fromFeature(right, offset)).mapN(ZippedFS(_, _))
       }
   }
 
@@ -186,16 +182,17 @@ object Engine {
     case object EmptyEmitter extends Emitter[Nothing] {
       val ioNil: IO[List[Nothing]] = IO.pure(Nil)
 
-      def feed[I](from: Event.Source[I], item: I, ts: Timestamp, seq: Long): IO[List[Nothing]] =
+      def feed(point: Point, seq: Long): IO[List[Nothing]] =
         ioNil
     }
 
-    case class SourceEmitter[A](ev: Event.Source[A]) extends Emitter[A] {
+    case class SourceEmitter[A](ev: Event.Source[A], offset: Duration) extends Emitter[A] {
       val ioNil: IO[List[A]] = IO.pure(Nil)
 
-      def feed[I](from: Event.Source[I], item: I, ts: Timestamp, seq: Long): IO[List[A]] =
-        if (from.name == ev.name) {
+      def feed(point: Point, seq: Long): IO[List[A]] =
+        if (point.name == ev.name && point.offset == offset) {
           // Assume previous checks means I == A
+          val Point.Sourced(_, item, _, _) = point
           IO(item.asInstanceOf[A] :: Nil)
         }
         else ioNil
@@ -203,8 +200,8 @@ object Engine {
 
     case class ConcatEmitter[A](left: Emitter[A], right: Emitter[A], ref: Ref[IO, (Long, List[A])]) extends Emitter[A] {
 
-      def feed[I](from: Event.Source[I], item: I, ts: Timestamp, seq: Long): IO[List[A]] = {
-        val run = (left.feed(from, item, ts, seq), right.feed(from, item, ts, seq)).mapN(_ ::: _)
+      def feed(point: Point, seq: Long): IO[List[A]] = {
+        val run = (left.feed(point, seq), right.feed(point, seq)).mapN(_ ::: _)
 
         for {
           ((seq0, as), set) <-ref.access
@@ -214,24 +211,24 @@ object Engine {
     }
 
     case class WithTimeEmitter[A](prev: Emitter[A]) extends Emitter[(A, Timestamp)] {
-      def feed[I](from: Event.Source[I], item: I, ts: Timestamp, seq: Long): IO[List[(A, Timestamp)]] =
-        prev.feed(from, item, ts, seq).map(_.map { a => (a, ts) })
+      def feed(point: Point, seq: Long): IO[List[(A, Timestamp)]] =
+        prev.feed(point, seq).map(_.map { a => (a, point.ts) })
     }
 
     case class ValueWithTimeEmitter[A, B](prev: Emitter[(A, B)]) extends Emitter[(A, (B, Timestamp))] {
-      def feed[I](from: Event.Source[I], item: I, ts: Timestamp, seq: Long): IO[List[(A, (B, Timestamp))]] =
-        prev.feed(from, item, ts, seq).map(_.map { case (a, b) => (a, (b, ts)) })
+      def feed(point: Point, seq: Long): IO[List[(A, (B, Timestamp))]] =
+        prev.feed(point, seq).map(_.map { case (a, b) => (a, (b, point.ts)) })
     }
 
     case class ConcatMapEmitter[A, B](prev: Emitter[A], fn: A => Iterable[B]) extends Emitter[B] {
       // we could cache here, but maybe not needed
-      def feed[I](from: Event.Source[I], item: I, ts: Timestamp, seq: Long): IO[List[B]] =
-        prev.feed(from, item, ts, seq).map(_.flatMap(fn))
+      def feed(point: Point, seq: Long): IO[List[B]] =
+        prev.feed(point, seq).map(_.flatMap(fn))
     }
 
     case class LookupEmitter[K, V, W](ev: Emitter[(K, V)], fs: FeatureState[K, W], order: LookupOrder) extends Emitter[(K, (V, W))] {
-      def feed[I](from: Event.Source[I], item: I, ts: Timestamp, seq: Long): IO[List[(K, (V, W))]] =
-        (ev.feed(from, item, ts, seq), fs.feed(from, item, ts, seq))
+      def feed(point: Point, seq: Long): IO[List[(K, (V, W))]] =
+        (ev.feed(point, seq), fs.feed(point, seq))
           .mapN { case (evs, (before, after)) =>
             val reader = if (order.isBefore) before else after
 
@@ -248,13 +245,13 @@ object Engine {
 
       private val empty = monoid.empty
 
-      def feed[I](from: Event.Source[I], item: I, ts: Timestamp, seq: Long) =
+      def feed(point: Point, seq: Long) =
         state
           .access
           .flatMap { case ((seq0, before, after), set) =>
             if (seq0 < seq) {
               // we need to process this
-              emitter.feed(from, item, ts, seq)
+              emitter.feed(point, seq)
                 .flatMap { kvs =>
                   val after1 = kvs.foldLeft(after) { case (state, (k, v)) =>
                     state.get(k) match {
@@ -269,7 +266,7 @@ object Engine {
                         IO.pure((Reader.FromMap(after, empty), Reader.FromMap(after1, empty)))
                       case false =>
                         // loop:
-                        feed(from, item, ts, seq)
+                        feed(point, seq)
                     }
                 }
             }
@@ -284,13 +281,13 @@ object Engine {
     case class LatestFS[K, V](
       emitter: Emitter[(K, V)],
       state: Ref[IO, (Long, Map[K, V], Map[K, V])]) extends FeatureState[K, Option[V]] {
-      def feed[I](from: Event.Source[I], item: I, ts: Timestamp, seq: Long) =
+      def feed(point: Point, seq: Long) =
         state
           .access
           .flatMap { case ((seq0, before, after), set) =>
             if (seq0 < seq) {
               // we need to process this
-              emitter.feed(from, item, ts, seq)
+              emitter.feed(point, seq)
                 .flatMap { kvs =>
                   val after1 = after ++ kvs
 
@@ -300,7 +297,7 @@ object Engine {
                         IO.pure((Reader.FromMapOption(after), Reader.FromMapOption(after1)))
                       case false =>
                         // loop:
-                        feed(from, item, ts, seq)
+                        feed(point, seq)
                     }
                 }
             }
@@ -312,15 +309,15 @@ object Engine {
     }
 
     case class MappedFS[K, V, W](fs: FeatureState[K, V], fn: (K, V) => W) extends FeatureState[K, W] {
-      def feed[I](from: Event.Source[I], item: I, ts: Timestamp, seq: Long) =
-        fs.feed(from, item, ts, seq)
+      def feed(point: Point, seq: Long) =
+        fs.feed(point, seq)
           .map { case (before, after) =>
             (Reader.Mapped(before, fn), Reader.Mapped(after, fn))
           }
     }
     case class ZippedFS[K, V, W](left: FeatureState[K, V], right: FeatureState[K, W]) extends FeatureState[K, (V, W)] {
-      def feed[I](from: Event.Source[I], item: I, ts: Timestamp, seq: Long) =
-        (left.feed(from, item, ts, seq), right.feed(from, item, ts, seq))
+      def feed(point: Point, seq: Long) =
+        (left.feed(point, seq), right.feed(point, seq))
           .mapN { case ((bv, av), (bw, aw)) =>
             (Reader.Zipped(bv, bw), Reader.Zipped(av, aw))
           }
