@@ -13,6 +13,7 @@ lazy val root = (project in file("."))
       cats,
       catsEffect,
       delimited,
+      decline,
       shapeless,
     ),
     scalacOptions += "-Ypartial-unification",

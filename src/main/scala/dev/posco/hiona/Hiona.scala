@@ -29,11 +29,11 @@ object Hiona {
   }
 
   object Validator {
-    sealed trait Error extends Exception
+    sealed abstract class Error(msg: String) extends Exception(msg)
 
-    case class MissingTimestamp[A](from: A) extends Error {
-      override def getMessage = s"value $from has a missing timestamp"
-    }
+    case class MissingTimestamp[A](from: A) extends Error(s"value $from has a missing timestamp")
+
+    case class TimestampParseFailure[A](from: A, badString: String) extends Error(s"couldn't parse: $badString in $from")
   }
 
   sealed abstract class Event[+A] {
@@ -59,8 +59,8 @@ object Hiona {
       def previous: Event[Prior]
     }
 
-    def source[A: Row: Validator](name: String): Event[A] =
-      Source(name, implicitly[Row[A]], implicitly[Validator[A]])
+    def source[A: Row](name: String, validator: Validator[A]): Event[A] =
+      Source(name, implicitly[Row[A]], validator)
 
     def empty[A]: Event[A] = Empty
 
@@ -112,12 +112,32 @@ object Hiona {
     case class Second[A]() extends Function[(Any, A), A] {
       def apply(kv: (Any, A)) = kv._2
     }
+
+    case class ToSome[A]() extends Function[A, Some[A]] {
+      def apply(a: A) = Some(a)
+    }
+
+    case class MapValuesFn[A, B, C](fn: B => C) extends Function[(A, B), (A, C)] {
+      def apply(ab: (A, B)) = (ab._1, fn(ab._2))
+    }
   }
 
   sealed abstract class LookupOrder(val isBefore: Boolean)
   object LookupOrder {
     case object Before extends LookupOrder(true)
     case object After extends LookupOrder(false)
+  }
+
+  case class MaxMonoid[A](ord: Ordering[A]) extends Monoid[Option[A]] {
+    def empty = None
+    def combine(left: Option[A], right: Option[A]): Option[A] =
+      (left, right) match {
+        case (None, r) => r
+        case (l, None) => l
+        case (sl@Some(l), sr@Some(r)) =>
+          if (ord.compare(l, r) > 0) sl
+          else sr
+      }
   }
 
   implicit class KeyedEvent[K, V](val ev: Event[(K, V)]) extends AnyVal {
@@ -135,6 +155,14 @@ object Hiona {
 
     final def latest(within: Duration): Feature[K, Option[V]] =
       Feature.Latest(ev)
+
+    final def mapValues[W](fn: V => W): Event[(K, W)] =
+      ev.map(Event.MapValuesFn(fn))
+
+    final def max(implicit ord: Ordering[V]): Feature[K, Option[V]] = {
+      val ev1: Event[(K, Option[V])] = ev.mapValues(Event.ToSome())
+      ev1.sum(MaxMonoid(ord))
+    }
 
     final def values: Event[V] =
       Event.Mapped(ev, Event.Second[V]())

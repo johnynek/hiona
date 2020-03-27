@@ -35,6 +35,16 @@ object Row extends Priority1Rows {
     def unsafeFromStrings(offset: Int, s: IndexedSeq[String]) = ()
   }
 
+  // a row we don't care about
+  sealed trait Dummy
+  final object Dummy extends Dummy
+
+  implicit case object DummyRow extends Row[Dummy] {
+    def columns = 1
+    def writeToStrings(a: Dummy, offset: Int, dest: Array[String]) = ()
+    def unsafeFromStrings(offset: Int, s: IndexedSeq[String]) = Dummy
+  }
+
   implicit case object StringRow extends Row[String] {
     def columns = 1
     def writeToStrings(a: String, offset: Int, dest: Array[String]) = {
@@ -212,6 +222,6 @@ sealed trait Priority1Rows {
       gen.from(rowB.unsafeFromStrings(offset, s))
   }
 
-  implicit def genRow[A, B](implicit gen: Generic.Aux[A, B], rowB: Row[B]): Row[A] =
+  implicit def genericRow[A, B](implicit gen: Generic.Aux[A, B], rowB: Row[B]): Row[A] =
     GenRow(gen, rowB)
 }
