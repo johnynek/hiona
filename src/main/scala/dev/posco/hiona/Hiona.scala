@@ -79,6 +79,15 @@ object Hiona {
         case ns: NonSource[_] => sourcesOf(ns.previous)
       }
 
+    def lookupsOf[A](ev: Event[A]): Set[Lookup[_, _, _]] =
+      ev match {
+        case Source(_, _, _) | Empty => Set.empty
+        case Concat(left, right) =>
+          lookupsOf(left) | lookupsOf(right)
+        case l@Lookup(_, _, _) => Set(l)
+        case ns: NonSource[_] => lookupsOf(ns.previous)
+      }
+
     case class Mapped[A, B](init: Event[A], fn: A => B) extends NonSource[B] {
       type Prior = A
       def previous = init

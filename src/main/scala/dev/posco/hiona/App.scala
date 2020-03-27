@@ -71,10 +71,32 @@ object App {
         .mapN(RunCmd(_, _))
     }
 
+
+  case object ShowCmd extends Cmd {
+    def run[A](r: Row[A], event: Event[A])(implicit ctx: ContextShift[IO]): IO[ExitCode] = {
+      val srcs = Event.sourcesOf(event)
+      val lookups = Event.lookupsOf(event)
+      IO {
+        val names = srcs.toList.sortBy(_._1).map { case (nm, _) => nm }.mkString("", ", ", "")
+        println(s"sources: $names")
+
+        println(s"lookups: ${lookups.size}")
+        ExitCode.Success
+      }
+    }
+  }
+
+  private val showCmd: Command[ShowCmd.type] =
+    Command("show", "print some details about the event to standard out") {
+      Opts(ShowCmd)
+    }
+
+
   val command: Command[Cmd] =
     Command("hiona", "feature engineering system") {
       Opts.subcommands(
-        runCmd
+        runCmd,
+        showCmd
       )
     }
 

@@ -52,27 +52,6 @@ object Feeder {
     missingPaths: Set[String],
     extraPaths: Set[String]) extends Error(s"mismatch inputs: missing=$missingPaths, extra = $extraPaths")
 
-  sealed abstract class Src {
-    type A
-    def eventSource: Event.Source[A]
-
-    override def hashCode = eventSource.hashCode
-    override def equals(that: Any) =
-      that match {
-        case s: Src => eventSource == s.eventSource
-        case _ => false
-      }
-
-  }
-
-  object Src {
-    def apply[A1](src: Event.Source[A1]): Src { type A = A1 } =
-      new Src {
-        type A = A1
-        def eventSource = src
-      }
-  }
-
   private case class IteratorFeeder[A](event: Event.Source[A], iter: Iterator[Either[DelimitedError, DRow]]) extends Feeder {
     protected def unsafeNext(): Point = {
       if (iter.hasNext) {
