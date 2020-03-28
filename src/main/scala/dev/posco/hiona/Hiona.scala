@@ -1,7 +1,6 @@
 package dev.posco.hiona
 
 import cats.Monoid
-import cats.data.NonEmptyList
 
 import scala.concurrent.duration.Duration
 import cats.implicits._
@@ -24,15 +23,49 @@ object Hiona {
       }
   }
 
-  sealed abstract class Duration(val isInfinite: Boolean)
+  sealed abstract class Duration(val isInfinite: Boolean) {
+    def +(that: Duration): Duration
+    def millis: Long
+  }
   object Duration {
 
-    case object Infinite extends Duration(true)
+    case object Infinite extends Duration(true) {
+      def +(that: Duration): Duration = this
+
+      def millis = Long.MaxValue
+    }
     case class Finite(millis: Long) extends Duration(false) {
       require(millis >= 0, s"$millis should be >= 0")
+
+      def +(that: Duration): Duration =
+        that match {
+          case Infinite => Infinite
+          case Finite(m1) =>
+            val res = millis + m1
+            if (res >= millis) Finite(res)
+            else {
+              // overflow. Could throw here, or return Infinite.
+              // for now, let's say infinite
+              Infinite
+            }
+        }
     }
 
+    implicit val durationOrdering: Ordering[Duration] =
+      new Ordering[Duration] {
+        def compare(left: Duration, right: Duration) =
+          if (left == right) 0
+          else if (left.isInfinite) 1
+          else if (right.isInfinite) -1
+          else java.lang.Long.compare(left.millis, right.millis)
+      }
+
     val Zero: Finite = Finite(0)
+    def zero: Duration = Zero
+
+    def min(cnt: Int): Duration =
+      if (cnt == 0) zero
+      else Finite(cnt.toLong * 60L * 1000L)
 
     def compareDiff(leftT: Timestamp, leftD: Duration, rightT: Timestamp, rightD: Duration): Int =
       if (leftD == rightD) Timestamp.orderingForTimestamp.compare(leftT, rightT)
@@ -129,13 +162,16 @@ object Hiona {
     case class Concat[A](left: Event[A], right: Event[A]) extends Event[A]
 
 
-    def sourcesOf[A](ev: Event[A]): Map[String, NonEmptyList[Source[_]]] =
+    def sourcesOf[A](ev: Event[A]): Map[String, Set[Source[_]]] =
       ev match {
-        case src@Source(_, _, _) => Map(src.name -> NonEmptyList(src, Nil))
+        case src@Source(_, _, _) => Map(src.name -> Set(src))
         case Concat(left, right) =>
-          Monoid[Map[String, NonEmptyList[Source[_]]]]
+          Monoid[Map[String, Set[Source[_]]]]
             .combine(sourcesOf(left), sourcesOf(right))
         case Empty => Map.empty
+        case Lookup(ev, f, _) =>
+          Monoid[Map[String, Set[Source[_]]]]
+            .combine(sourcesOf(ev), Feature.sourcesOf(f))
         case ns: NonSource[_] => sourcesOf(ns.previous)
       }
 
@@ -144,7 +180,8 @@ object Hiona {
         case Source(_, _, _) | Empty => Set.empty
         case Concat(left, right) =>
           lookupsOf(left) | lookupsOf(right)
-        case l@Lookup(_, _, _) => Set(l)
+        case l@Lookup(ev, f, _) =>
+          (lookupsOf(ev) | Feature.lookupsOf(f)) + l
         case ns: NonSource[_] => lookupsOf(ns.previous)
       }
 
@@ -259,6 +296,24 @@ object Hiona {
 
     def const[K, V](v: V): Feature[K, V] =
       Event.empty[(K, Unit)].sum.map(ConstFn(v))
+
+    def sourcesOf[K, V](f: Feature[K, V]): Map[String, Set[Event.Source[_]]] =
+      f match {
+        case Summed(ev, _) => Event.sourcesOf(ev)
+        case Latest(ev) => Event.sourcesOf(ev)
+        case Mapped(f, _) => sourcesOf(f)
+        case Zipped(left, right) =>
+          Monoid[Map[String, Set[Event.Source[_]]]]
+            .combine(sourcesOf(left), sourcesOf(right))
+      }
+
+    def lookupsOf[K, V](f: Feature[K, V]): Set[Event.Lookup[_, _, _]] =
+      f match {
+        case Summed(ev, _) => Event.lookupsOf(ev)
+        case Latest(ev) => Event.lookupsOf(ev)
+        case Mapped(f, _) => lookupsOf(f)
+        case Zipped(l, r) => lookupsOf(l) | lookupsOf(r)
+      }
 
     case class Summed[K, V](event: Event[(K, V)], monoid: Monoid[V]) extends Feature[K, V]
     case class Latest[K, V](event: Event[(K, V)]) extends Feature[K, Option[V]]

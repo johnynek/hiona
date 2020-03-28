@@ -152,11 +152,14 @@ object Feeder {
 
   def fromInputs(paths: Map[String, Path], ev: Event[Any]): Resource[IO, Feeder] = {
     val srcs = Event.sourcesOf(ev)
-    val badSrcs = srcs.filter { case (_, nel) => nel.tail.nonEmpty }
+    val badSrcs = srcs.filter { case (_, nel) => nel.size > 1 }
 
     if (badSrcs.nonEmpty) {
+      val bads = badSrcs.iterator.map(_._2).reduce(_ | _)
+      val badNel = NonEmptyList.fromListUnsafe(bads.toList.sortBy(_.name))
       Resource.liftF(
-        IO.raiseError(DuplicateEventSources(badSrcs.iterator.map(_._2).reduce(_.concatNel(_)))))
+        IO.raiseError(DuplicateEventSources(badNel))
+      )
     }
     else {
       val srcMap: Map[String, Event.Source[_]] =
@@ -181,6 +184,48 @@ object Feeder {
               fromPath(path, srcMap(name), Duration.Zero)
           }
           .flatMap { feeds => Resource.liftF(multiFeeder(feeds)) }
+      }
+    }
+  }
+
+  def fromInputsLabels[A, B](paths: Map[String, Path], ev: LabeledEvent[A, B]): Resource[IO, Feeder] = {
+    val srcs = LabeledEvent.sourcesAndOffsetsOf(ev)
+    val badSrcs = srcs.filter { case (_, (srcs, _)) => srcs.size > 1 }
+
+    if (badSrcs.nonEmpty) {
+      val bads = badSrcs.iterator.map { case (_, (srcs, _)) => srcs }.reduce(_ | _)
+      val badNel = NonEmptyList.fromListUnsafe(bads.toList.sortBy(_.name))
+      Resource.liftF(
+        IO.raiseError(DuplicateEventSources(badNel))
+      )
+    }
+    else {
+      val srcMap: Map[String, Event.Source[_]] =
+        srcs
+          .iterator
+          .map { case (n, (singleton, _)) => (n, singleton.head) }
+          .toMap
+
+      // we need exactly the same names
+
+      val missing = srcMap.keySet -- paths.keySet
+      val extra = paths.keySet -- srcMap.keySet
+      if (missing.nonEmpty || extra.nonEmpty) {
+        Resource.liftF(IO.raiseError(MismatchInputs(missing, extra)))
+      }
+      else {
+        // the keyset is exactly the same:
+        paths
+          .toList
+          .traverse {
+            case (name, path) =>
+              val src = srcMap(name)
+              val offsets = srcs(name)._2.toList.sorted
+              offsets.traverse { offset =>
+                fromPath(path, src, offset)
+              }
+          }
+          .flatMap { feeds => Resource.liftF(multiFeeder(feeds.flatten)) }
       }
     }
   }

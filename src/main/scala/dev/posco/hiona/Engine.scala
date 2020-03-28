@@ -13,47 +13,31 @@ import Hiona._
 
 object Engine {
 
+  private def runEmitter[A: Row](
+    feedRes: Resource[IO, Feeder],
+    emitter: Emitter[A],
+    output: Path)(implicit ctx: ContextShift[IO]): IO[Unit] =
+    Row.writerRes(output)
+      .product(feedRes)
+      .use { case (writer, feeder) =>
+        Emitter.run(feeder, batchSize = 1000, emitter)(writer)
+      }
+
   def run[A: Row](
     inputs: Map[String, Path],
     event: Event[A],
-    output: Path)(implicit ctx: ContextShift[IO]): IO[Unit] = {
+    output: Path)(implicit ctx: ContextShift[IO]): IO[Unit] =
 
-    Emitter.fromEvent(event, Duration.Zero).flatMap { emitter =>
+    Emitter.fromEvent(event)
+      .flatMap(runEmitter(Feeder.fromInputs(inputs, event), _, output))
 
-      val outRes = Row.writerRes(output)
-      val feedRes = Feeder.fromInputs(inputs, event)
+  def runLabeled[A: Row, B: Row](
+    inputs: Map[String, Path],
+    labeled: LabeledEvent[A, B],
+    output: Path)(implicit ctx: ContextShift[IO]): IO[Unit] =
 
-      outRes
-        .product(feedRes)
-        .use { case (writer, feeder) =>
-
-          val batchSize = 1000
-
-          def loop(batch: Seq[Point], seq: Long, out: Iterable[A] => IO[Unit]): IO[Unit] = {
-            if (batch.isEmpty) IO.unit
-            else {
-              val stepWrite =
-                for {
-                  pair <- emitter.feedAll(batch, seq)
-                  (items, nextSeq) = pair
-                  _ <- out(items)
-                } yield nextSeq
-
-              // we can in parallel read the next batch and do this write
-              Parallel.parProduct(feeder.nextBatch(batchSize), stepWrite)
-                .flatMap { case (b, nextSeq) =>
-                  loop(b, nextSeq, out)
-                }
-            }
-          }
-
-          for {
-            batch <- feeder.nextBatch(batchSize)
-            _ <- loop(batch, 0L, writer)
-          } yield ()
-        }
-    }
-  }
+    Emitter.fromLabeledEvent(labeled)
+      .flatMap(runEmitter(Feeder.fromInputsLabels(inputs, labeled), _, output))
 
   sealed abstract class Emitter[+O] {
     // TODO:
@@ -81,31 +65,52 @@ object Engine {
   }
 
   object Emitter {
-    import Impl._
 
-    def fromEvent[A](ev: Event[A], offset: Duration): IO[Emitter[A]] =
-      ev match {
-        case Event.Empty => IO.pure(EmptyEmitter)
-        case src@Event.Source(_, _, _) => IO.pure(SourceEmitter(src, offset))
-        case Event.Concat(left, right) =>
-          (fromEvent(left, offset), fromEvent(right, offset), Ref.of[IO, (Long, List[A])]((Long.MinValue, Nil)))
-            .mapN(ConcatEmitter(_, _, _))
-        case Event.WithTime(ev) =>
-          fromEvent(ev, offset).map(WithTimeEmitter(_))
-        case Event.Mapped(ev, fn) =>
-          fromEvent(ev, offset).map(ConcatMapEmitter(_, MapToConcat(fn)))
-        case f: Event.Filtered[a] =>
-          def go[B1](ev: Event[B1], fn: B1 => Boolean): IO[Emitter[B1]] =
-            fromEvent(ev, offset).map(ConcatMapEmitter(_, FilterToConcat(fn)))
+    def run[A](feeder: Feeder,
+      batchSize: Int,
+      emitter: Emitter[A])(writer: Iterable[A] => IO[Unit])(implicit ctx: ContextShift[IO]): IO[Unit] = {
 
-          go[a](f.previous, f.fn)
-        case Event.ConcatMapped(ev, fn) =>
-          fromEvent(ev, offset).map(ConcatMapEmitter(_, fn))
-        case Event.ValueWithTime(ev) =>
-          fromEvent(ev, offset).map(ValueWithTimeEmitter(_))
-        case Event.Lookup(ev, feat, order) =>
-          (fromEvent(ev, offset), FeatureState.fromFeature(feat, offset))
-            .mapN(LookupEmitter(_, _, order))
+      // TODO: we could set up a pipeline so that we are reading
+      // a batch, working on a batch, and writing a batch all at the same
+      // time, right noow we are only reading and working+writing at the same time
+      def loop(batch: Seq[Point], seq: Long): IO[Unit] = {
+        if (batch.isEmpty) IO.unit
+        else {
+          val stepWrite =
+            for {
+              pair <- emitter.feedAll(batch, seq)
+              (items, nextSeq) = pair
+              _ <- writer(items)
+            } yield nextSeq
+
+          // we can in parallel read the next batch and do this write
+          Parallel.parProduct(feeder.nextBatch(batchSize), stepWrite)
+            .flatMap { case (b, nextSeq) =>
+              loop(b, nextSeq)
+            }
+        }
+      }
+
+      for {
+        batch <- feeder.nextBatch(batchSize)
+        _ <- loop(batch, 0L)
+      } yield ()
+    }
+
+    def fromEvent[A](ev: Event[A]): IO[Emitter[A]] =
+      Impl.fromEvent(ev, Duration.Zero)
+
+    def fromLabeledEvent[K, V](le: LabeledEvent[K, V]): IO[Emitter[(K, V)]] =
+      le match {
+        case LabeledEvent.WithLabel(ev, label) =>
+          (fromEvent(ev), FeatureState.fromLabel(label)).mapN(Impl.LookupEmitter(_, _, LookupOrder.After))
+        case m@LabeledEvent.Mapped(_, _) =>
+          def go[K, V, W](m: LabeledEvent.Mapped[K, V, W]): IO[Emitter[(K, W)]] =
+            fromLabeledEvent(m.labeled).map(Impl.ConcatMapEmitter(_, Impl.MapToConcat(Event.MapValuesFn[K, V, W](m.fn))))
+
+          go(m)
+        case LabeledEvent.Filtered(ev, fn) =>
+          fromLabeledEvent(ev).map(Impl.ConcatMapEmitter(_, Impl.FilterToConcat(Impl.Fn2To1(fn))))
       }
   }
 
@@ -144,19 +149,51 @@ object Engine {
   }
 
   object FeatureState {
-    import Impl._
+    def fromFeature[K, V](f: Feature[K, V]): IO[FeatureState[K, V]] =
+      Impl.fromFeature(f, Duration.Zero)
+
+    def fromLabel[K, V](l: Label[K, V]): IO[FeatureState[K, V]] =
+      Impl.fromLabel(l, Duration.Zero)
+  }
+
+
+  private object Impl {
+    def fromEvent[A](ev: Event[A], offset: Duration): IO[Emitter[A]] =
+      ev match {
+        case Event.Empty => IO.pure(EmptyEmitter)
+        case src@Event.Source(_, _, _) => IO.pure(SourceEmitter(src, offset))
+        case Event.Concat(left, right) =>
+          (fromEvent(left, offset), fromEvent(right, offset), Ref.of[IO, (Long, List[A])]((Long.MinValue, Nil)))
+            .mapN(ConcatEmitter(_, _, _))
+        case Event.WithTime(ev) =>
+          fromEvent(ev, offset).map(WithTimeEmitter(_))
+        case Event.Mapped(ev, fn) =>
+          fromEvent(ev, offset).map(ConcatMapEmitter(_, MapToConcat(fn)))
+        case f: Event.Filtered[a] =>
+          def go[B1](ev: Event[B1], fn: B1 => Boolean): IO[Emitter[B1]] =
+            fromEvent(ev, offset).map(ConcatMapEmitter(_, FilterToConcat(fn)))
+
+          go[a](f.previous, f.fn)
+        case Event.ConcatMapped(ev, fn) =>
+          fromEvent(ev, offset).map(ConcatMapEmitter(_, fn))
+        case Event.ValueWithTime(ev) =>
+          fromEvent(ev, offset).map(ValueWithTimeEmitter(_))
+        case Event.Lookup(ev, feat, order) =>
+          (fromEvent(ev, offset), fromFeature(feat, offset))
+            .mapN(LookupEmitter(_, _, order))
+      }
 
     def fromFeature[K, V](f: Feature[K, V], offset: Duration): IO[FeatureState[K, V]] =
       f match {
         case Feature.Summed(ev, monoid) =>
-          (Emitter.fromEvent(ev, offset),
+          (fromEvent(ev, offset),
             Ref.of[IO, (Long, Map[K, V], Map[K, V])](
               (Long.MinValue, Map.empty, Map.empty)))
             .mapN(SummedFS(_, _, monoid))
 
         case f@Feature.Latest(_) =>
           def go[B](l: Feature.Latest[K, B]): IO[FeatureState[K, Option[B]]] =
-            (Emitter.fromEvent(l.event, offset),
+            (fromEvent(l.event, offset),
               Ref.of[IO, (Long, Map[K, B], Map[K, B])](
                 (Long.MinValue, Map.empty, Map.empty)))
               .mapN(LatestFS[K, B](_, _))
@@ -167,16 +204,28 @@ object Engine {
         case Feature.Zipped(left, right) =>
           (fromFeature(left, offset), fromFeature(right, offset)).mapN(ZippedFS(_, _))
       }
-  }
 
+    def fromLabel[K, V](l: Label[K, V], offset: Duration): IO[FeatureState[K, V]] =
+      l match {
+        case Label.FromFeature(f) => fromFeature(f, offset)
+        case Label.LookForward(l, offset1) =>
+          fromLabel(l, offset + offset1)
+        case Label.Mapped(feat, fn) =>
+          fromLabel(feat, offset).map(MappedFS(_, fn))
+        case Label.Zipped(left, right) =>
+          (fromLabel(left, offset), fromLabel(right, offset)).mapN(ZippedFS(_, _))
+      }
 
-  private object Impl {
     case class MapToConcat[A, B](fn: A => B) extends Function1[A, Iterable[B]] {
       def apply(a: A): Iterable[B] = fn(a) :: Nil
     }
 
     case class FilterToConcat[A](fn: A => Boolean) extends Function1[A, Iterable[A]] {
       def apply(a: A): Iterable[A] = if (fn(a)) a :: Nil else Nil
+    }
+
+    case class Fn2To1[A, B, C](fn: (A, B) => C) extends Function1[(A, B), C] {
+      def apply(ab: (A, B)) = fn(ab._1, ab._2)
     }
 
     case object EmptyEmitter extends Emitter[Nothing] {

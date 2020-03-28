@@ -1,6 +1,6 @@
 package dev.posco.hiona
 
-import Hiona.{Event, Feature, Validator, Timestamp}
+import Hiona.{Duration, Event, Feature, Validator, Timestamp}
 
 object Example {
   // rows like
@@ -54,15 +54,24 @@ object Example {
       }
       .max
 
-  def highestPriceSoFar(sd: Event[StockData]): Event[Highest] =
+  def highestPriceSoFar(sd: Event[StockData]): Event[(String, BigDecimal)] =
     sd
       .withTime
       .map { case (sd, ts) => (sd.symbol, (ts, sd)) }
       .lookupAfter(highPrice)
       .map { case (symbol, ((ts, sd), high)) =>
         val v = high.getOrElse(sd.high)
-        Highest(ts, symbol, v)
+        (symbol, v)
       }
+
+  val highBarPrice: Feature[String, Option[BigDecimal]] =
+    hkStockData.map { case sd => (sd.symbol, sd.high) }.latest(Duration.Infinite)
+
+  val priceIn10Min: Label[String, Option[BigDecimal]] =
+    Label(highBarPrice).lookForward(Duration.min(10))
+
+  val predict10Min =
+    LabeledEvent(highestPriceSoFar(hkStockData), priceIn10Min)
 }
 
-object ExampleApp extends App(Example.highestPriceSoFar(Example.hkStockData))
+object ExampleApp extends LabeledApp(Example.predict10Min)

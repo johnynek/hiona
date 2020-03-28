@@ -16,7 +16,25 @@ abstract class App[A: Row](results: Event[A]) extends IOApp {
   override def run(args: List[String]): IO[ExitCode] =
     IO.suspend {
       App.command.parse(args) match {
-        case Right(cmd) => cmd.run(row, results)
+        case Right(cmd) => cmd.run(App.Args.EventArgs(row, results))
+        case Left(err) =>
+          IO {
+            System.err.println(err)
+            ExitCode.Error
+          }
+      }
+    }
+}
+
+abstract class LabeledApp[K: Row, V: Row](results: LabeledEvent[K, V]) extends IOApp {
+
+  private val key: Row[K] = implicitly[Row[K]]
+  private val value: Row[V] = implicitly[Row[V]]
+
+  override def run(args: List[String]): IO[ExitCode] =
+    IO.suspend {
+      App.command.parse(args) match {
+        case Right(cmd) => cmd.run(App.Args.LabeledArgs(key, value, results))
         case Left(err) =>
           IO {
             System.err.println(err)
@@ -27,6 +45,12 @@ abstract class App[A: Row](results: Event[A]) extends IOApp {
 }
 
 object App {
+
+  sealed abstract class Args
+  object Args {
+    case class EventArgs[A](row: Row[A], event: Event[A]) extends Args
+    case class LabeledArgs[K, V](keyRow: Row[K], valueRow: Row[V], labeled: LabeledEvent[K, V]) extends Args
+  }
 
   implicit def named[A: Argument]: Argument[(String, A)] =
     new Argument[(String, A)] {
@@ -44,15 +68,21 @@ object App {
     }
 
   sealed abstract class Cmd {
-    def run[A](r: Row[A], event: Event[A])(implicit ctx: ContextShift[IO]): IO[ExitCode]
+    def run(args: Args)(implicit ctx: ContextShift[IO]): IO[ExitCode]
   }
 
   case class RunCmd(inputs: List[(String, Path)], output: Path) extends Cmd {
     val dupNames = inputs.groupBy(_._1).filter { case (_, res) => res.lengthCompare(1) > 0 }
 
-    def run[A](r: Row[A], event: Event[A])(implicit ctx: ContextShift[IO]): IO[ExitCode] =
+    def run(args: Args)(implicit ctx: ContextShift[IO]): IO[ExitCode] =
       if (dupNames.isEmpty) {
-        Engine.run(inputs.toMap, event, output)(r, ctx).map(_ => ExitCode.Success)
+        val io = args match {
+          case Args.EventArgs(r, event) =>
+            Engine.run(inputs.toMap, event, output)(r, ctx)
+          case Args.LabeledArgs(k, v, l) =>
+            Engine.runLabeled(inputs.toMap, l, output)(k, v, ctx)
+        }
+        io.map(_ => ExitCode.Success)
       }
       else {
         // this is an error
@@ -73,11 +103,17 @@ object App {
 
 
   case object ShowCmd extends Cmd {
-    def run[A](r: Row[A], event: Event[A])(implicit ctx: ContextShift[IO]): IO[ExitCode] = {
-      val srcs = Event.sourcesOf(event)
-      val lookups = Event.lookupsOf(event)
+    def run(args: Args)(implicit ctx: ContextShift[IO]): IO[ExitCode] = {
+      val (srcs, lookups) =
+        args match {
+          case Args.EventArgs(_, event) =>
+            (Event.sourcesOf(event).keys, Event.lookupsOf(event))
+          case Args.LabeledArgs(_, _, lab) =>
+            (LabeledEvent.sourcesAndOffsetsOf(lab).keys,
+              LabeledEvent.lookupsOf(lab))
+        }
       IO {
-        val names = srcs.toList.sortBy(_._1).map { case (nm, _) => nm }.mkString("", ", ", "")
+        val names = srcs.toList.sorted.mkString("", ", ", "")
         println(s"sources: $names")
 
         println(s"lookups: ${lookups.size}")
