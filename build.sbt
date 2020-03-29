@@ -8,8 +8,11 @@ ThisBuild / organizationName := "example"
 lazy val root = (project in file("."))
   .settings(
     name := "hiona",
+    testFrameworks += new TestFramework("munit.Framework"),
     libraryDependencies ++= Seq(
-      scalaTest % Test,
+      munit % Test,
+      munitScalaCheck % Test,
+      scalaCheck % Test,
       cats,
       catsEffect,
       delimited,

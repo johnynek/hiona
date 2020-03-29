@@ -1,6 +1,6 @@
 package dev.posco.hiona
 
-import Hiona.{Duration, Event, Feature, Validator, Timestamp}
+import Hiona.{Event, Feature, Validator}
 
 object Example {
   // rows like

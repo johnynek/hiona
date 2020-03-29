@@ -7,7 +7,7 @@ import java.nio.file.Path
 import java.util.{Comparator, PriorityQueue}
 import net.tixxit.delimited.{DelimitedError, DelimitedParser, DelimitedFormat, Row => DRow}
 
-import Hiona.{Duration, Event, Timestamp, Validator}
+import Hiona.{Event, Validator}
 
 import cats.implicits._
 
@@ -100,7 +100,7 @@ object Feeder {
       def compare(left: (Point, Feeder), right: (Point, Feeder)) = {
         val lpoint = left._1
         val rpoint = right._1
-        val res = Duration.compareDiff(lpoint.ts, lpoint.offset, rpoint.ts, rpoint.offset)
+        val res = Timestamp.compareDiff(lpoint.ts, lpoint.offset, rpoint.ts, rpoint.offset)
         if (res == 0) lpoint.name.compare(rpoint.name)
         else res
       }
