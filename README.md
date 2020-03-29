@@ -6,7 +6,7 @@ Install a jdk and sbt:
 e.g. on OSX with homebrew:
 
 ```
-brew cask install adoptopenjdk8
+brew install homebrew/cask/java
 brew install sbt
 ```
 
