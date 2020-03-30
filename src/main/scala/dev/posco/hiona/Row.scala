@@ -12,7 +12,7 @@ sealed trait Row[A] {
   def columns: Int
   def writeToStrings(a: A, offset: Int, dest: Array[String]): Unit
   // may throw an Error
-  def unsafeFromStrings(offset: Int, s: IndexedSeq[String]): A
+  def unsafeFromStrings(offset: Int, s: DRow): A
 }
 
 object Row extends Priority1Rows {
@@ -32,7 +32,7 @@ object Row extends Priority1Rows {
   implicit case object UnitRow extends Row[Unit] {
     def columns = 0
     def writeToStrings(a: Unit, offset: Int, dest: Array[String]) = ()
-    def unsafeFromStrings(offset: Int, s: IndexedSeq[String]) = ()
+    def unsafeFromStrings(offset: Int, s: DRow) = ()
   }
 
   // a row we don't care about
@@ -42,7 +42,7 @@ object Row extends Priority1Rows {
   implicit case object DummyRow extends Row[Dummy] {
     def columns = 1
     def writeToStrings(a: Dummy, offset: Int, dest: Array[String]) = ()
-    def unsafeFromStrings(offset: Int, s: IndexedSeq[String]) = Dummy
+    def unsafeFromStrings(offset: Int, s: DRow) = Dummy
   }
 
   implicit case object StringRow extends Row[String] {
@@ -50,7 +50,7 @@ object Row extends Priority1Rows {
     def writeToStrings(a: String, offset: Int, dest: Array[String]) = {
       dest(offset) = a
     }
-    def unsafeFromStrings(offset: Int, s: IndexedSeq[String]): String =
+    def unsafeFromStrings(offset: Int, s: DRow): String =
       s(offset)
   }
 
@@ -65,7 +65,7 @@ object Row extends Priority1Rows {
       dest(offset) = toString(a)
     }
 
-    def unsafeFromStrings(offset: Int, s: IndexedSeq[String]): A =
+    def unsafeFromStrings(offset: Int, s: DRow): A =
       try fromString(s(offset))
       catch {
         case (_: NumberFormatException) => throw DecodeFailure(offset, s(offset), msg)
@@ -114,7 +114,7 @@ object Row extends Priority1Rows {
     def writeToStrings(a: Boolean, offset: Int, dest: Array[String]) = {
       dest(offset) = a.toString
     }
-    def unsafeFromStrings(offset: Int, s: IndexedSeq[String]): Boolean = {
+    def unsafeFromStrings(offset: Int, s: DRow): Boolean = {
       val str = s(offset)
       if (str == "true" || str == "TRUE" || str == "True") true
       else if (str == "false" || str == "FALSE" || str == "False") false
@@ -132,7 +132,7 @@ object Row extends Priority1Rows {
         else ()
 
       // may throw an Error
-      def unsafeFromStrings(offset: Int, s: IndexedSeq[String]): Option[A] = {
+      def unsafeFromStrings(offset: Int, s: DRow): Option[A] = {
         // if all these are empty, we have None, else we decode
         var empty = true
         var idx = 0
@@ -193,7 +193,7 @@ sealed trait Priority1Rows {
   implicit case object HNilRow extends Row[HNil] {
     def columns = 0
     def writeToStrings(a: HNil, offset: Int, dest: Array[String]) = ()
-    def unsafeFromStrings(offset: Int, s: IndexedSeq[String]) = HNil
+    def unsafeFromStrings(offset: Int, s: DRow) = HNil
   }
 
   case class HConsRow[A, B <: HList](rowA: Row[A], rowB: Row[B]) extends Row[A :: B] {
@@ -203,7 +203,7 @@ sealed trait Priority1Rows {
       rowA.writeToStrings(a, offset, dest)
       rowB.writeToStrings(b, offset + rowA.columns, dest)
     }
-    def unsafeFromStrings(offset: Int, s: IndexedSeq[String]): A :: B = {
+    def unsafeFromStrings(offset: Int, s: DRow): A :: B = {
       val a = rowA.unsafeFromStrings(offset, s)
       val b = rowB.unsafeFromStrings(offset + rowA.columns, s)
       a :: b
@@ -218,7 +218,7 @@ sealed trait Priority1Rows {
     def writeToStrings(a: A, offset: Int, dest: Array[String]) = {
       rowB.writeToStrings(gen.to(a), offset, dest)
     }
-    def unsafeFromStrings(offset: Int, s: IndexedSeq[String]): A =
+    def unsafeFromStrings(offset: Int, s: DRow): A =
       gen.from(rowB.unsafeFromStrings(offset, s))
   }
 
