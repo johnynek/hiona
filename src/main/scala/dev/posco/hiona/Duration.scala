@@ -6,6 +6,9 @@ sealed abstract class Duration(val isInfinite: Boolean) {
 }
 object Duration {
 
+  def apply(ms: Long): Duration =
+    Finite(ms)
+
   case object Infinite extends Duration(true) {
     def +(that: Duration): Duration = this
 

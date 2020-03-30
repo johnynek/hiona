@@ -58,7 +58,7 @@ object Feeder {
     extraPaths: Set[String]) extends Error(s"mismatch inputs: missing=$missingPaths, extra = $extraPaths")
 
   private case class IteratorFeeder[A](event: Event.Source[A], offset: Duration, iter: Iterator[Either[DelimitedError, DRow]]) extends Feeder {
-    protected def unsafeNext(): Point = {
+    protected def unsafeNext(): Point =
       if (iter.hasNext) {
         iter.next() match {
           case Right(drow) =>
@@ -72,7 +72,18 @@ object Feeder {
         }
       }
       else null
-    }
+  }
+
+  private case class DecodedIteratorFeeder[A](event: Event.Source[A], offset: Duration, iter: Iterator[A]) extends Feeder {
+    protected def unsafeNext(): Point =
+      if (iter.hasNext) {
+        val a = iter.next()
+        event.validator.validate(a) match {
+          case Right(ts) => Point.Sourced(event, a, ts, offset)
+          case Left(err) => throw err
+        }
+      }
+      else null
   }
 
   private case class MultiPointFeeder(
@@ -149,6 +160,10 @@ object Feeder {
       })
     }
   }
+
+  def iterableFeeder[A](src: Event.Source[A], offset: Duration, items: Iterable[A]): IO[Feeder] =
+    // accessing a mutable value must be done inside IO
+    IO(DecodedIteratorFeeder(src, offset, items.iterator))
 
   def fromInputs(paths: Map[String, Path], ev: Event[Any]): Resource[IO, Feeder] = {
     val srcs = Event.sourcesOf(ev)

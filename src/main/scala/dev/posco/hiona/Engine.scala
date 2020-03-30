@@ -40,6 +40,7 @@ object Engine {
       .flatMap(runEmitter(Feeder.fromInputsLabels(inputs, labeled), _, output))
 
   sealed abstract class Emitter[+O] {
+    def consumes: Set[(String, Duration)]
     // TODO:
     // we can index nodes in a graph by some arbitrary order, so we
     // have a 1:1 mapping of Int to Event[_]. Then we can index sources
@@ -97,6 +98,28 @@ object Engine {
       } yield ()
     }
 
+    // A writer useful for testing
+    def listWriter[A]: IO[(Iterable[A] => IO[Unit], IO[List[A]])] =
+      Ref.of[IO, List[A]](Nil)
+        .map { case ref =>
+          val write = { (it: Iterable[A]) =>
+            ref.update { lst => it.foldLeft(lst) { (tail, head) => head :: tail } }
+          }
+
+          val read = ref.get.map(_.reverse)
+
+          (write, read)
+        }
+
+    def runToList[A](feeder: Feeder,
+      batchSize: Int,
+      emitter: Emitter[A])(implicit ctx: ContextShift[IO]): IO[List[A]] =
+
+      listWriter[A].flatMap { case (write, read) =>
+        run(feeder, batchSize, emitter)(write)
+          .flatMap(_ => read)
+      }
+
     def fromEvent[A](ev: Event[A]): IO[Emitter[A]] =
       Impl.fromEvent(ev, Duration.Zero)
 
@@ -144,6 +167,7 @@ object Engine {
   }
 
   sealed abstract class FeatureState[K, V] {
+    def consumes: Set[(String, Duration)]
     // consume these events and return the full state before and after these events
     def feed(point: Point, seq: Long): IO[(Reader[K, V], Reader[K, V])]
   }
@@ -228,18 +252,20 @@ object Engine {
       def apply(ab: (A, B)) = fn(ab._1, ab._2)
     }
 
+    val ioNil: IO[List[Nothing]] = IO.pure(Nil)
+
     case object EmptyEmitter extends Emitter[Nothing] {
-      val ioNil: IO[List[Nothing]] = IO.pure(Nil)
+      val consumes: Set[(String, Duration)] = Set.empty
 
       def feed(point: Point, seq: Long): IO[List[Nothing]] =
         ioNil
     }
 
     case class SourceEmitter[A](ev: Event.Source[A], offset: Duration) extends Emitter[A] {
-      val ioNil: IO[List[A]] = IO.pure(Nil)
+      val consumes = Set((ev.name, offset))
 
       def feed(point: Point, seq: Long): IO[List[A]] =
-        if (point.name == ev.name && point.offset == offset) {
+        if (point.offset == offset && point.name == ev.name) {
           // Assume previous checks means I == A
           val Point.Sourced(_, item, _, _) = point
           IO(item.asInstanceOf[A] :: Nil)
@@ -248,9 +274,14 @@ object Engine {
     }
 
     case class ConcatEmitter[A](left: Emitter[A], right: Emitter[A], ref: Ref[IO, (Long, List[A])]) extends Emitter[A] {
+      val consumes = left.consumes | right.consumes
 
       def feed(point: Point, seq: Long): IO[List[A]] = {
-        val run = (left.feed(point, seq), right.feed(point, seq)).mapN(_ ::: _)
+        val nmOff = (point.name, point.offset)
+        val leftRes = if (left.consumes(nmOff)) left.feed(point, seq) else ioNil
+        val rightRes = if (right.consumes(nmOff)) right.feed(point, seq) else ioNil
+
+        val run = (leftRes, rightRes).mapN(_ ::: _)
 
         for {
           ((seq0, as), set) <-ref.access
@@ -260,24 +291,32 @@ object Engine {
     }
 
     case class WithTimeEmitter[A](prev: Emitter[A]) extends Emitter[(A, Timestamp)] {
+      def consumes = prev.consumes
+
       def feed(point: Point, seq: Long): IO[List[(A, Timestamp)]] =
         prev.feed(point, seq).map(_.map { a => (a, point.ts) })
     }
 
     case class ValueWithTimeEmitter[A, B](prev: Emitter[(A, B)]) extends Emitter[(A, (B, Timestamp))] {
+      def consumes = prev.consumes
       def feed(point: Point, seq: Long): IO[List[(A, (B, Timestamp))]] =
         prev.feed(point, seq).map(_.map { case (a, b) => (a, (b, point.ts)) })
     }
 
     case class ConcatMapEmitter[A, B](prev: Emitter[A], fn: A => Iterable[B]) extends Emitter[B] {
+      def consumes = prev.consumes
       // we could cache here, but maybe not needed
       def feed(point: Point, seq: Long): IO[List[B]] =
         prev.feed(point, seq).map(_.flatMap(fn))
     }
 
     case class LookupEmitter[K, V, W](ev: Emitter[(K, V)], fs: FeatureState[K, W], order: LookupOrder) extends Emitter[(K, (V, W))] {
-      def feed(point: Point, seq: Long): IO[List[(K, (V, W))]] =
-        (ev.feed(point, seq), fs.feed(point, seq))
+      val consumes = ev.consumes | fs.consumes
+
+      def feed(point: Point, seq: Long): IO[List[(K, (V, W))]] = {
+        val nameOff = (point.name, point.offset)
+        val evRes = if (ev.consumes(nameOff)) ev.feed(point, seq) else ioNil
+        (evRes, fs.feed(point, seq))
           .mapN { case (evs, (before, after)) =>
             val reader = if (order.isBefore) before else after
 
@@ -285,6 +324,7 @@ object Engine {
               (k, (v, reader(k)))
             }
           }
+      }
     }
 
     case class SummedFS[K, V](
@@ -293,6 +333,7 @@ object Engine {
       monoid: Monoid[V]) extends FeatureState[K, V] {
 
       private val empty = monoid.empty
+      def consumes = emitter.consumes
 
       def feed(point: Point, seq: Long) =
         state
@@ -300,7 +341,8 @@ object Engine {
           .flatMap { case ((seq0, before, after), set) =>
             if (seq0 < seq) {
               // we need to process this
-              emitter.feed(point, seq)
+              val emitRes = if (emitter.consumes((point.name, point.offset))) emitter.feed(point, seq) else ioNil
+              emitRes
                 .flatMap { kvs =>
                   val after1 = kvs.foldLeft(after) { case (state, (k, v)) =>
                     state.get(k) match {
@@ -330,13 +372,15 @@ object Engine {
     case class LatestFS[K, V](
       emitter: Emitter[(K, V)],
       state: Ref[IO, (Long, Map[K, V], Map[K, V])]) extends FeatureState[K, Option[V]] {
+      def consumes = emitter.consumes
       def feed(point: Point, seq: Long) =
         state
           .access
           .flatMap { case ((seq0, before, after), set) =>
             if (seq0 < seq) {
               // we need to process this
-              emitter.feed(point, seq)
+              val emitRes = if (emitter.consumes((point.name, point.offset))) emitter.feed(point, seq) else ioNil
+              emitRes
                 .flatMap { kvs =>
                   val after1 = after ++ kvs
 
@@ -358,6 +402,7 @@ object Engine {
     }
 
     case class MappedFS[K, V, W](fs: FeatureState[K, V], fn: (K, V) => W) extends FeatureState[K, W] {
+      def consumes = fs.consumes
       def feed(point: Point, seq: Long) =
         fs.feed(point, seq)
           .map { case (before, after) =>
@@ -365,6 +410,8 @@ object Engine {
           }
     }
     case class ZippedFS[K, V, W](left: FeatureState[K, V], right: FeatureState[K, W]) extends FeatureState[K, (V, W)] {
+      val consumes = left.consumes | right.consumes
+
       def feed(point: Point, seq: Long) =
         (left.feed(point, seq), right.feed(point, seq))
           .mapN { case ((bv, av), (bw, aw)) =>

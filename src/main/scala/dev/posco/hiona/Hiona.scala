@@ -47,7 +47,7 @@ object Hiona {
       def previous: Event[Prior]
     }
 
-    def source[A: Row](name: String, validator: Validator[A]): Event[A] =
+    def source[A: Row](name: String, validator: Validator[A]): Event.Source[A] =
       Source(name, implicitly[Row[A]], validator)
 
     def empty[A]: Event[A] = Empty
