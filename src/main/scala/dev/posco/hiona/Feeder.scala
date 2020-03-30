@@ -7,8 +7,6 @@ import java.nio.file.Path
 import java.util.{Comparator, PriorityQueue}
 import net.tixxit.delimited.{DelimitedError, DelimitedParser, DelimitedFormat, Row => DRow}
 
-import Hiona.{Event, Validator}
-
 import cats.implicits._
 
 sealed abstract class Point {

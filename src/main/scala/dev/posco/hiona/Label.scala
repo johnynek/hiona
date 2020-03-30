@@ -1,7 +1,6 @@
 package dev.posco.hiona
 
 import cats.Monoid
-import Hiona.{Event, Feature}
 
 import cats.implicits._
 

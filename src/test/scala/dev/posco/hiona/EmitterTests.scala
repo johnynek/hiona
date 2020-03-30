@@ -1,7 +1,6 @@
 package dev.posco.hiona
 
 import cats.effect.{ContextShift, IO}
-import Hiona._
 
 import cats.implicits._
 

@@ -5,8 +5,6 @@ import cats.effect.{ContextShift, IO, IOApp, ExitCode}
 import com.monovore.decline.{Argument, Opts, Command}
 import java.nio.file.Path
 
-import Hiona.Event
-
 import cats.implicits._
 
 abstract class App[A: Row](results: Event[A]) extends IOApp {
