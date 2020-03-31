@@ -9,8 +9,11 @@ import java.nio.file.Path
 
 import cats.implicits._
 
-import Hiona._
-
+/**
+ * This is a collection of tools to run Events and LabeledEvents into
+ * a List of values, and some helper functions to make it easy
+ * to write those events out
+ */
 object Engine {
 
   private def runEmitter[A: Row](
@@ -39,7 +42,19 @@ object Engine {
     Emitter.fromLabeledEvent(labeled)
       .flatMap(runEmitter(Feeder.fromInputsLabels(inputs, labeled), _, output))
 
+  /**
+   * An emitter is a something that can process an input event,
+   * from any of the Event.Sources, and spit out 0 or more events
+   * in response. These will typically be written out to a file
+   * or stored in some way, but that is out of scope
+   * for an Emitter.
+   */
   sealed abstract class Emitter[+O] {
+    /**
+     * This is the list of source names and Duration offsets this
+     * emitter cares about. As an optimization, we can just ignore
+     * any event from a source/offset not in this set.
+     */
     def consumes: Set[(String, Duration)]
     // TODO:
     // we can index nodes in a graph by some arbitrary order, so we
@@ -71,30 +86,23 @@ object Engine {
       batchSize: Int,
       emitter: Emitter[A])(writer: Iterable[A] => IO[Unit])(implicit ctx: ContextShift[IO]): IO[Unit] = {
 
-      // TODO: we could set up a pipeline so that we are reading
-      // a batch, working on a batch, and writing a batch all at the same
-      // time, right noow we are only reading and working+writing at the same time
-      def loop(batch: Seq[Point], seq: Long): IO[Unit] = {
-        if (batch.isEmpty) IO.unit
+      def loop(batch: Seq[Point], seq: Long, writes: Option[Iterable[A]]): IO[Unit] = {
+        val wRes = writes.fold(IO.unit)(writer)
+        if (batch.isEmpty) wRes
         else {
-          val stepWrite =
-            for {
-              pair <- emitter.feedAll(batch, seq)
-              (items, nextSeq) = pair
-              _ <- writer(items)
-            } yield nextSeq
-
           // we can in parallel read the next batch and do this write
-          Parallel.parProduct(feeder.nextBatch(batchSize), stepWrite)
-            .flatMap { case (b, nextSeq) =>
-              loop(b, nextSeq)
+          Parallel.parProduct(
+            Parallel.parProduct(feeder.nextBatch(batchSize), emitter.feedAll(batch, seq)),
+            wRes)
+            .flatMap { case ((b, (items, nextSeq)), _) =>
+              loop(b, nextSeq, Some(items))
             }
         }
       }
 
       for {
         batch <- feeder.nextBatch(batchSize)
-        _ <- loop(batch, 0L)
+        _ <- loop(batch, 0L, None)
       } yield ()
     }
 

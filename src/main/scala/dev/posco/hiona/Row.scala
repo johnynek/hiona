@@ -7,11 +7,19 @@ import net.tixxit.delimited.{ DelimitedFormat, Row => DRow}
 
 import shapeless._
 
-// read/write CSV/TSV
+/**
+ * This is the typeclass-pattern which gives a serializer/deserializer for a type A
+ * into and out of an Array[Strings]. This will be encoded into a CSV (or potentially TSV if we
+ * needed, but that is currently not implemented)
+ */
 sealed trait Row[A] {
+  // how many columns do we need to write A out
   def columns: Int
+  // this writes A into an Array starting at a given offset
   def writeToStrings(a: A, offset: Int, dest: Array[String]): Unit
-  // may throw an Error
+  // read A from a net.tixxit.delimited.Row (which is a wrapper for Array[String].
+  // this may throw an exception, and should only be done inside a Try/IO call to
+  // catch those exceptions.
   def unsafeFromStrings(offset: Int, s: DRow): A
 }
 
@@ -122,6 +130,12 @@ object Row extends Priority1Rows {
     }
   }
 
+  /**
+   * Optional data must not be empty to begin with. That is true for numbers and booleans
+   * we could also support tuples/case-classes if needed, but currently that does not
+   * work, only Option[Int], Option[Long], ... will work (notably, Option[String] won't work
+   * since we can't tell Some("") from None).
+   */
   implicit def optionRow[A](implicit rowA: NonEmptyRow[A]): Row[Option[A]] =
     new Row[Option[A]] {
       val columns: Int = rowA.columns
@@ -146,6 +160,10 @@ object Row extends Priority1Rows {
       }
     }
 
+  /**
+   * Helper function to make a Resource for a PrintWriter. The Resource
+   * will close the PrintWriter when done.
+   */
   def fileWriter(path: Path): Resource[IO, PrintWriter] =
     Resource.make(IO {
       val fw = new FileWriter(path.toFile)
@@ -153,6 +171,9 @@ object Row extends Priority1Rows {
       new PrintWriter(bw)
     }) { pw => IO(pw.close()) }
 
+  /**
+   * Make a Resource for a function that can write out items into a given path
+   */
   def writerRes[A: Row](path: Path): Resource[IO, Iterable[A] => IO[Unit]] =
     fileWriter(path)
       .flatMap { pw =>
@@ -169,9 +190,9 @@ object Row extends Priority1Rows {
       val buffer = new Array[String](row.columns)
 
       { (items: Iterable[A]) =>
-        val iter = items.iterator
 
         IO {
+          val iter = items.iterator
           while (iter.hasNext) {
             val a = iter.next()
             row.writeToStrings(a, 0, buffer)
@@ -189,6 +210,11 @@ object Row extends Priority1Rows {
   }
 }
 
+/**
+ * This is using the fact that scala prefers implicit values in the direct class to superclasses
+ * to prioritize which implicits we choose. Here we want to make instances of Row for genericRow and the hlist
+ * (heterogenous lists, which are basically tuples that can be any size).
+ */
 sealed trait Priority1Rows {
   implicit case object HNilRow extends Row[HNil] {
     def columns = 0
@@ -222,6 +248,9 @@ sealed trait Priority1Rows {
       gen.from(rowB.unsafeFromStrings(offset, s))
   }
 
+  // A Generic is provided by shapeless, and it can give a conversion from
+  // case classes into HLists so this is what allows us to use case classes
+  // for inputs and outputs.
   implicit def genericRow[A, B](implicit gen: Generic.Aux[A, B], rowB: Row[B]): Row[A] =
     GenRow(gen, rowB)
 }
