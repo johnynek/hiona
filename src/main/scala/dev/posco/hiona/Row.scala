@@ -8,6 +8,71 @@ import net.tixxit.delimited.{ DelimitedFormat, Row => DRow}
 import shapeless._
 
 /**
+ * typeclass for value A that are not allowed to have all empty strings
+ * as values, and an efficient check to see if we are in the empty case
+ * This exists to support optional values
+ */
+sealed trait NonEmptyRow[A] {
+  def columns: Int
+  def isMissing(offset: Int, s: DRow): Boolean
+}
+
+object NonEmptyRow extends Priority1NonEmptyRow {
+  case class SingleNonEmpty[A]() extends  NonEmptyRow[A] {
+    def columns = 1
+    def isMissing(offset: Int, s: DRow) = s(offset).isEmpty
+  }
+
+  implicit val boolNER: NonEmptyRow[Boolean] = SingleNonEmpty()
+  implicit val intNER: NonEmptyRow[Int] = SingleNonEmpty()
+  implicit val longNER: NonEmptyRow[Long] = SingleNonEmpty()
+  implicit val floatNER: NonEmptyRow[Float] = SingleNonEmpty()
+  implicit val doubleNER: NonEmptyRow[Double] = SingleNonEmpty()
+  implicit val bigDecimalNER: NonEmptyRow[BigDecimal] = SingleNonEmpty()
+
+  case class HConsHead[A, B <: HList](rowA: NonEmptyRow[A], rowB: Row[B]) extends NonEmptyRow[A :: B] {
+    val columns = rowA.columns + rowB.columns
+    def isMissing(offset: Int, s: DRow): Boolean =
+      rowA.isMissing(offset, s)
+  }
+
+  case class HConsTail[A, B <: HList](rowA: Row[A], rowB: NonEmptyRow[B]) extends NonEmptyRow[A :: B] {
+    val columns = rowA.columns + rowB.columns
+    def isMissing(offset: Int, s: DRow): Boolean =
+      rowB.isMissing(offset + rowA.columns, s)
+  }
+
+  case class HConsBoth[A, B <: HList](rowA: NonEmptyRow[A], rowB: NonEmptyRow[B]) extends NonEmptyRow[A :: B] {
+    val columns = rowA.columns + rowB.columns
+    def isMissing(offset: Int, s: DRow): Boolean =
+      rowA.isMissing(offset, s) || rowB.isMissing(offset + rowA.columns, s)
+  }
+}
+
+sealed trait Priority1NonEmptyRow extends Priority2NonEmptyRow {
+  // prefer to make a both instance if we can
+  implicit def hconsBothNonEmpty[A, B <: HList](implicit rowA: NonEmptyRow[A], rowB: NonEmptyRow[B]): NonEmptyRow[A :: B] =
+    NonEmptyRow.HConsBoth(rowA, rowB)
+
+
+  // A Generic is provided by shapeless, and it can give a conversion from
+  // case classes into HLists so this is what allows us to use case classes
+  // for inputs and outputs.
+  implicit def genericNonEmpty[A, B](implicit gen: Generic.Aux[A, B], rowB: NonEmptyRow[B]): NonEmptyRow[A] =
+    // NonEmptyRow never actually works with A or B, so the cast is safe:
+    rowB.asInstanceOf[NonEmptyRow[A]]
+}
+
+sealed trait Priority2NonEmptyRow {
+  // both aren't non-empty, head or tail may be
+  implicit def hconsHeadNonEmpty[A, B <: HList](implicit rowA: NonEmptyRow[A], rowB: Row[B]): NonEmptyRow[A :: B] =
+    NonEmptyRow.HConsHead(rowA, rowB)
+
+  implicit def hconsTailNonEmpty[A, B <: HList](implicit rowA: Row[A], rowB: NonEmptyRow[B]): NonEmptyRow[A :: B] =
+    NonEmptyRow.HConsTail(rowA, rowB)
+}
+
+/**
  * This is the typeclass-pattern which gives a serializer/deserializer for a type A
  * into and out of an Array[Strings]. This will be encoded into a CSV (or potentially TSV if we
  * needed, but that is currently not implemented)
@@ -34,9 +99,6 @@ object Row extends Priority1Rows {
     columnText: String,
     extra: String) extends Error(s"DecodeFailure in column: $column with <text>$columnText</text>. $extra")
 
-  // we know that at least one of columns is non-empty for all values
-  sealed trait NonEmptyRow[A] extends Row[A]
-
   implicit case object UnitRow extends Row[Unit] {
     def columns = 0
     def writeToStrings(a: Unit, offset: Int, dest: Array[String]) = ()
@@ -62,7 +124,7 @@ object Row extends Priority1Rows {
       s(offset)
   }
 
-  abstract class NumberRow[A] extends NonEmptyRow[A] {
+  abstract class NumberRow[A] extends Row[A] {
     val typeName: String
     def fromString(s: String): A
     def toString(a: A): String
@@ -117,7 +179,7 @@ object Row extends Priority1Rows {
     def toString(i: BigDecimal) = i.toString
   }
 
-  implicit case object BooleanRow extends NonEmptyRow[Boolean] {
+  implicit case object BooleanRow extends Row[Boolean] {
     def columns = 1
     def writeToStrings(a: Boolean, offset: Int, dest: Array[String]) = {
       dest(offset) = a.toString
@@ -136,7 +198,7 @@ object Row extends Priority1Rows {
    * work, only Option[Int], Option[Long], ... will work (notably, Option[String] won't work
    * since we can't tell Some("") from None).
    */
-  implicit def optionRow[A](implicit rowA: NonEmptyRow[A]): Row[Option[A]] =
+  implicit def optionRow[A](implicit rowA: Row[A], ner: NonEmptyRow[A]): Row[Option[A]] =
     new Row[Option[A]] {
       val columns: Int = rowA.columns
       def writeToStrings(a: Option[A], offset: Int, dest: Array[String]): Unit =
@@ -148,13 +210,7 @@ object Row extends Priority1Rows {
       // may throw an Error
       def unsafeFromStrings(offset: Int, s: DRow): Option[A] = {
         // if all these are empty, we have None, else we decode
-        var empty = true
-        var idx = 0
-        while (empty && (idx < columns)) {
-          empty = s(idx + offset).isEmpty
-          idx += 1
-        }
-
+        val empty = ner.isMissing(offset, s)
         if (empty) None
         else Some(rowA.unsafeFromStrings(offset, s))
       }
