@@ -36,3 +36,11 @@ works on my machine.
 
 To make changes, try changing Example.scala and then reissue the `assembly` command in the sbt
 prompt.
+
+# IntelliJ
+
+IntelliJ 2020.1 Beta (201.6668.13) 
+appears to import the sbt project correctly on Mac
+ONLY after `brew uninstall sbt` -- brew's sbt seems to
+interfere with the proper import process, which results in eg build.sbt
+file being all red. 
