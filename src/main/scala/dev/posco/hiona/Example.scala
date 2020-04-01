@@ -1,6 +1,5 @@
 package dev.posco.hiona
 
-import cats.Monoid
 import cats.implicits._
 
 object Example {
@@ -54,7 +53,7 @@ object Example {
     val makeLogVol = make4(sd => Targets.Log1(sd.volume.toFloat))
 
     val inputs = hkStockData.withTime.map {
-      case pair @ (sd, ts) =>
+      case pair @ (sd, _) =>
         val value =
           (makeHigh(pair), makeLogHigh(pair), makeVol(pair), makeLogVol(pair))
         (sd.symbol, value)

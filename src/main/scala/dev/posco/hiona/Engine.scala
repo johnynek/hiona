@@ -1,10 +1,8 @@
 package dev.posco.hiona
 
 import cats.{Monoid, Parallel}
-import cats.data.NonEmptyList
 import cats.effect.{ContextShift, IO, Resource}
 import cats.effect.concurrent.Ref
-import java.io.PrintWriter
 import java.nio.file.Path
 
 import cats.implicits._
