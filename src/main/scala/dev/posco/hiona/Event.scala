@@ -52,10 +52,20 @@ object Event {
    * Many of the most useful methods are here (e.g. .sum, .latest, .max and lookupBefore/lookupAfter
    */
   implicit class KeyedEvent[K, V](val ev: Event[(K, V)]) extends AnyVal {
-    final def lookupAfter[W](that: Feature[K, W]): Event[(K, (V, W))] =
+    /**
+     * When the Feature that depends on ev, an event will trigger
+     * a change to the feature. preLookup gives you the feature value
+     * after the current event timestamp has been considered
+     */
+    final def postLookup[W](that: Feature[K, W]): Event[(K, (V, W))] =
       Event.Lookup(ev, that, LookupOrder.After)
 
-    final def lookupBefore[W](that: Feature[K, W]): Event[(K, (V, W))] =
+    /**
+     * When the Feature that depends on ev, an event will trigger
+     * a change to the feature. preLookup gives you the feature value
+     * before the current event timestamp has been considered
+     */
+    final def preLookup[W](that: Feature[K, W]): Event[(K, (V, W))] =
       Event.Lookup(ev, that, LookupOrder.Before)
 
     final def valueWithTime: Event[(K, (V, Timestamp))] =
@@ -65,7 +75,7 @@ object Event {
       Feature.Summed(ev, m)
 
     final def latest(within: Duration): Feature[K, Option[V]] =
-      Feature.Latest(ev)
+      Feature.Latest(ev, within)
 
     final def mapValues[W](fn: V => W): Event[(K, W)] =
       ev.map(Event.MapValuesFn(fn))

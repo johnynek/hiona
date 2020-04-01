@@ -29,7 +29,7 @@ object Feature {
   def sourcesOf[K, V](f: Feature[K, V]): Map[String, Set[Event.Source[_]]] =
     f match {
       case Summed(ev, _) => Event.sourcesOf(ev)
-      case Latest(ev) => Event.sourcesOf(ev)
+      case Latest(ev, _) => Event.sourcesOf(ev)
       case Mapped(f, _) => sourcesOf(f)
       case Zipped(left, right) =>
         Monoid[Map[String, Set[Event.Source[_]]]]
@@ -39,13 +39,13 @@ object Feature {
   def lookupsOf[K, V](f: Feature[K, V]): Set[Event.Lookup[_, _, _]] =
     f match {
       case Summed(ev, _) => Event.lookupsOf(ev)
-      case Latest(ev) => Event.lookupsOf(ev)
+      case Latest(ev, _) => Event.lookupsOf(ev)
       case Mapped(f, _) => lookupsOf(f)
       case Zipped(l, r) => lookupsOf(l) | lookupsOf(r)
     }
 
   case class Summed[K, V](event: Event[(K, V)], monoid: Monoid[V]) extends Feature[K, V]
-  case class Latest[K, V](event: Event[(K, V)]) extends Feature[K, Option[V]]
+  case class Latest[K, V](event: Event[(K, V)], within: Duration) extends Feature[K, Option[V]]
   case class Mapped[K, V, W](initial: Feature[K, V], fn: (K, V) => W) extends Feature[K, W]
   case class Zipped[K, V, W](left: Feature[K, V], right: Feature[K, W]) extends Feature[K, (V, W)]
 }

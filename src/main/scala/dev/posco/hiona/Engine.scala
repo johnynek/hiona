@@ -223,7 +223,8 @@ object Engine {
               (Long.MinValue, Map.empty, Map.empty)))
             .mapN(SummedFS(_, _, monoid))
 
-        case f@Feature.Latest(_) =>
+        case f@Feature.Latest(_, _) =>
+          // TODO make use of the window duration to prune old events from the state
           def go[B](l: Feature.Latest[K, B]): IO[FeatureState[K, Option[B]]] =
             (fromEvent(l.event, offset),
               Ref.of[IO, (Long, Map[K, B], Map[K, B])](

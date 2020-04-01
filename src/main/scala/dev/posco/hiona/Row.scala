@@ -24,36 +24,43 @@ object NonEmptyRow extends Priority1NonEmptyRow {
   }
 
   implicit val boolNER: NonEmptyRow[Boolean] = SingleNonEmpty()
+  implicit val byteNER: NonEmptyRow[Byte] = SingleNonEmpty()
+  implicit val charNER: NonEmptyRow[Char] = SingleNonEmpty()
+  implicit val shortNER: NonEmptyRow[Short] = SingleNonEmpty()
   implicit val intNER: NonEmptyRow[Int] = SingleNonEmpty()
   implicit val longNER: NonEmptyRow[Long] = SingleNonEmpty()
   implicit val floatNER: NonEmptyRow[Float] = SingleNonEmpty()
   implicit val doubleNER: NonEmptyRow[Double] = SingleNonEmpty()
+  implicit val bigIntNER: NonEmptyRow[BigInt] = SingleNonEmpty()
   implicit val bigDecimalNER: NonEmptyRow[BigDecimal] = SingleNonEmpty()
 
+  // a product is non-empty if any are non-empty
   case class HConsHead[A, B <: HList](rowA: NonEmptyRow[A], rowB: Row[B]) extends NonEmptyRow[A :: B] {
     val columns = rowA.columns + rowB.columns
     def isMissing(offset: Int, s: DRow): Boolean =
       rowA.isMissing(offset, s)
   }
 
+  // a product is non-empty if any are non-empty
   case class HConsTail[A, B <: HList](rowA: Row[A], rowB: NonEmptyRow[B]) extends NonEmptyRow[A :: B] {
     val columns = rowA.columns + rowB.columns
     def isMissing(offset: Int, s: DRow): Boolean =
       rowB.isMissing(offset + rowA.columns, s)
   }
 
-  case class HConsBoth[A, B <: HList](rowA: NonEmptyRow[A], rowB: NonEmptyRow[B]) extends NonEmptyRow[A :: B] {
-    val columns = rowA.columns + rowB.columns
+  // a coproduct is non-empty if all are non-empty
+  case class CoprodNonEmpty[A, B <: Coproduct](neA: NonEmptyRow[A], neB: NonEmptyRow[B]) extends NonEmptyRow[A :+: B] {
+    val columns = neA.columns + neB.columns
     def isMissing(offset: Int, s: DRow): Boolean =
-      rowA.isMissing(offset, s) || rowB.isMissing(offset + rowA.columns, s)
+      neA.isMissing(offset, s) &&
+      neB.isMissing(offset + neA.columns, s)
   }
 }
 
 sealed trait Priority1NonEmptyRow extends Priority2NonEmptyRow {
-  // prefer to make a both instance if we can
-  implicit def hconsBothNonEmpty[A, B <: HList](implicit rowA: NonEmptyRow[A], rowB: NonEmptyRow[B]): NonEmptyRow[A :: B] =
-    NonEmptyRow.HConsBoth(rowA, rowB)
-
+  // both aren't non-empty, head or tail may be
+  implicit def hconsHeadNonEmpty[A, B <: HList](implicit rowA: NonEmptyRow[A], rowB: Row[B]): NonEmptyRow[A :: B] =
+    NonEmptyRow.HConsHead(rowA, rowB)
 
   // A Generic is provided by shapeless, and it can give a conversion from
   // case classes into HLists so this is what allows us to use case classes
@@ -61,15 +68,18 @@ sealed trait Priority1NonEmptyRow extends Priority2NonEmptyRow {
   implicit def genericNonEmpty[A, B](implicit gen: Generic.Aux[A, B], rowB: NonEmptyRow[B]): NonEmptyRow[A] =
     // NonEmptyRow never actually works with A or B, so the cast is safe:
     rowB.asInstanceOf[NonEmptyRow[A]]
+
+  implicit def coprod1NonEmpty[A](implicit neA: NonEmptyRow[A]): NonEmptyRow[A :+: CNil] =
+    // this is always left, so we cast just like generic
+    neA.asInstanceOf[NonEmptyRow[A :+: CNil]]
 }
 
 sealed trait Priority2NonEmptyRow {
-  // both aren't non-empty, head or tail may be
-  implicit def hconsHeadNonEmpty[A, B <: HList](implicit rowA: NonEmptyRow[A], rowB: Row[B]): NonEmptyRow[A :: B] =
-    NonEmptyRow.HConsHead(rowA, rowB)
-
   implicit def hconsTailNonEmpty[A, B <: HList](implicit rowA: Row[A], rowB: NonEmptyRow[B]): NonEmptyRow[A :: B] =
     NonEmptyRow.HConsTail(rowA, rowB)
+
+  implicit def coprod2NonEmpty[A, B <: Coproduct](implicit neA: NonEmptyRow[A], neB: NonEmptyRow[B]): NonEmptyRow[A :+: B] =
+    NonEmptyRow.CoprodNonEmpty(neA, neB)
 }
 
 /**
@@ -124,10 +134,9 @@ object Row extends Priority1Rows {
       s(offset)
   }
 
-  abstract class NumberRow[A] extends Row[A] {
-    val typeName: String
+  abstract class NumberRow[A](val typeName: String) extends Row[A] {
     def fromString(s: String): A
-    def toString(a: A): String
+    def toString(a: A): String = a.toString
 
     private val msg = s"couldn't decode to $typeName"
     def columns = 1
@@ -142,41 +151,37 @@ object Row extends Priority1Rows {
       }
   }
 
-  implicit case object IntRow extends NumberRow[Int] {
-    val typeName = "Int"
+  implicit case object ByteRow extends NumberRow[Byte]("Byte") {
+    def fromString(s: String) = s.toByte
+  }
+
+  implicit case object ShortRow extends NumberRow[Short]("Short") {
+    def fromString(s: String) = s.toShort
+  }
+
+  implicit case object IntRow extends NumberRow[Int]("Int") {
     def fromString(s: String) = s.toInt
-    def toString(i: Int) = i.toString
   }
 
-  implicit case object LongRow extends NumberRow[Long] {
-    val typeName = "Long"
+  implicit case object LongRow extends NumberRow[Long]("Long") {
     def fromString(s: String) = s.toLong
-    def toString(i: Long) = i.toString
   }
 
-  implicit case object FloatRow extends NumberRow[Float] {
-    val typeName = "Float"
+  implicit case object FloatRow extends NumberRow[Float]("Float") {
     def fromString(s: String) = s.toFloat
-    def toString(i: Float) = i.toString
   }
 
-  implicit case object DoubleRow extends NumberRow[Double] {
-    val typeName = "Double"
+  implicit case object DoubleRow extends NumberRow[Double]("Double") {
     def fromString(s: String) = s.toDouble
-    def toString(i: Double) = i.toString
   }
 
-  implicit case object BigIntRow extends NumberRow[BigInt] {
-    val typeName = "BigInt"
+  implicit case object BigIntRow extends NumberRow[BigInt]("BigInt") {
     def fromString(s: String) = BigInt(s)
-    def toString(i: BigInt) = i.toString
   }
 
-  implicit case object BigDecimalRow extends NumberRow[BigDecimal] {
-    val typeName = "BigDecimal"
+  implicit case object BigDecimalRow extends NumberRow[BigDecimal]("BigDecimal") {
     def fromString(s: String) =
       BigDecimal(new java.math.BigDecimal(s, java.math.MathContext.UNLIMITED))
-    def toString(i: BigDecimal) = i.toString
   }
 
   implicit case object BooleanRow extends Row[Boolean] {
@@ -189,6 +194,18 @@ object Row extends Priority1Rows {
       if (str == "true" || str == "TRUE" || str == "True") true
       else if (str == "false" || str == "FALSE" || str == "False") false
       else { throw DecodeFailure(offset, str, "could not decode boolean") }
+    }
+  }
+
+  implicit case object CharRow extends Row[Char] {
+    def columns = 1
+    def writeToStrings(a: Char, offset: Int, dest: Array[String]) = {
+      dest(offset) = a.toString
+    }
+    def unsafeFromStrings(offset: Int, s: DRow): Char = {
+      val str = s(offset)
+      if (str.length == 1) str.charAt(0)
+      else sys.error(s"expected exactly one character at $offset, found: $str")
     }
   }
 
@@ -205,7 +222,13 @@ object Row extends Priority1Rows {
         if (a.isDefined) {
           rowA.writeToStrings(a.get, offset, dest)
         }
-        else ()
+        else {
+          var idx = 0
+          while (idx < columns) {
+            dest(offset + idx) = ""
+            idx += 1
+          }
+        }
 
       // may throw an Error
       def unsafeFromStrings(offset: Int, s: DRow): Option[A] = {
@@ -264,6 +287,73 @@ object Row extends Priority1Rows {
       }
     }
   }
+
+  case class Coproduct1Row[A](rowA: Row[A]) extends Row[A :+: CNil] {
+    val columns = rowA.columns
+    def writeToStrings(a: A :+: CNil, offset: Int, dest: Array[String]) =
+      a match {
+        case Inl(a) => rowA.writeToStrings(a, offset, dest)
+        case Inr(u) => u.impossible
+      }
+
+    def unsafeFromStrings(offset: Int, s: DRow) =
+      Inl(rowA.unsafeFromStrings(offset, s))
+  }
+
+  case class CoproductLeftNERow[A, B <: Coproduct](rowA: Row[A], neA: NonEmptyRow[A], rowB: Row[B]) extends Row[A :+: B] {
+    val columns = rowA.columns + rowB.columns
+    def writeToStrings(ab: A :+: B, offset: Int, dest: Array[String]) =
+      ab match {
+        case Inl(a) =>
+          rowA.writeToStrings(a, offset, dest)
+          var idx = rowA.columns
+          while (idx < columns) {
+            dest(idx) = ""
+            idx += 1
+          }
+        case Inr(b) =>
+          var idx = 0
+          while (idx < rowA.columns) {
+            dest(idx) = ""
+            idx += 1
+          }
+          rowB.writeToStrings(b, offset + rowA.columns, dest)
+      }
+
+    def unsafeFromStrings(offset: Int, s: DRow) =
+      if (neA.isMissing(offset, s)) {
+        Inr(rowB.unsafeFromStrings(offset + rowA.columns, s))
+      }
+      else Inl(rowA.unsafeFromStrings(offset, s))
+  }
+
+  case class CoproductRightNERow[A, B <: Coproduct](rowA: Row[A], rowB: Row[B], neB: NonEmptyRow[B]) extends Row[A :+: B] {
+    val columns = rowA.columns + rowB.columns
+    def writeToStrings(ab: A :+: B, offset: Int, dest: Array[String]) =
+      ab match {
+        case Inl(a) =>
+          rowA.writeToStrings(a, offset, dest)
+          var idx = rowA.columns
+          while (idx < columns) {
+            dest(idx) = ""
+            idx += 1
+          }
+        case Inr(b) =>
+          var idx = 0
+          while (idx < rowA.columns) {
+            dest(idx) = ""
+            idx += 1
+          }
+          rowB.writeToStrings(b, offset + rowA.columns, dest)
+      }
+
+    def unsafeFromStrings(offset: Int, s: DRow) =
+      if (!neB.isMissing(offset + rowA.columns, s)) {
+        Inr(rowB.unsafeFromStrings(offset + rowA.columns, s))
+      }
+      else Inl(rowA.unsafeFromStrings(offset, s))
+  }
+
 }
 
 /**
@@ -271,7 +361,7 @@ object Row extends Priority1Rows {
  * to prioritize which implicits we choose. Here we want to make instances of Row for genericRow and the hlist
  * (heterogenous lists, which are basically tuples that can be any size).
  */
-sealed trait Priority1Rows {
+sealed trait Priority1Rows extends Priority2Rows {
   implicit case object HNilRow extends Row[HNil] {
     def columns = 0
     def writeToStrings(a: HNil, offset: Int, dest: Array[String]) = ()
@@ -309,4 +399,13 @@ sealed trait Priority1Rows {
   // for inputs and outputs.
   implicit def genericRow[A, B](implicit gen: Generic.Aux[A, B], rowB: Row[B]): Row[A] =
     GenRow(gen, rowB)
+
+  implicit def cnil1Row[A](implicit rowA: Row[A]): Row[A :+: CNil] = Row.Coproduct1Row(rowA)
+  implicit def coprodLeftRow[A, B <: Coproduct](implicit rowA: Row[A], neA: NonEmptyRow[A], rowB: Row[B]): Row[A :+: B] =
+    Row.CoproductLeftNERow(rowA, neA, rowB)
+}
+
+sealed trait Priority2Rows {
+  implicit def coprodRightRow[A, B <: Coproduct](implicit rowA: Row[A], rowB: Row[B], neB: NonEmptyRow[B]): Row[A :+: B] =
+    Row.CoproductRightNERow(rowA, rowB, neB)
 }

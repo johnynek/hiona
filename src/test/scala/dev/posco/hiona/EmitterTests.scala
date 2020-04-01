@@ -41,7 +41,7 @@ class EmitterTests extends munit.FunSuite {
       .unsafeToFuture()
   }
 
-  test("lookupBefore test") {
+  test("preLookup test") {
     val src = Event.source[(Long, Int)]("numsrc",
       new Validator[(Long, Int)] {
         def validate(v: (Long, Int)) = Right(Timestamp(v._1))
@@ -53,7 +53,7 @@ class EmitterTests extends munit.FunSuite {
 
     val feat = src.map { case (_, i) => (i % 2, i) }.sum
     val keys = src.map { case (_, i) => (i % 2, ()) }
-    val res = keys.lookupBefore(feat)
+    val res = keys.preLookup(feat)
 
     result(res, feeder)
       .flatMap { lst =>
@@ -64,7 +64,7 @@ class EmitterTests extends munit.FunSuite {
       .unsafeToFuture()
   }
 
-  test("lookupAfter test") {
+  test("postLookup test") {
     val src = Event.source[(Long, Int)]("numsrc",
       new Validator[(Long, Int)] {
         def validate(v: (Long, Int)) = Right(Timestamp(v._1))
@@ -76,7 +76,7 @@ class EmitterTests extends munit.FunSuite {
 
     val feat = src.map { case (_, i) => (i % 2, i) }.sum
     val keys = src.map { case (_, i) => (i % 2, ()) }
-    val res = keys.lookupAfter(feat)
+    val res = keys.postLookup(feat)
 
     result(res, feeder)
       .flatMap { lst =>

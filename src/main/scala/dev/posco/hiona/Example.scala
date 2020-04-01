@@ -78,7 +78,7 @@ object Example {
 
   // with the decayed history:
   //
-  val eventWithDecay = eventWithNoHistoryFeatures.lookupAfter(decayFeatures)
+  val eventWithDecay = eventWithNoHistoryFeatures.postLookup(decayFeatures)
 
   object Targets {
     sealed trait Transform {
