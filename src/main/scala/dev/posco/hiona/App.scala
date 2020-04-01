@@ -1,8 +1,8 @@
 package dev.posco.hiona
 
 import cats.data.{Validated, ValidatedNel}
-import cats.effect.{ContextShift, IO, IOApp, ExitCode}
-import com.monovore.decline.{Argument, Opts, Command}
+import cats.effect.{ContextShift, ExitCode, IO, IOApp}
+import com.monovore.decline.{Argument, Command, Opts}
 import java.nio.file.Path
 
 import cats.implicits._
@@ -24,7 +24,8 @@ abstract class App[A: Row](results: Event[A]) extends IOApp {
     }
 }
 
-abstract class LabeledApp[K: Row, V: Row](results: LabeledEvent[K, V]) extends IOApp {
+abstract class LabeledApp[K: Row, V: Row](results: LabeledEvent[K, V])
+    extends IOApp {
 
   private val key: Row[K] = implicitly[Row[K]]
   private val value: Row[V] = implicitly[Row[V]]
@@ -47,7 +48,11 @@ object App {
   sealed abstract class Args
   object Args {
     case class EventArgs[A](row: Row[A], event: Event[A]) extends Args
-    case class LabeledArgs[K, V](keyRow: Row[K], valueRow: Row[V], labeled: LabeledEvent[K, V]) extends Args
+    case class LabeledArgs[K, V](
+        keyRow: Row[K],
+        valueRow: Row[V],
+        labeled: LabeledEvent[K, V]
+    ) extends Args
   }
 
   implicit def named[A: Argument]: Argument[(String, A)] =
@@ -56,7 +61,10 @@ object App {
       val defaultMetavar = s"name=${argA.defaultMetavar}"
       def read(s: String): ValidatedNel[String, (String, A)] = {
         val splitIdx = s.indexOf('=')
-        if (splitIdx < 0) Validated.invalidNel(s"string $s expected to have = character, not found")
+        if (splitIdx < 0)
+          Validated.invalidNel(
+            s"string $s expected to have = character, not found"
+          )
         else {
           val name = s.substring(0, splitIdx)
           val rest = s.substring(splitIdx + 1)
@@ -70,7 +78,8 @@ object App {
   }
 
   case class RunCmd(inputs: List[(String, Path)], output: Path) extends Cmd {
-    val dupNames = inputs.groupBy(_._1).filter { case (_, res) => res.lengthCompare(1) > 0 }
+    val dupNames =
+      inputs.groupBy(_._1).filter { case (_, res) => res.lengthCompare(1) > 0 }
 
     def run(args: Args)(implicit ctx: ContextShift[IO]): IO[ExitCode] =
       if (dupNames.isEmpty) {
@@ -81,12 +90,13 @@ object App {
             Engine.runLabeled(inputs.toMap, l, output)(k, v, ctx)
         }
         io.map(_ => ExitCode.Success)
-      }
-      else {
+      } else {
         // this is an error
         IO {
           System.err.println("duplicated sources:")
-          System.err.println(dupNames.toList.sortBy(_._1).mkString("\t", "\n", ""))
+          System.err.println(
+            dupNames.toList.sortBy(_._1).mkString("\t", "\n", "")
+          )
           System.err.flush()
           ExitCode.Error
         }
@@ -95,10 +105,11 @@ object App {
 
   private val runCmd: Command[RunCmd] =
     Command("run", "run an event and write all results to a csv file") {
-      (Opts.options[(String, Path)]("input", "named path to CSV").orEmpty, Opts.option[Path]("output", "path to write"))
-        .mapN(RunCmd(_, _))
+      (
+        Opts.options[(String, Path)]("input", "named path to CSV").orEmpty,
+        Opts.option[Path]("output", "path to write")
+      ).mapN(RunCmd(_, _))
     }
-
 
   case object ShowCmd extends Cmd {
     def run(args: Args)(implicit ctx: ContextShift[IO]): IO[ExitCode] = {
@@ -107,8 +118,10 @@ object App {
           case Args.EventArgs(_, event) =>
             (Event.sourcesOf(event).keys, Event.lookupsOf(event))
           case Args.LabeledArgs(_, _, lab) =>
-            (LabeledEvent.sourcesAndOffsetsOf(lab).keys,
-              LabeledEvent.lookupsOf(lab))
+            (
+              LabeledEvent.sourcesAndOffsetsOf(lab).keys,
+              LabeledEvent.lookupsOf(lab)
+            )
         }
       IO {
         val names = srcs.toList.sorted.mkString("", ", ", "")
@@ -124,7 +137,6 @@ object App {
     Command("show", "print some details about the event to standard out") {
       Opts(ShowCmd)
     }
-
 
   val command: Command[Cmd] =
     Command("hiona", "feature engineering system") {

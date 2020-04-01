@@ -5,7 +5,12 @@ import cats.effect.{IO, Resource}
 import java.io.{BufferedReader, FileReader}
 import java.nio.file.Path
 import java.util.{Comparator, PriorityQueue}
-import net.tixxit.delimited.{DelimitedError, DelimitedParser, DelimitedFormat, Row => DRow}
+import net.tixxit.delimited.{
+  DelimitedError,
+  DelimitedParser,
+  DelimitedFormat,
+  Row => DRow
+}
 
 import cats.implicits._
 
@@ -16,7 +21,12 @@ sealed abstract class Point {
 }
 
 object Point {
-  case class Sourced[A](src: Event.Source[A], value: A, ts: Timestamp, offset: Duration) extends Point {
+  case class Sourced[A](
+      src: Event.Source[A],
+      value: A,
+      ts: Timestamp,
+      offset: Duration
+  ) extends Point {
     def name: String = src.name
   }
 }
@@ -49,13 +59,19 @@ object Feeder {
     def toError[A]: IO[A] = IO.raiseError(this)
   }
 
-  case class DuplicateEventSources(dups: NonEmptyList[Event.Source[_]]) extends Error(s"duplicate sources: $dups")
+  case class DuplicateEventSources(dups: NonEmptyList[Event.Source[_]])
+      extends Error(s"duplicate sources: $dups")
 
-  case class MismatchInputs(
-    missingPaths: Set[String],
-    extraPaths: Set[String]) extends Error(s"mismatch inputs: missing=$missingPaths, extra = $extraPaths")
+  case class MismatchInputs(missingPaths: Set[String], extraPaths: Set[String])
+      extends Error(
+        s"mismatch inputs: missing=$missingPaths, extra = $extraPaths"
+      )
 
-  private case class IteratorFeeder[A](event: Event.Source[A], offset: Duration, iter: Iterator[Either[DelimitedError, DRow]]) extends Feeder {
+  private case class IteratorFeeder[A](
+      event: Event.Source[A],
+      offset: Duration,
+      iter: Iterator[Either[DelimitedError, DRow]]
+  ) extends Feeder {
     protected def unsafeNext(): Point =
       if (iter.hasNext) {
         iter.next() match {
@@ -68,11 +84,14 @@ object Feeder {
 
           case Left(err) => throw err
         }
-      }
-      else null
+      } else null
   }
 
-  private case class DecodedIteratorFeeder[A](event: Event.Source[A], offset: Duration, iter: Iterator[A]) extends Feeder {
+  private case class DecodedIteratorFeeder[A](
+      event: Event.Source[A],
+      offset: Duration,
+      iter: Iterator[A]
+  ) extends Feeder {
     protected def unsafeNext(): Point =
       if (iter.hasNext) {
         val a = iter.next()
@@ -80,16 +99,15 @@ object Feeder {
           case Right(ts) => Point.Sourced(event, a, ts, offset)
           case Left(err) => throw err
         }
-      }
-      else null
+      } else null
   }
 
-  private case class MultiPointFeeder(
-    queue: PriorityQueue[(Point, Feeder)]) extends Feeder {
+  private case class MultiPointFeeder(queue: PriorityQueue[(Point, Feeder)])
+      extends Feeder {
 
     protected def unsafeNext(): Point =
       queue.poll match {
-        case null => null
+        case null            => null
         case (point, feeder) =>
           // get the next point out of the feeder and push it back in.
           val nextPoint = feeder.unsafeNext()
@@ -109,23 +127,24 @@ object Feeder {
       def compare(left: (Point, Feeder), right: (Point, Feeder)) = {
         val lpoint = left._1
         val rpoint = right._1
-        val res = Timestamp.compareDiff(lpoint.ts, lpoint.offset, rpoint.ts, rpoint.offset)
+        val res = Timestamp.compareDiff(
+          lpoint.ts,
+          lpoint.offset,
+          rpoint.ts,
+          rpoint.offset
+        )
         if (res == 0) lpoint.name.compare(rpoint.name)
         else res
       }
     }
 
-    it
-      .toList
+    it.toList
       .traverse { feeder =>
         // read the first timestamp from each feeder
         // since we go in order
         feeder.next.map { pointOpt =>
-          pointOpt
-            .toList
-            .map { point =>
-              (point, feeder)
-            }
+          pointOpt.toList
+            .map(point => (point, feeder))
         }
       }
       .flatMap { init0 =>
@@ -141,10 +160,14 @@ object Feeder {
       }
   }
 
-  def fromPath[A](path: Path, src: Event.Source[A], offset: Duration): Resource[IO, Feeder] = {
+  def fromPath[A](
+      path: Path,
+      src: Event.Source[A],
+      offset: Duration
+  ): Resource[IO, Feeder] = {
     val resBR = Resource.make(IO {
       new BufferedReader(new FileReader(path.toFile))
-    }) { br => IO(br.close()) }
+    })(br => IO(br.close()))
 
     resBR.flatMap { br =>
       Resource.liftF(IO {
@@ -159,11 +182,18 @@ object Feeder {
     }
   }
 
-  def iterableFeeder[A](src: Event.Source[A], offset: Duration, items: Iterable[A]): IO[Feeder] =
+  def iterableFeeder[A](
+      src: Event.Source[A],
+      offset: Duration,
+      items: Iterable[A]
+  ): IO[Feeder] =
     // accessing a mutable value must be done inside IO
     IO(DecodedIteratorFeeder(src, offset, items.iterator))
 
-  def fromInputs(paths: Map[String, Path], ev: Event[Any]): Resource[IO, Feeder] = {
+  def fromInputs(
+      paths: Map[String, Path],
+      ev: Event[Any]
+  ): Resource[IO, Feeder] = {
     val srcs = Event.sourcesOf(ev)
     val badSrcs = srcs.filter { case (_, nel) => nel.size > 1 }
 
@@ -173,13 +203,9 @@ object Feeder {
       Resource.liftF(
         IO.raiseError(DuplicateEventSources(badNel))
       )
-    }
-    else {
+    } else {
       val srcMap: Map[String, Event.Source[_]] =
-        srcs
-          .iterator
-          .map { case (n, singleton) => (n, singleton.head) }
-          .toMap
+        srcs.iterator.map { case (n, singleton) => (n, singleton.head) }.toMap
 
       // we need exactly the same names
 
@@ -187,37 +213,35 @@ object Feeder {
       val extra = paths.keySet -- srcMap.keySet
       if (missing.nonEmpty || extra.nonEmpty) {
         Resource.liftF(IO.raiseError(MismatchInputs(missing, extra)))
-      }
-      else {
+      } else {
         // the keyset is exactly the same:
-        paths
-          .toList
+        paths.toList
           .traverse {
             case (name, path) =>
               fromPath(path, srcMap(name), Duration.Zero)
           }
-          .flatMap { feeds => Resource.liftF(multiFeeder(feeds)) }
+          .flatMap(feeds => Resource.liftF(multiFeeder(feeds)))
       }
     }
   }
 
-  def fromInputsLabels[A, B](paths: Map[String, Path], ev: LabeledEvent[A, B]): Resource[IO, Feeder] = {
+  def fromInputsLabels[A, B](
+      paths: Map[String, Path],
+      ev: LabeledEvent[A, B]
+  ): Resource[IO, Feeder] = {
     val srcs = LabeledEvent.sourcesAndOffsetsOf(ev)
     val badSrcs = srcs.filter { case (_, (srcs, _)) => srcs.size > 1 }
 
     if (badSrcs.nonEmpty) {
-      val bads = badSrcs.iterator.map { case (_, (srcs, _)) => srcs }.reduce(_ | _)
+      val bads =
+        badSrcs.iterator.map { case (_, (srcs, _)) => srcs }.reduce(_ | _)
       val badNel = NonEmptyList.fromListUnsafe(bads.toList.sortBy(_.name))
       Resource.liftF(
         IO.raiseError(DuplicateEventSources(badNel))
       )
-    }
-    else {
+    } else {
       val srcMap: Map[String, Event.Source[_]] =
-        srcs
-          .iterator
-          .map { case (n, (singleton, _)) => (n, singleton.head) }
-          .toMap
+        srcs.iterator.map { case (n, (singleton, _)) => (n, singleton.head) }.toMap
 
       // we need exactly the same names
 
@@ -225,22 +249,17 @@ object Feeder {
       val extra = paths.keySet -- srcMap.keySet
       if (missing.nonEmpty || extra.nonEmpty) {
         Resource.liftF(IO.raiseError(MismatchInputs(missing, extra)))
-      }
-      else {
+      } else {
         // the keyset is exactly the same:
-        paths
-          .toList
+        paths.toList
           .traverse {
             case (name, path) =>
               val src = srcMap(name)
               val offsets = srcs(name)._2.toList.sorted
-              offsets.traverse { offset =>
-                fromPath(path, src, offset)
-              }
+              offsets.traverse(offset => fromPath(path, src, offset))
           }
-          .flatMap { feeds => Resource.liftF(multiFeeder(feeds.flatten)) }
+          .flatMap(feeds => Resource.liftF(multiFeeder(feeds.flatten)))
       }
     }
   }
 }
-

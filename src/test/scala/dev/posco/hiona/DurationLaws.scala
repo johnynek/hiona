@@ -16,16 +16,19 @@ class DurationLaws extends munit.ScalaCheckSuite {
 
   property("Order[Duration.Finite] matches Long order") {
     forAll(genFinite, genFinite) { (f1, f2) =>
-      assertEquals(java.lang.Long.compare(f1.millis, f2.millis), Duration.durationOrdering.compare(f1, f2))
+      assertEquals(
+        java.lang.Long.compare(f1.millis, f2.millis),
+        Duration.durationOrdering.compare(f1, f2)
+      )
     }
   }
 
   property("Duration + is a commutative monoid") {
     forAll(genDuration, genDuration, genDuration) { (a, b, c) =>
       (((a + b) + c) == (a + (b + c))) &&
-        ((a + b) == (b + a)) &&
-        ((a + Duration.Infinite) == Duration.Infinite) &&
-        ((a + Duration.zero) == a)
+      ((a + b) == (b + a)) &&
+      ((a + Duration.Infinite) == Duration.Infinite) &&
+      ((a + Duration.zero) == a)
     }
   }
 
@@ -42,8 +45,8 @@ class DurationLaws extends munit.ScalaCheckSuite {
 
   property("isInfinite is right") {
     forAll(genDuration) {
-      case i@Duration.Infinite => i.isInfinite
-      case f@Duration.Finite(_) => !f.isInfinite
+      case i @ Duration.Infinite  => i.isInfinite
+      case f @ Duration.Finite(_) => !f.isInfinite
     }
   }
 }

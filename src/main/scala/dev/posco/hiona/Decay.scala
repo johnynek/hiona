@@ -27,8 +27,14 @@ object Decay {
   case object Quarter extends DecayRate(31557600L * 1000L / 4L)
   case object Year extends DecayRate(31557600L * 1000L)
 
-  def build[H <: DecayRate: ValueOf, N: Numeric](time: Timestamp, n: N): Decay[H] =
-    Decay(time.epochMillis.toDouble / valueOf[H].toMillis, implicitly[Numeric[N]].toDouble(n))
+  def build[H <: DecayRate: ValueOf, N: Numeric](
+      time: Timestamp,
+      n: N
+  ): Decay[H] =
+    Decay(
+      time.epochMillis.toDouble / valueOf[H].toMillis,
+      implicitly[Numeric[N]].toDouble(n)
+    )
 
   implicit def monoidForDecay[H <: DecayRate]: Monoid[Decay[H]] =
     new Monoid[Decay[H]] {
@@ -36,4 +42,3 @@ object Decay {
       def combine(l: Decay[H], r: Decay[H]): Decay[H] = l.combine(r)
     }
 }
-
