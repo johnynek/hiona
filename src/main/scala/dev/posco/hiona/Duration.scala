@@ -47,4 +47,3 @@ object Duration {
     if (cnt == 0) zero
     else Finite(cnt.toLong * 60L * 1000L)
 }
-

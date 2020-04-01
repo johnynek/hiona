@@ -3,7 +3,7 @@ package dev.posco.hiona
 final case class Timestamp(epochMillis: Long)
 
 object Timestamp {
-  import Duration.{Infinite, Finite}
+  import Duration.{Finite, Infinite}
 
   implicit val orderingForTimestamp: Ordering[Timestamp] =
     new Ordering[Timestamp] {
@@ -11,17 +11,20 @@ object Timestamp {
         java.lang.Long.compare(left.epochMillis, right.epochMillis)
     }
 
-  def compareDiff(leftT: Timestamp, leftD: Duration, rightT: Timestamp, rightD: Duration): Int =
+  def compareDiff(
+      leftT: Timestamp,
+      leftD: Duration,
+      rightT: Timestamp,
+      rightD: Duration
+  ): Int =
     if (leftD == rightD) Timestamp.orderingForTimestamp.compare(leftT, rightT)
     else if (leftD.isInfinite) {
       // right can't be infinite, or they would be the same, left is first
       -1
-    }
-    else if (rightD.isInfinite) {
+    } else if (rightD.isInfinite) {
       // left can't be infinite, or they would be the same, right is first
       1
-    }
-    else {
+    } else {
       // they are both different, but not infinite, be careful with underflow
       val Finite(leftOff) = leftD
       val Finite(rightOff) = rightD
@@ -37,19 +40,16 @@ object Timestamp {
         if (right1 <= right0) {
           // neither underflowed
           java.lang.Long.compare(left1, right1)
-        }
-        else {
+        } else {
           // right underflowed, so it must be smaller
           1
         }
-      }
-      else {
+      } else {
         // left underflowed
         if (right1 <= right0) {
           // right not underflowed, so it must be larger
           -1
-        }
-        else {
+        } else {
           // both underflowed, so we can just compare them directly
           java.lang.Long.compare(left1, right1)
         }
@@ -63,4 +63,3 @@ object Timestamp {
         compareDiff(left._1, left._2, right._1, right._2)
     }
 }
-

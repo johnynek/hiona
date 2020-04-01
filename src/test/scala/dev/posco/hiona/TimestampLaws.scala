@@ -19,14 +19,20 @@ class TimestampLaws extends munit.ScalaCheckSuite {
 
   property("Order[Timestamp] matches Long order") {
     forAll(genTimestampFull, genTimestampFull) { (t1, t2) =>
-      assertEquals(java.lang.Long.compare(t1.epochMillis, t2.epochMillis),
-        implicitly[Ordering[Timestamp]].compare(t1, t2))
+      assertEquals(
+        java.lang.Long.compare(t1.epochMillis, t2.epochMillis),
+        implicitly[Ordering[Timestamp]].compare(t1, t2)
+      )
     }
   }
 
   property("offsetOrdering matches compareDiff") {
-    forAll(genTimestampFull, genDuration, genTimestampFull, genDuration) { (t1, d1, t2, d2) =>
-      assertEquals(Timestamp.compareDiff(t1, d1, t2, d2), Timestamp.offsetOrdering.compare((t1, d1), (t2, d2)))
+    forAll(genTimestampFull, genDuration, genTimestampFull, genDuration) {
+      (t1, d1, t2, d2) =>
+        assertEquals(
+          Timestamp.compareDiff(t1, d1, t2, d2),
+          Timestamp.offsetOrdering.compare((t1, d1), (t2, d2))
+        )
     }
   }
 
@@ -68,18 +74,23 @@ class TimestampLaws extends munit.ScalaCheckSuite {
   }
   property("t - f1 <> t - f2 == f2 <> f1") {
     forAll(genTimestampFull, genDuration, genDuration) { (t, f1, f2) =>
-      assertEquals(Timestamp.offsetOrdering.compare((t, f1), (t, f2)),
-        Duration.durationOrdering.compare(f2, f1))
+      assertEquals(
+        Timestamp.offsetOrdering.compare((t, f1), (t, f2)),
+        Duration.durationOrdering.compare(f2, f1)
+      )
     }
   }
 
   property("t1 - f2 == t2 - f2 we get with subtraction on BigInt") {
-    forAll(genTimestampFull, genFinite, genTimestampFull, genFinite) { (t1, f1, t2, f2) =>
-      val t1sub = BigInt(t1.epochMillis) - BigInt(f1.millis)
-      val t2sub = BigInt(t2.epochMillis) - BigInt(f2.millis)
+    forAll(genTimestampFull, genFinite, genTimestampFull, genFinite) {
+      (t1, f1, t2, f2) =>
+        val t1sub = BigInt(t1.epochMillis) - BigInt(f1.millis)
+        val t2sub = BigInt(t2.epochMillis) - BigInt(f2.millis)
 
-      assertEquals(Ordering[BigInt].compare(t1sub, t2sub),
-        Timestamp.compareDiff(t1, f1, t2, f2))
+        assertEquals(
+          Ordering[BigInt].compare(t1sub, t2sub),
+          Timestamp.compareDiff(t1, f1, t2, f2)
+        )
     }
   }
 }

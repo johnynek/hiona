@@ -17,6 +17,8 @@ sbt
 Which will give you the sbt command prompt. Enter `compile` to compile the code and `test` to run
 all the tests.
 
+To format the code run `scalafmtAll` at the `sbt` prompt.
+
 ## Running the example
 
 At the sbt prompt, run `assembly` to build a "fat-jar" a jar with all dependencies in it. You can
