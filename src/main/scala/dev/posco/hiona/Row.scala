@@ -76,9 +76,12 @@ sealed trait Priority1NonEmptyRow extends Priority2NonEmptyRow {
   implicit def genericNonEmpty[A, B](
       implicit gen: Generic.Aux[A, B],
       rowB: NonEmptyRow[B]
-  ): NonEmptyRow[A] =
+  ): NonEmptyRow[A] = {
+    // we don't use gen, but to make sure there isn't an unused warning:
+    assert(gen != null)
     // NonEmptyRow never actually works with A or B, so the cast is safe:
     rowB.asInstanceOf[NonEmptyRow[A]]
+  }
 
   implicit def coprod1NonEmpty[A](
       implicit neA: NonEmptyRow[A]

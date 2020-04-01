@@ -23,5 +23,6 @@ lazy val root = (project in file("."))
     //scalacOptions += "-Ypartial-unification",
     // turns on the optimizer, slower to compile, but seems to give a slight improvement
     //scalacOptions ++= Seq("-opt:l:inline", "'-opt-inline-from:**'"),
-    addCompilerPlugin("com.olegpy" %% "better-monadic-for" % "0.3.1")
+    scalacOptions ++= Seq("-Wunused", "-Yrangepos"),
+    addCompilerPlugin("com.olegpy" %% "better-monadic-for" % "0.3.1"),
   )

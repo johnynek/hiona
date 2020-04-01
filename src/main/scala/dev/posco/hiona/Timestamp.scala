@@ -3,7 +3,7 @@ package dev.posco.hiona
 final case class Timestamp(epochMillis: Long)
 
 object Timestamp {
-  import Duration.{Finite, Infinite}
+  import Duration.Finite
 
   implicit val orderingForTimestamp: Ordering[Timestamp] =
     new Ordering[Timestamp] {

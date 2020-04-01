@@ -51,7 +51,7 @@ object Event {
     * These are extension methods for events of tuples, which are common.
     * Many of the most useful methods are here (e.g. .sum, .latest, .max and lookupBefore/lookupAfter
     */
-  implicit class KeyedEvent[K, V](val ev: Event[(K, V)]) extends AnyVal {
+  implicit class KeyedEvent[K, V](private val ev: Event[(K, V)]) extends AnyVal {
 
     /**
       * When the Feature that depends on ev, an event will trigger
