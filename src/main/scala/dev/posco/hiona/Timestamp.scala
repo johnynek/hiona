@@ -1,15 +1,40 @@
 package dev.posco.hiona
 
-final case class Timestamp(epochMillis: Long)
+import cats.Order
+
+final case class Timestamp(epochMillis: Long) {
+  def +(that: Duration): Timestamp =
+    that match {
+      case Duration.Infinite => Timestamp.MaxValue
+      case Duration.Finite(thatMillis) =>
+        val m1 = epochMillis + thatMillis
+        if (m1 >= epochMillis) Timestamp(m1)
+        else Timestamp.MaxValue
+    }
+  def -(that: Duration): Timestamp =
+    that match {
+      case Duration.Infinite => Timestamp.MinValue
+      case Duration.Finite(thatMillis) =>
+        val m1 = epochMillis - thatMillis
+        if (m1 <= epochMillis) Timestamp(m1)
+        else Timestamp.MinValue
+    }
+}
 
 object Timestamp {
   import Duration.Finite
+
+  val MinValue: Timestamp = Timestamp(Long.MinValue)
+  val MaxValue: Timestamp = Timestamp(Long.MaxValue)
 
   implicit val orderingForTimestamp: Ordering[Timestamp] =
     new Ordering[Timestamp] {
       def compare(left: Timestamp, right: Timestamp): Int =
         java.lang.Long.compare(left.epochMillis, right.epochMillis)
     }
+
+  implicit val orderForTimestamp: Order[Timestamp] =
+    Order.fromOrdering(orderingForTimestamp)
 
   def compareDiff(
       leftT: Timestamp,

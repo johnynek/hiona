@@ -8,6 +8,7 @@ object Dependencies {
   }
 
   lazy val cats = typelevel %% "cats-core" % "2.1.1"
+  lazy val catsCollections = typelevel %% "cats-collections-core" % "0.9.0"
   lazy val catsEffect = typelevel %% "cats-effect" % "2.1.2"
   lazy val decline = "com.monovore" %% "decline" % "1.0.0"
   lazy val delimited = "net.tixxit" %% "delimited-core" % "0.10.0"

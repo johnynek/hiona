@@ -14,6 +14,7 @@ lazy val root = (project in file("."))
       munitScalaCheck % Test,
       scalaCheck % Test,
       cats,
+      catsCollections,
       catsEffect,
       delimited,
       decline,

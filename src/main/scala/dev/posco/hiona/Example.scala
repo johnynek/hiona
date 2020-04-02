@@ -24,7 +24,10 @@ object Example {
   }
 
   val dateValidator: Validator[StockData] =
-    Validator.parseAndShiftUtc("yyyy-MM-dd hh:mm:ss 'UTC'", Duration.min(30))(
+    Validator.parseAndShiftUtc(
+      "yyyy-MM-dd hh:mm:ss 'UTC'",
+      Duration.minutes(30)
+    )(
       _.barStartUtc
     )
 
@@ -40,10 +43,10 @@ object Example {
         val (sd, ts) = input
         val v = fn(sd)
         (
-          Decay.build[Decay.Hour.type, N](ts, v),
-          Decay.build[Decay.Day.type, N](ts, v),
-          Decay.build[Decay.Week.type, N](ts, v),
-          Decay.build[Decay.Quarter.type, N](ts, v)
+          Decay.build[Duration.hour.type, N](ts, v),
+          Decay.build[Duration.day.type, N](ts, v),
+          Decay.build[Duration.week.type, N](ts, v),
+          Decay.build[Duration.quarter.type, N](ts, v)
         )
     }
 
@@ -61,14 +64,14 @@ object Example {
 
     inputs.map {
       case (dh, dlh, dv, dlv) =>
-        import Decay._
+        import Duration._
 
         def toD4(
             tuple: (
-                Decay[Hour.type],
-                Decay[Day.type],
-                Decay[Week.type],
-                Decay[Quarter.type]
+                Decay[hour.type],
+                Decay[day.type],
+                Decay[week.type],
+                Decay[quarter.type]
             )
         ) =
           D4(
@@ -143,7 +146,7 @@ object Example {
 
     def makeValue[Min <: Int: ValueOf, T <: Transform: ValueOf]
         : Label[String, Option[Values[Min, T]]] = {
-      val dur = Duration.min(valueOf[Min])
+      val dur = Duration.minutes(valueOf[Min])
 
       Label(
         coreEvent[Min, T].latest(Duration.Infinite)

@@ -49,4 +49,43 @@ class DurationLaws extends munit.ScalaCheckSuite {
       case f @ Duration.Finite(_) => !f.isInfinite
     }
   }
+
+  property("d * 2 == d + d") {
+    forAll(genDuration)(d => assertEquals(d * 2, d + d))
+  }
+
+  property("(d * n)/n == d, or d * n is infinite") {
+    forAll(genDuration, Gen.choose(1, Int.MaxValue)) { (d, n1) =>
+      val n = n1 max 1
+      val d1 = d * n
+      val d2 = d1 / n
+      if (d1.isInfinite) assert(d2.isInfinite)
+      else assertEquals(d2, d)
+    }
+  }
+
+  test("base units match expectations") {
+    assertEquals(Duration.year.millis, (86400L * 365L + (86400L / 4L)) * 1000L)
+    assertEquals(
+      Duration.quarter.millis,
+      (86400L * 365L + (86400L / 4L)) * 1000L / 4L
+    )
+    assertEquals(
+      Duration.month.millis,
+      (86400L * 365L + (86400L / 4L)) * 1000L / 12L
+    )
+
+    assertEquals(Duration.month * 12, Duration.year)
+    assertEquals(Duration.month, Duration.year / 12)
+    assertEquals(Duration.quarter * 4, Duration.year)
+    assertEquals(Duration.quarter, Duration.year / 4)
+    assertEquals(Duration.month * 3, Duration.quarter)
+    assertEquals(Duration.month, Duration.quarter / 3)
+
+    assertEquals(Duration.second, Duration(1000L))
+    assertEquals(Duration.minute, Duration.second * 60)
+    assertEquals(Duration.hour, Duration.minute * 60)
+    assertEquals(Duration.day, Duration.hour * 24)
+    assertEquals(Duration.week, Duration.day * 7)
+  }
 }

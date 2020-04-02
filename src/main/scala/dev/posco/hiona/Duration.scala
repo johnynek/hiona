@@ -3,7 +3,11 @@ package dev.posco.hiona
 sealed abstract class Duration(val isInfinite: Boolean) {
   def +(that: Duration): Duration
   def millis: Long
+
+  def *(that: Int): Duration
+  def /(that: Int): Duration
 }
+
 object Duration {
 
   def apply(ms: Long): Duration =
@@ -13,7 +17,19 @@ object Duration {
     def +(that: Duration): Duration = this
 
     def millis = Long.MaxValue
+
+    def *(that: Int): Duration = {
+      require(that >= 0, "we cannot multiply by a negative number")
+      if (that == 0) zero
+      else this
+    }
+
+    def /(that: Int): Duration = {
+      require(that > 0, "can only divide by a number > 0")
+      this
+    }
   }
+
   case class Finite(millis: Long) extends Duration(false) {
     require(millis >= 0, s"$millis should be >= 0")
 
@@ -29,6 +45,32 @@ object Duration {
             Infinite
           }
       }
+
+    def *(that: Int): Duration = {
+      require(that >= 0, "we cannot multiply by a negative number")
+      if (that == 0) zero
+      else if (that == 1) this
+      else {
+        val thatL = that.toLong
+        val m1 = millis * thatL
+        if (m1 <= millis) Infinite // overflow
+        else {
+          val m2 = m1 / thatL
+          if (m2 == millis) Finite(m1)
+          else Infinite // overflow
+        }
+      }
+    }
+
+    def /(that: Int): Duration =
+      if (that <= 0)
+        sys.error(s"can only divide a Duration by > 0, found: $this / $that")
+      else if (that == 1) this
+      else {
+        val m1 = millis / that.toLong
+        if (m1 == 0) zero
+        else Finite(m1)
+      }
   }
 
   implicit val durationOrdering: Ordering[Duration] =
@@ -41,9 +83,22 @@ object Duration {
     }
 
   val Zero: Finite = Finite(0)
-  def zero: Duration = Zero
+  val zero: Duration = Zero
 
-  def min(cnt: Int): Duration =
-    if (cnt == 0) zero
-    else Finite(cnt.toLong * 60L * 1000L)
+  // some constants we can access at the type-level: second.type, minute.type, etc...
+  val millisecond: Duration = Duration(1L)
+  val second: Duration = millisecond * 1000
+  val minute: Duration = second * 60
+  val hour: Duration = minute * 60
+  val day: Duration = hour * 24
+  val week: Duration = day * 7
+  // the following are approximate
+  // this is 365.25 days, which is also an integer number of milliseconds
+  // which is divisible by 12
+  val year: Duration = (day * 365) + (hour * 6)
+  val quarter: Duration = year / 4
+  val month: Duration = quarter / 3
+
+  def minutes(cnt: Int): Duration =
+    minute * cnt
 }
