@@ -12,7 +12,26 @@ sealed abstract class Feature[K, V] {
     mapWithKey(Feature.ValueMap(fn))
 
   final def mapWithKey[W](fn: (K, V) => W): Feature[K, W] =
+    mapWithKeyTime(Feature.Ignore3(fn))
+
+  final def mapWithKeyTime[W](fn: (K, V, Timestamp) => W): Feature[K, W] =
     Feature.Mapped(this, fn)
+
+  /**
+    * get an event each time this feature changes value.
+    */
+  final def triggers: Event[(K, Unit)] =
+    Feature.triggersOf(this)
+
+  /**
+    * get an event stream of changes: the tuple has the value before
+    * and after an event
+    */
+  final def changes: Event[(K, (V, V))] =
+    triggers
+      .preLookup(this)
+      .postLookup(this)
+      .mapValues(Feature.ChangesFn[V]())
 }
 
 object Feature {
@@ -21,6 +40,12 @@ object Feature {
   }
   case class ConstFn[A](result: A) extends Function[Any, A] {
     def apply(a: Any) = result
+  }
+  case class Ignore3[K, V, W](fn: (K, V) => W) extends Function3[K, V, Any, W] {
+    def apply(k: K, v: V, a: Any): W = fn(k, v)
+  }
+  case class ChangesFn[A]() extends Function1[((Unit, A), A), (A, A)] {
+    def apply(in: ((Unit, A), A)) = (in._1._2, in._2)
   }
 
   def const[K, V](v: V): Feature[K, V] =
@@ -36,6 +61,18 @@ object Feature {
           .combine(sourcesOf(left), sourcesOf(right))
     }
 
+  def triggersOf[K, V](f: Feature[K, V]): Event[(K, Unit)] = {
+    def loop[W](f: Feature[K, W]): List[Event[(K, Unit)]] =
+      f match {
+        case Summed(ev, _) => ev.triggers :: Nil
+        case Latest(ev, _) => ev.triggers :: Nil
+        case Mapped(f, _)  => loop(f)
+        case Zipped(l, r)  => loop(l) ::: loop(r)
+      }
+
+    loop(f).distinct.reduce(_ ++ _)
+  }
+
   def lookupsOf[K, V](f: Feature[K, V]): Set[Event.Lookup[_, _, _]] =
     f match {
       case Summed(ev, _) => Event.lookupsOf(ev)
@@ -48,7 +85,7 @@ object Feature {
       extends Feature[K, V]
   case class Latest[K, V](event: Event[(K, V)], within: Duration)
       extends Feature[K, Option[V]]
-  case class Mapped[K, V, W](initial: Feature[K, V], fn: (K, V) => W)
+  case class Mapped[K, V, W](initial: Feature[K, V], fn: (K, V, Timestamp) => W)
       extends Feature[K, W]
   case class Zipped[K, V, W](left: Feature[K, V], right: Feature[K, W])
       extends Feature[K, (V, W)]

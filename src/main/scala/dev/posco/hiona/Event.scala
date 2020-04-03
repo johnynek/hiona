@@ -80,19 +80,35 @@ object Event {
       Feature.Latest(ev, within)
 
     final def mapValues[W](fn: V => W): Event[(K, W)] =
-      ev.map(Event.MapValuesFn(fn))
+      ev.map(Event.MapValuesFn(fn, implicitly[(K, V) <:< (K, V)]))
 
     final def max(implicit ord: Ordering[V]): Feature[K, Option[V]] = {
       val ev1: Event[(K, Option[V])] = ev.mapValues(Event.ToSome())
       ev1.sum(MaxMonoid(ord))
     }
 
-    // discard a key, this is used when looking up a feature on one aspect
-    // of an event before applying it to another: e.g.
-    // we might lookup the total volume of trades on one symbol, but then
-    // use it as a feature for another symbol.
+    /**
+      * Set the value to unit. Useful discard the values without
+      * rekeying the event stream.
+      */
+    final def keys: Event[(K, Unit)] =
+      mapValues(Feature.ConstFn(()))
+
+    /**
+      * discard a key, this is used when looking up a feature on one aspect
+      * of an event before applying it to another: e.g.
+      * we might lookup the total volume of trades on one symbol, but then
+      * use it as a feature for another symbol.
+      */
     final def values: Event[V] =
       Event.Mapped(ev, Event.Second[V]())
+
+    /**
+      * discard any trailing lookups and just get the events
+      * that would trigger a subsequent lookup
+      */
+    final def triggers: Event[(K, Unit)] =
+      Event.triggersOf(ev)
   }
 
   case object Empty extends Event[Nothing]
@@ -126,6 +142,29 @@ object Event {
         (lookupsOf(ev) | Feature.lookupsOf(f)) + l
       case ns: NonSource[_] => lookupsOf(ns.previous)
     }
+
+  /**
+    * return an event that just signals when the keys change
+    */
+  def triggersOf[A](ev: Event[(A, Any)]): Event[(A, Unit)] = {
+    def loop(ev: Event[(A, Any)]): List[Event[(A, Unit)]] =
+      ev match {
+        case Empty                 => Nil
+        case src @ Source(_, _, _) => src.keys :: Nil
+        case Concat(left, right) =>
+          loop(left) ::: loop(right)
+        case Lookup(ev, _, _)                     => loop(ev)
+        case Mapped(ev, MapValuesFn(_, evidence)) =>
+          // if we only change the values, we can
+          // skip this and possibly remove more lookups
+          val tupleEv: Event[(A, Any)] = evidence.liftCo[Event](ev)
+          loop(tupleEv)
+        case ns: NonSource[_] =>
+          ns.keys :: Nil
+      }
+
+    loop(ev).distinct.reduceOption(_ ++ _).getOrElse(Empty)
+  }
 
   case class Mapped[A, B](init: Event[A], fn: A => B) extends NonSource[B] {
     type Prior = A
@@ -169,8 +208,12 @@ object Event {
     def apply(a: A) = Some(a)
   }
 
-  case class MapValuesFn[A, B, C](fn: B => C) extends Function[(A, B), (A, C)] {
-    def apply(ab: (A, B)) = (ab._1, fn(ab._2))
+  case class MapValuesFn[A0, A, B, C](fn: B => C, ev: A0 <:< (A, B))
+      extends Function[A0, (A, C)] {
+    def apply(a0: A0) = {
+      val ab = ev(a0)
+      (ab._1, fn(ab._2))
+    }
   }
 
 }

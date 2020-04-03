@@ -155,7 +155,9 @@ object Engine {
             fromLabeledEvent(m.labeled).map(
               Impl.ConcatMapEmitter(
                 _,
-                Impl.MapToConcat(Event.MapValuesFn[K, V, W](m.fn))
+                Impl.MapToConcat(
+                  Event.MapValuesFn[(K, V), K, V, W](m.fn, implicitly)
+                )
               )
             )
 
@@ -283,7 +285,7 @@ object Engine {
         case Label.LookForward(l, offset1) =>
           fromLabel(l, offset + offset1)
         case Label.Mapped(feat, fn) =>
-          fromLabel(feat, offset).map(MappedFS(_, fn))
+          fromLabel(feat, offset).map(MappedFS(_, Feature.Ignore3(fn)))
         case Label.Zipped(left, right) =>
           (fromLabel(left, offset), fromLabel(right, offset))
             .mapN(ZippedFS(_, _))
@@ -488,14 +490,21 @@ object Engine {
           }
     }
 
-    case class MappedFS[K, V, W](fs: FeatureState[K, V], fn: (K, V) => W)
-        extends FeatureState[K, W] {
+    case class Apply3[A, B, C, D](fn: (A, B, C) => D, c: C)
+        extends Function2[A, B, D] {
+      def apply(a: A, b: B) = fn(a, b, c)
+    }
+    case class MappedFS[K, V, W](
+        fs: FeatureState[K, V],
+        fn: (K, V, Timestamp) => W
+    ) extends FeatureState[K, W] {
       def consumes = fs.consumes
       def feed(point: Point, seq: Long) =
         fs.feed(point, seq)
           .map {
             case (before, after) =>
-              (Reader.Mapped(before, fn), Reader.Mapped(after, fn))
+              val ap = Apply3(fn, point.ts)
+              (Reader.Mapped(before, ap), Reader.Mapped(after, ap))
           }
     }
     case class ZippedFS[K, V, W](
