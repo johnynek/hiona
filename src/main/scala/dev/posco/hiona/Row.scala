@@ -143,7 +143,8 @@ object Row extends Priority1Rows {
 
   implicit case object DummyRow extends Row[Dummy] {
     def columns = 1
-    def writeToStrings(a: Dummy, offset: Int, dest: Array[String]) = ()
+    def writeToStrings(a: Dummy, offset: Int, dest: Array[String]) =
+      dest(offset) = ""
     def unsafeFromStrings(offset: Int, s: DRow) = Dummy
   }
 
@@ -285,11 +286,11 @@ object Row extends Priority1Rows {
     val row = implicitly[Row[A]]
 
     IO {
-      // use just a single buffer for this file
-      val buffer = new Array[String](row.columns)
-
       { (items: Iterable[A]) =>
         IO {
+          // use just a single buffer for this file
+          val buffer = new Array[String](row.columns)
+
           val iter = items.iterator
           while (iter.hasNext) {
             val a = iter.next()
@@ -407,6 +408,18 @@ sealed trait Priority1Rows extends Priority2Rows {
       a :: b
     }
   }
+
+  case class LiteralString[S <: String](str: S) extends Row[S] {
+    def columns = 1
+    def writeToStrings(s: S, offset: Int, dest: Array[String]) =
+      dest(offset) = str
+    def unsafeFromStrings(offset: Int, row: DRow): S =
+      if (row(offset) == str) str
+      else sys.error(s"expected: ${row(offset)} at offset = $offset to be $str")
+  }
+
+  implicit def literalString[S <: String](implicit v: ValueOf[S]): Row[S] =
+    LiteralString(v.value)
 
   implicit def hconsRow[A, B <: HList](
       implicit rowA: Row[A],

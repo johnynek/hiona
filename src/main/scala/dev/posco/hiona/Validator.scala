@@ -9,7 +9,7 @@ import java.util.TimeZone
   * We will eventually make it configurable how to fail, but currently any failure is a hard
   * failure. In a realtime system, we might instead just log the failure and keep going.
   */
-trait Validator[A] {
+trait Validator[-A] {
   def validate(a: A): Either[Validator.Error, Timestamp]
 }
 
@@ -22,12 +22,13 @@ object Validator {
   case class TimestampParseFailure[A](from: A, badString: String)
       extends Error(s"couldn't parse: $badString in $from")
 
-  def parseAndShift[A](parseString: String, tz: TimeZone, shift: Duration)(
-      fn: A => String
+  def parseAndShift[A](
+      parseString: String,
+      tz: TimeZone,
+      get: A => String,
+      shift: Timestamp => Timestamp
   ): Validator[A] =
     new Validator[A] {
-      require(!shift.isInfinite, "we cannot shift by Infinite")
-
       import java.text.SimpleDateFormat
 
       val fmt = new SimpleDateFormat(parseString)
@@ -35,12 +36,12 @@ object Validator {
       fmt.setTimeZone(tz)
 
       def validate(a: A): Either[Validator.Error, Timestamp] = {
-        val str = fn(a)
+        val str = get(a)
         try {
           // the bar is only available at the end of the next bar,
           // these are 30 minute bars:
           val ts = fmt.parse(str).getTime
-          Right(Timestamp(ts + shift.millis))
+          Right(shift(Timestamp(ts)))
         } catch {
           case (_: java.text.ParseException) =>
             Left(Validator.TimestampParseFailure(a, str))
@@ -48,8 +49,18 @@ object Validator {
       }
     }
 
-  def parseAndShiftUtc[A](parseString: String, shift: Duration)(
-      fn: A => String
+  def parseAndShiftUtc[A](
+      parseString: String,
+      get: A => String,
+      shift: Timestamp => Timestamp
   ): Validator[A] =
-    parseAndShift(parseString, TimeZone.getTimeZone("UTC"), shift)(fn)
+    parseAndShift(parseString, TimeZone.getTimeZone("UTC"), get, shift)
+
+  implicit class ValidatorOps[A](private val validator: Validator[A])
+      extends AnyVal {
+    def shiftLater(dur: Duration): Validator[A] =
+      new Validator[A] {
+        def validate(a: A) = validator.validate(a).map(_ + dur)
+      }
+  }
 }

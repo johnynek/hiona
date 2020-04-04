@@ -1,6 +1,8 @@
 package dev.posco.hiona
 
+import java.util.{Calendar, TimeZone}
 import cats.implicits._
+import cats.Monoid
 
 object Example {
   // rows like
@@ -8,7 +10,7 @@ object Example {
   // 1:HK,TRADES,False,2015-07-02 01:30:00 UTC,113.2,113.9,112.9,113.0,1039500
   case class StockData(
       symbol: String,
-      whatToShow: Row.Dummy,
+      whatToShow: "TRADES",
       rthOnly: Boolean,
       barStartUtc: String,
       open: BigDecimal,
@@ -23,25 +25,113 @@ object Example {
       Row.genericRow
   }
 
+  // if the UTC start hour is 1 (1:30) we end in 30 minutes
+  // so the event would be sent 30 minutes later.
+  // otherwise the bar ends 1 hour later
+  val correctTs: Timestamp => Timestamp = {
+    val thirtyMin = Duration.minutes(30)
+    val utc = TimeZone.getTimeZone("UTC")
+
+    { ts: Timestamp =>
+      val c = Calendar.getInstance()
+      c.setTimeZone(utc)
+      c.setTimeInMillis(ts.epochMillis)
+      if (c.get(Calendar.HOUR_OF_DAY) == 1) {
+        ts + thirtyMin
+      } else ts + Duration.hour
+    }
+  }
+
   val dateValidator: Validator[StockData] =
     Validator.parseAndShiftUtc(
       "yyyy-MM-dd hh:mm:ss 'UTC'",
-      Duration.minutes(30)
-    )(
-      _.barStartUtc
+      _.barStartUtc,
+      correctTs
     )
 
   val hkStockData: Event[StockData] = Event.source("hk-stocks", dateValidator)
 
+  // all symbols we have ever seen
+  val allSymbols: Feature[Unit, Set[String]] =
+    hkStockData.map(sd => ((), Set(sd.symbol))).sum
+
+  // just a debug string of all symbols
+  val symbolChanges: Event[String] =
+    allSymbols.changes
+      .filter { case (_, (v1, v2)) => v1 != v2 }
+      .map {
+        case (_, (v1, v2)) =>
+          s"new = ${(v2 -- v1).toList.sorted}"
+      }
+
+  case class PriceData(
+      closePrice: BigDecimal,
+      volume: Long,
+      barCloseTime: Timestamp
+  )
+
+  val latestBar: Feature[String, Option[PriceData]] =
+    hkStockData.withTime
+      .map { case (sd, ts) => (sd.symbol, PriceData(sd.close, sd.volume, ts)) }
+      .latest(Duration.Infinite)
+
+  // these are timestamps of bar closings 1 ms after they happen
+  val barEnd: Event[Timestamp] = {
+    // to signal the end of bars we emit timestamps 1 ms after the end
+    // of a bar, so we know for sure that the bar would have been seen if it exists
+    val barEndValidator: Validator[StockData] =
+      dateValidator.shiftLater(Duration.millisecond)
+
+    val monoid = new Monoid[Boolean] {
+      def empty = false
+      def combine(a: Boolean, b: Boolean) = a || b
+    }
+
+    // de-duplicate this event stream
+    Event
+      .source("bar-end", barEndValidator)
+      .withTime
+      .map { case (_, ts) => (ts - Duration.millisecond, true) }
+      .sum(monoid)
+      .changes
+      .concatMap {
+        case (bar, (false, true)) =>
+          // this is the first event in this bar
+          bar :: Nil
+        case _ => Nil
+      }
+  }
+
+  // this gets the full price table at the close of each bar
+  val densePriceData: Event[(String, PriceData)] =
+    barEnd
+      .map(barEndTs => ((), barEndTs))
+      .postLookup(allSymbols)
+      .concatMap {
+        case (_, (barEndTs, symbols)) =>
+          symbols.toList.sorted.map((_, barEndTs))
+      }
+      .postLookup(latestBar)
+      .concatMap {
+        case (symbol, (barEndTs, Some(pd))) if pd.barCloseTime == barEndTs =>
+          (symbol, pd) :: Nil
+        case (symbol, (barEndTs, Some(pd))) =>
+          // we had an empty bar, just use the previous close
+          (symbol, PriceData(pd.closePrice, 0L, barEndTs)) :: Nil
+        case (s, (ts, None)) =>
+          // we have never seen a price for this symbol, so don't start now
+          Nil
+      }
+
   // represents the current decayed value over four different decay half lifes
   case class D4(hour: Float, day: Float, week: Float, quarter: Float)
-  case class DecayedFeature(high: D4, logHigh: D4, vol: D4, logVol: D4)
+  case class DecayedFeature(close: D4, logClose: D4, vol: D4, logVol: D4)
 
   val decayFeatures: Feature[String, DecayedFeature] = {
-    def make4[N: Numeric](fn: StockData => N) = {
-      (input: (StockData, Timestamp)) =>
-        val (sd, ts) = input
-        val v = fn(sd)
+    def make4[N: Numeric](fn: PriceData => N) = {
+      (input: (PriceData, Timestamp)) =>
+        val (pd, ts) = input
+        val v = fn(pd)
         (
           Decay.build[Duration.hour.type, N](ts, v),
           Decay.build[Duration.day.type, N](ts, v),
@@ -50,16 +140,17 @@ object Example {
         )
     }
 
-    val makeHigh = make4(_.high)
-    val makeLogHigh = make4(sd => Targets.Log1(sd.high.toFloat))
+    val makeClose = make4(_.closePrice)
+    val makeLogClose = make4(sd => Targets.Log1(sd.closePrice.toFloat))
     val makeVol = make4(_.volume)
     val makeLogVol = make4(sd => Targets.Log1(sd.volume.toFloat))
 
-    val inputs = hkStockData.withTime.map {
-      case pair @ (sd, _) =>
+    val inputs = densePriceData.withTime.map {
+      case ((symbol, pd), ts) =>
+        val pair = (pd, ts)
         val value =
-          (makeHigh(pair), makeLogHigh(pair), makeVol(pair), makeLogVol(pair))
-        (sd.symbol, value)
+          (makeClose(pair), makeLogClose(pair), makeVol(pair), makeLogVol(pair))
+        (symbol, value)
     }.sum
 
     inputs.map {
@@ -87,23 +178,23 @@ object Example {
 
   case class ZeroHistoryFeatures(
       ts: Timestamp,
-      currentHigh: Float,
-      currentLogHigh: Float,
+      currentClose: Float,
+      currentLogClose: Float,
       currentVolume: Float,
       currentLogVolume: Float
   )
 
   val eventWithNoHistoryFeatures: Event[(String, ZeroHistoryFeatures)] =
-    hkStockData.withTime.map {
-      case (sd, ts) =>
+    densePriceData.withTime.map {
+      case ((sym, pd), ts) =>
         (
-          sd.symbol,
+          sym,
           ZeroHistoryFeatures(
             ts,
-            sd.high.toFloat,
-            Targets.Log1(sd.high.toFloat),
-            sd.volume.toFloat,
-            Targets.Log1(sd.volume.toFloat)
+            pd.closePrice.toFloat,
+            Targets.Log1(pd.closePrice.toFloat),
+            pd.volume.toFloat,
+            Targets.Log1(pd.volume.toFloat)
           )
         )
     }
@@ -124,23 +215,22 @@ object Example {
     }
 
     case class Values[Min <: Int, T <: Transform](
-        highPrice: Float,
-        lowPrice: Float,
+        closePrice: Float,
         volume: Float
     )
 
     def coreEvent[Min <: Int, T <: Transform: ValueOf]
         : Event[(String, Values[Min, T])] = {
       val fn = valueOf[T]
-      hkStockData.map { sd =>
-        (
-          sd.symbol,
-          Values[Min, T](
-            fn(sd.high.toFloat),
-            fn(sd.low.toFloat),
-            fn(sd.volume.toFloat)
+      densePriceData.map {
+        case (sym, pd) =>
+          (
+            sym,
+            Values[Min, T](
+              fn(pd.closePrice.toFloat),
+              fn(pd.volume.toFloat)
+            )
           )
-        )
       }
     }
 
@@ -153,20 +243,16 @@ object Example {
       ).lookForward(dur)
     }
 
-    // use 45 and 90 minutes in the future
+    // 1 hour in the future is always generally the next bar
     case class Target(
-        v45lin: Option[Values[45, Identity.type]],
-        v45log: Option[Values[45, Log1.type]],
-        v90lin: Option[Values[90, Identity.type]],
-        v90log: Option[Values[90, Log1.type]]
+        v60lin: Option[Values[60, Identity.type]],
+        v60log: Option[Values[60, Log1.type]]
     )
 
     val label: Label[String, Target] =
-      makeValue[45, Identity.type]
-        .zip(makeValue[45, Log1.type])
-        .zip(makeValue[90, Identity.type])
-        .zip(makeValue[90, Log1.type])
-        .map { case (((a, b), c), d) => Target(a, b, c, d) }
+      makeValue[60, Identity.type]
+        .zip(makeValue[60, Log1.type])
+        .map { case (a, b) => Target(a, b) }
 
   }
 

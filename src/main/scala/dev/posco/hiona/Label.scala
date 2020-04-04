@@ -101,6 +101,11 @@ object LabeledEvent {
       case Filtered(l, _) => sourcesAndOffsetsOf(l)
     }
 
+  def sourcesOf[A, B](
+      ev: LabeledEvent[A, B]
+  ): Map[String, Set[Event.Source[_]]] =
+    sourcesAndOffsetsOf(ev).iterator.map { case (k, (v, _)) => (k, v) }.toMap
+
   def lookupsOf[K, V](le: LabeledEvent[K, V]): Set[Event.Lookup[_, _, _]] =
     le match {
       case WithLabel(ev, label) =>

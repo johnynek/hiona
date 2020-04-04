@@ -1,6 +1,6 @@
 package dev.posco.hiona
 
-import org.scalacheck.{Arbitrary, Prop}
+import org.scalacheck.{Arbitrary, Gen, Prop}
 import org.scalacheck.Prop.forAll
 import net.tixxit.delimited.{Row => DRow}
 
@@ -26,7 +26,12 @@ class RowLaws extends munit.ScalaCheckSuite {
     pser && pcols
   }
 
+  def literal[A: ValueOf]: Arbitrary[A] =
+    Arbitrary(Gen.const(valueOf[A]))
+
   property("Unit row")(testRow[Unit](0))
+  property("Dummy row")(testRow[Row.Dummy](1))
+  property("Literal row")(testRow["some literal"](1)(implicitly, literal))
   property("Byte row")(testRow[Byte](1))
   property("Short row")(testRow[Short](1))
   property("Char row")(testRow[Char](1))
