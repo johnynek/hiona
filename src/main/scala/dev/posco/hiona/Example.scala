@@ -133,10 +133,10 @@ object Example {
         val (pd, ts) = input
         val v = fn(pd)
         (
-          Decay.build[Duration.hour.type, N](ts, v),
-          Decay.build[Duration.day.type, N](ts, v),
-          Decay.build[Duration.week.type, N](ts, v),
-          Decay.build[Duration.quarter.type, N](ts, v)
+          Decay.toFloat[Duration.hour.type, N](ts, v),
+          Decay.toFloat[Duration.day.type, N](ts, v),
+          Decay.toFloat[Duration.week.type, N](ts, v),
+          Decay.toFloat[Duration.quarter.type, N](ts, v)
         )
     }
 
@@ -153,23 +153,23 @@ object Example {
         (symbol, value)
     }.sum
 
-    inputs.map {
-      case (dh, dlh, dv, dlv) =>
+    inputs.mapWithKeyTime {
+      case (_, (dh, dlh, dv, dlv), ts) =>
         import Duration._
 
         def toD4(
             tuple: (
-                Decay[hour.type],
-                Decay[day.type],
-                Decay[week.type],
-                Decay[quarter.type]
+                Decay[hour.type, Float],
+                Decay[day.type, Float],
+                Decay[week.type, Float],
+                Decay[quarter.type, Float]
             )
         ) =
           D4(
-            tuple._1.value.toFloat,
-            tuple._2.value.toFloat,
-            tuple._3.value.toFloat,
-            tuple._4.value.toFloat
+            tuple._1.atTimestamp(ts),
+            tuple._2.atTimestamp(ts),
+            tuple._3.atTimestamp(ts),
+            tuple._4.atTimestamp(ts)
           )
 
         DecayedFeature(toD4(dh), toD4(dlh), toD4(dv), toD4(dlv))
