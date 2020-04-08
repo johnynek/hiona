@@ -25,12 +25,13 @@ object Example {
       Row.genericRow
   }
 
+  val utc = TimeZone.getTimeZone("UTC")
+
   // if the UTC start hour is 1 (1:30) we end in 30 minutes
   // so the event would be sent 30 minutes later.
   // otherwise the bar ends 1 hour later
   val correctTs: Timestamp => Timestamp = {
     val thirtyMin = Duration.minutes(30)
-    val utc = TimeZone.getTimeZone("UTC")
 
     { ts: Timestamp =>
       val c = Calendar.getInstance()
@@ -39,6 +40,15 @@ object Example {
       if (c.get(Calendar.HOUR_OF_DAY) == 1) {
         ts + thirtyMin
       } else ts + Duration.hour
+    }
+  }
+
+  implicit class TimestampOps(private val ts: Timestamp) extends AnyVal {
+    def calendarFeatures[A](fn: Calendar => A): A = {
+      val c = Calendar.getInstance()
+      c.setTimeZone(utc)
+      c.setTimeInMillis(ts.epochMillis)
+      fn(c)
     }
   }
 
@@ -118,7 +128,7 @@ object Example {
         case (symbol, (barEndTs, Some(pd))) =>
           // we had an empty bar, just use the previous close
           (symbol, PriceData(pd.closePrice, 0L, barEndTs)) :: Nil
-        case (s, (ts, None)) =>
+        case (_, (_, None)) =>
           // we have never seen a price for this symbol, so don't start now
           Nil
       }
@@ -176,8 +186,40 @@ object Example {
     }
   }
 
+  /**
+   * Useful for keeping digits of a price
+   * the idea is that some values -- like a round price that ends in a '0' are useful for prediction
+   * so each of the select digits is recoded as one of '0' .. '9'
+   * @param tensDollarsDigit
+   * @param dollarsDigit
+   * @param tensCentsDigit
+   * @param centsDigit
+   */
+  case class Digits(
+                     tensDollarsDigit: Byte,
+                     dollarsDigit: Byte,
+                     tensCentsDigit: Byte,
+                     centsDigit: Byte)
+
+  implicit class DigitsMethods(private val price: BigDecimal) extends AnyVal {
+    /**
+     * Encode the price into its Digits
+     *
+     * @return event with new feature values
+     */
+    def toDigits: Digits = {
+      @inline def d(i: BigDecimal): Byte = (i.toInt % 10).toByte
+
+      val p = price
+      Digits(d(p / 10), d(p), d(p * 10), d(p * 100))
+    }
+  }
+
   case class ZeroHistoryFeatures(
       ts: Timestamp,
+      hourOfDay: Int,
+      dayOfWeek: Int,
+      closeDigits: Digits,
       currentClose: Float,
       currentLogClose: Float,
       currentVolume: Float,
@@ -187,10 +229,14 @@ object Example {
   val eventWithNoHistoryFeatures: Event[(String, ZeroHistoryFeatures)] =
     densePriceData.withTime.map {
       case ((sym, pd), ts) =>
+        val (hour, day) = ts.calendarFeatures { c => (c.get(Calendar.HOUR_OF_DAY), c.get(Calendar.DAY_OF_WEEK)) }
         (
           sym,
           ZeroHistoryFeatures(
             ts,
+            hour,
+            day,
+            pd.closePrice.toDigits,
             pd.closePrice.toFloat,
             Targets.Log1(pd.closePrice.toFloat),
             pd.volume.toFloat,
