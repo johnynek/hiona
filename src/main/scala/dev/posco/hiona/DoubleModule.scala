@@ -8,18 +8,19 @@ import shapeless._
 
 trait DoubleModule[@specialized(Float, Double) V] {
   def monoid: Monoid[V]
+
   /**
-   * This should have the law that
-   * s1 * (s2 * v) == (s1 * s2) * v
-   *
-   * and
-   *
-   * s * (v1 + v2) == s * v1 + s * v2
-   * (s + r) * v = s * v + r * v
-   *
-   * 0 * v = empty
-   * 1 * v = v
-   */
+    * This should have the law that
+    * s1 * (s2 * v) == (s1 * s2) * v
+    *
+    * and
+    *
+    * s * (v1 + v2) == s * v1 + s * v2
+    * (s + r) * v = s * v + r * v
+    *
+    * 0 * v = empty
+    * 1 * v = v
+    */
   def scale(s: Double, v: V): V
 }
 
@@ -48,7 +49,10 @@ object DoubleModule extends Priority1DoubleModule {
       def scale(s: Double, v: Unit) = ()
     }
 
-  def genericModule[A, B](implicit gen: Generic.Aux[A, B], modB: => DoubleModule[B]): DoubleModule[A] =
+  def genericModule[A, B](
+      implicit gen: Generic.Aux[A, B],
+      modB: => DoubleModule[B]
+  ): DoubleModule[A] =
     new DoubleModule[A] {
       lazy val monoid = ShapelessMonoid.genericMonoid[A, B](gen, modB.monoid)
 
@@ -68,9 +72,13 @@ sealed trait Priority1DoubleModule {
       def scale(s: Double, v: HNil) = HNil
     }
 
-  implicit def hconsModule[A, B <: HList](implicit modA: DoubleModule[A], modB: => DoubleModule[B]): DoubleModule[A :: B] =
+  implicit def hconsModule[A, B <: HList](
+      implicit modA: DoubleModule[A],
+      modB: => DoubleModule[B]
+  ): DoubleModule[A :: B] =
     new DoubleModule[A :: B] {
-      lazy val monoid = ShapelessMonoid.hconsMonoid[A, B](modA.monoid, modB.monoid)
+      lazy val monoid =
+        ShapelessMonoid.hconsMonoid[A, B](modA.monoid, modB.monoid)
       def scale(s: Double, v: A :: B) = {
         val (va :: vb) = v
         modA.scale(s, va) :: modB.scale(s, vb)
@@ -78,4 +86,3 @@ sealed trait Priority1DoubleModule {
     }
 
 }
-

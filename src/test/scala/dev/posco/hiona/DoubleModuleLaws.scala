@@ -8,18 +8,19 @@ import Prop.forAll
 import shapeless._
 
 object Moment2Laws {
+
   /**
-   * This should have the law that
-   * s1 * (s2 * v) == (s1 * s2) * v
-   *
-   * and
-   *
-   * s * (v1 + v2) == s * v1 + s * v2
-   * (s + r) * v = s * v + r * v
-   *
-   * 0 * v = empty
-   * 1 * v = v
-   */
+    * This should have the law that
+    * s1 * (s2 * v) == (s1 * s2) * v
+    *
+    * and
+    *
+    * s * (v1 + v2) == s * v1 + s * v2
+    * (s + r) * v = s * v + r * v
+    *
+    * 0 * v = empty
+    * 1 * v = v
+    */
   def laws[A: Arbitrary: Eq: DoubleModule]: Prop = {
     val mod = implicitly[DoubleModule[A]]
 
@@ -34,26 +35,21 @@ object Moment2Laws {
       val left = mod.scale(s, mod.monoid.combine(a1, a2))
       val right = mod.monoid.combine(mod.scale(s, a1), mod.scale(s, a2))
       Prop(Eq[A].eqv(left, right))
-    }
-    .label("s * (v1 + v2) == s * v1 + s * v2")
+    }.label("s * (v1 + v2) == s * v1 + s * v2")
 
     val law3 = forAll { (s: Double, r: Double, a: A) =>
       val left = mod.scale(s + r, a)
       val right = mod.monoid.combine(mod.scale(s, a), mod.scale(r, a))
 
       Prop(Eq[A].eqv(left, right))
-    }
-    .label("(s + r) * v == s * v + r * v")
+    }.label("(s + r) * v == s * v + r * v")
 
     val law4 = forAll { v: A =>
       Prop(Eq[A].eqv(mod.scale(0.0, v), mod.monoid.empty))
-    }
-    .label("0 * v = empty")
+    }.label("0 * v = empty")
 
-    val law5 = forAll { v: A =>
-      Prop(Eq[A].eqv(mod.scale(1.0, v), v))
-    }
-    .label("1 * v = v")
+    val law5 = forAll { v: A => Prop(Eq[A].eqv(mod.scale(1.0, v), v)) }
+      .label("1 * v = v")
 
     law1 && law2 && law3 && law4 && law5
   }
@@ -77,7 +73,7 @@ class Moment2Laws extends munit.ScalaCheckSuite {
     new Eq[Double] {
       def eqv(a: Double, b: Double) =
         (a == b) || {
-          math.abs(a - b)/math.max(a, b) < 0.001
+          math.abs(a - b) / math.max(a, b) < 0.001
         }
     }
 
@@ -85,13 +81,15 @@ class Moment2Laws extends munit.ScalaCheckSuite {
     new Eq[Float] {
       def eqv(a: Float, b: Float) =
         (a == b) || {
-          math.abs(a - b)/math.max(a, b) < 0.01
+          math.abs(a - b) / math.max(a, b) < 0.01
         }
     }
 
   property("DoubleModule[Double]")(laws[Double])
   property("DoubleModule[Float]")(laws[Float])
-  property("DoubleModule[Float :: Double :: HNil]")(laws[Float :: Double :: HNil])
+  property("DoubleModule[Float :: Double :: HNil]")(
+    laws[Float :: Double :: HNil]
+  )
 
   property("DoubleModule[Moment2]")(lawsEq[Moments2](genericEq))
 }

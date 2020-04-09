@@ -34,9 +34,9 @@ object Engine {
       .fromEvent(event)
       .flatMap(runEmitter(Feeder.fromInputs(inputs, event), _, output))
 
-  def runLabeled[A: Row, B: Row](
+  def runLabeled[A: Row](
       inputs: Map[String, Path],
-      labeled: LabeledEvent[A, B],
+      labeled: LabeledEvent[A],
       output: Path
   )(implicit ctx: ContextShift[IO]): IO[Unit] =
     Emitter
@@ -143,20 +143,20 @@ object Engine {
     def fromEvent[A](ev: Event[A]): IO[Emitter[A]] =
       Impl.fromEvent(ev, Duration.Zero)
 
-    def fromLabeledEvent[K, V](le: LabeledEvent[K, V]): IO[Emitter[(K, V)]] =
+    def fromLabeledEvent[A](le: LabeledEvent[A]): IO[Emitter[A]] =
       le match {
         case LabeledEvent.WithLabel(ev, label) =>
           (fromEvent(ev), FeatureState.fromLabel(label))
             .mapN(Impl.LookupEmitter(_, _, LookupOrder.After))
         case m @ LabeledEvent.Mapped(_, _) =>
-          def go[K, V, W](
-              m: LabeledEvent.Mapped[K, V, W]
-          ): IO[Emitter[(K, W)]] =
+          def go[A0](
+              m: LabeledEvent.Mapped[A0, A]
+          ): IO[Emitter[A]] =
             fromLabeledEvent(m.labeled).map(
               Impl.ConcatMapEmitter(
                 _,
                 Impl.MapToConcat(
-                  Event.MapValuesFn[(K, V), K, V, W](m.fn, implicitly)
+                  m.fn
                 )
               )
             )
@@ -164,7 +164,7 @@ object Engine {
           go(m)
         case LabeledEvent.Filtered(ev, fn) =>
           fromLabeledEvent(ev).map(
-            Impl.ConcatMapEmitter(_, Impl.FilterToConcat(Impl.Fn2To1(fn)))
+            Impl.ConcatMapEmitter(_, Impl.FilterToConcat(fn))
           )
       }
   }

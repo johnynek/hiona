@@ -23,7 +23,11 @@ class RowLaws extends munit.ScalaCheckSuite {
     val pcols =
       Prop(row.columns == cols).label(s"columns match: ${row.columns} == $cols")
 
-    pser && pcols
+    val names = row.columnNames(0)
+    val namesGood = Prop((names.size == cols) && (names.toSet.size == cols))
+      .label(s"names = $names, good size: $cols")
+
+    pser && pcols && namesGood
   }
 
   def literal[A: ValueOf]: Arbitrary[A] =
@@ -56,6 +60,9 @@ class RowLaws extends munit.ScalaCheckSuite {
 
   case class Foo(x: Int, str: String, opt: Option[BigInt])
   property("Foo")(testRow[Foo](3))
+
+  case class Nest(leftFoo: Foo, rightFoo: Foo)
+  property("Nest")(testRow[Nest](6))
 
   sealed trait Bar
   object Bar {
@@ -91,5 +98,24 @@ class RowLaws extends munit.ScalaCheckSuite {
     testValue[Bar](Bar.Bar0, List("", ""))
     testValue[Bar](Bar.Bar1(1), List("1", ""))
     testValue[Bar](Bar.Bar2(2.0), List("", "2.0"))
+  }
+
+  test("test column names") {
+    def law[A](cols: String*)(implicit row: Row[A]) = {
+      val found = row.columnNames(0)
+      assert(found.toSet.size == found.size, found.toString)
+      assert(found == cols.toList, found.toString)
+    }
+
+    law[Foo]("x", "str", "opt")
+    law[Either[String, Int]]("value0", "value1")
+    law[Nest](
+      "left_foo.x",
+      "left_foo.str",
+      "left_foo.opt",
+      "right_foo.x",
+      "right_foo.str",
+      "right_foo.opt"
+    )
   }
 }

@@ -14,10 +14,10 @@ class EmitterTests extends munit.FunSuite {
     (feeder, emitterIO).mapN(Engine.Emitter.runToList(_, 100, _)).flatten
   }
 
-  def resultLabel[A, B](
-      ev: LabeledEvent[A, B],
+  def resultLabel[A](
+      ev: LabeledEvent[A],
       feeder: IO[Feeder]
-  ): IO[List[(A, B)]] = {
+  ): IO[List[A]] = {
     val emitterIO = Engine.Emitter.fromLabeledEvent(ev)
     (feeder, emitterIO).mapN(Engine.Emitter.runToList(_, 100, _)).flatten
   }

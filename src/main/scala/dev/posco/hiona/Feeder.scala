@@ -276,9 +276,9 @@ object Feeder {
     }
   }
 
-  def fromInputsLabels[A, B](
+  def fromInputsLabels[A](
       paths: Map[String, Path],
-      ev: LabeledEvent[A, B]
+      ev: LabeledEvent[A]
   ): Resource[IO, Feeder] = {
     val srcs = LabeledEvent.sourcesAndOffsetsOf(ev)
     val badSrcs = srcs.filter { case (_, (srcs, _)) => srcs.size > 1 }

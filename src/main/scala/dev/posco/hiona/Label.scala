@@ -64,14 +64,12 @@ object Label {
     }
 }
 
-// Labeled events always have a subject K, and then features + label: V
-// we can't change what LabeledEvents subjects are
-sealed abstract class LabeledEvent[K, V] {
-  final def map[W](fn: V => W): LabeledEvent[K, W] =
+sealed abstract class LabeledEvent[A] {
+  final def map[B](fn: A => B): LabeledEvent[B] =
     LabeledEvent.Mapped(this, fn)
 
   // we can discard rows if we want to filter before emitting data
-  final def filter(fn: (K, V) => Boolean): LabeledEvent[K, V] =
+  final def filter(fn: A => Boolean): LabeledEvent[A] =
     LabeledEvent.Filtered(this, fn)
 }
 
@@ -80,11 +78,11 @@ object LabeledEvent {
   def apply[K, V, W](
       event: Event[(K, V)],
       label: Label[K, W]
-  ): LabeledEvent[K, (V, W)] =
+  ): LabeledEvent[(K, (V, W))] =
     WithLabel(event, label)
 
-  def sourcesAndOffsetsOf[A, B](
-      ev: LabeledEvent[A, B]
+  def sourcesAndOffsetsOf[A](
+      ev: LabeledEvent[A]
   ): Map[String, (Set[Event.Source[_]], Set[Duration])] =
     ev match {
       case WithLabel(ev, label) =>
@@ -101,12 +99,12 @@ object LabeledEvent {
       case Filtered(l, _) => sourcesAndOffsetsOf(l)
     }
 
-  def sourcesOf[A, B](
-      ev: LabeledEvent[A, B]
+  def sourcesOf[A](
+      ev: LabeledEvent[A]
   ): Map[String, Set[Event.Source[_]]] =
     sourcesAndOffsetsOf(ev).iterator.map { case (k, (v, _)) => (k, v) }.toMap
 
-  def lookupsOf[K, V](le: LabeledEvent[K, V]): Set[Event.Lookup[_, _, _]] =
+  def lookupsOf[A](le: LabeledEvent[A]): Set[Event.Lookup[_, _, _]] =
     le match {
       case WithLabel(ev, label) =>
         Event.lookupsOf(ev) | Label.lookupsOf(label)
@@ -115,9 +113,9 @@ object LabeledEvent {
     }
 
   case class WithLabel[K, V, W](event: Event[(K, V)], label: Label[K, W])
-      extends LabeledEvent[K, (V, W)]
-  case class Mapped[K, V, W](labeled: LabeledEvent[K, V], fn: V => W)
-      extends LabeledEvent[K, W]
-  case class Filtered[K, V](labeled: LabeledEvent[K, V], fn: (K, V) => Boolean)
-      extends LabeledEvent[K, V]
+      extends LabeledEvent[(K, (V, W))]
+  case class Mapped[A, B](labeled: LabeledEvent[A], fn: A => B)
+      extends LabeledEvent[B]
+  case class Filtered[A](labeled: LabeledEvent[A], fn: A => Boolean)
+      extends LabeledEvent[A]
 }

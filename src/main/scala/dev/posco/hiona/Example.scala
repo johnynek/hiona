@@ -20,11 +20,6 @@ object Example {
       volume: Long
   )
 
-  object StockData {
-    implicit val rowStockData: Row[StockData] =
-      Row.genericRow
-  }
-
   val utc = TimeZone.getTimeZone("UTC")
 
   // if the UTC start hour is 1 (1:30) we end in 30 minutes
@@ -187,26 +182,28 @@ object Example {
   }
 
   /**
-   * Useful for keeping digits of a price
-   * the idea is that some values -- like a round price that ends in a '0' are useful for prediction
-   * so each of the select digits is recoded as one of '0' .. '9'
-   * @param tensDollarsDigit
-   * @param dollarsDigit
-   * @param tensCentsDigit
-   * @param centsDigit
-   */
+    * Useful for keeping digits of a price
+    * the idea is that some values -- like a round price that ends in a '0' are useful for prediction
+    * so each of the select digits is recoded as one of '0' .. '9'
+    * @param tensDollarsDigit
+    * @param dollarsDigit
+    * @param tensCentsDigit
+    * @param centsDigit
+    */
   case class Digits(
-                     tensDollarsDigit: Byte,
-                     dollarsDigit: Byte,
-                     tensCentsDigit: Byte,
-                     centsDigit: Byte)
+      tensDollarsDigit: Byte,
+      dollarsDigit: Byte,
+      tensCentsDigit: Byte,
+      centsDigit: Byte
+  )
 
   implicit class DigitsMethods(private val price: BigDecimal) extends AnyVal {
+
     /**
-     * Encode the price into its Digits
-     *
-     * @return event with new feature values
-     */
+      * Encode the price into its Digits
+      *
+      * @return event with new feature values
+      */
     def toDigits: Digits = {
       @inline def d(i: BigDecimal): Byte = (i.toInt % 10).toByte
 
@@ -229,7 +226,9 @@ object Example {
   val eventWithNoHistoryFeatures: Event[(String, ZeroHistoryFeatures)] =
     densePriceData.withTime.map {
       case ((sym, pd), ts) =>
-        val (hour, day) = ts.calendarFeatures { c => (c.get(Calendar.HOUR_OF_DAY), c.get(Calendar.DAY_OF_WEEK)) }
+        val (hour, day) = ts.calendarFeatures { c =>
+          (c.get(Calendar.HOUR_OF_DAY), c.get(Calendar.DAY_OF_WEEK))
+        }
         (
           sym,
           ZeroHistoryFeatures(
@@ -303,8 +302,15 @@ object Example {
   }
 
   // here if the full labeled data
+  case class Result(
+      symbol: String,
+      zeroHistory: ZeroHistoryFeatures,
+      decayed: DecayedFeature,
+      target: Targets.Target
+  )
 
   val fullLabeled = LabeledEvent(eventWithDecay, Targets.label)
+    .map { case (k, ((z, d), t)) => Result(k, z, d, t) }
 }
 
 object ExampleApp extends LabeledApp(Example.fullLabeled)

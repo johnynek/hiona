@@ -10,7 +10,10 @@ object ShapelessMonoid {
       def combine(a: HNil, b: HNil) = HNil
     }
 
-  implicit def hconsMonoid[A, B <: HList](implicit ma: Monoid[A], mb: => Monoid[B]): Monoid[A :: B] =
+  implicit def hconsMonoid[A, B <: HList](
+      implicit ma: Monoid[A],
+      mb: => Monoid[B]
+  ): Monoid[A :: B] =
     new Monoid[A :: B] {
       lazy val empty = ma.empty :: mb.empty
       def combine(l: A :: B, r: A :: B) = {
@@ -22,7 +25,10 @@ object ShapelessMonoid {
 
   // This isn't safe as a default (implicit) because wrapper types would be removed
   // and could change semantics
-  def genericMonoid[A, B](implicit gen: Generic.Aux[A, B], mon: => Monoid[B]): Monoid[A] =
+  def genericMonoid[A, B](
+      implicit gen: Generic.Aux[A, B],
+      mon: => Monoid[B]
+  ): Monoid[A] =
     new Monoid[A] {
       lazy val empty: A = gen.from(mon.empty)
       def combine(l: A, r: A) = gen.from(mon.combine(gen.to(l), gen.to(r)))
@@ -35,7 +41,10 @@ object ShapelessEq {
       def eqv(l: HNil, r: HNil) = true
     }
 
-  implicit def hconsEq[A, B <: HList](implicit ma: Eq[A], mb: => Eq[B]): Eq[A :: B] =
+  implicit def hconsEq[A, B <: HList](
+      implicit ma: Eq[A],
+      mb: => Eq[B]
+  ): Eq[A :: B] =
     new Eq[A :: B] {
       def eqv(l: A :: B, r: A :: B) = {
         val (la :: lb) = l

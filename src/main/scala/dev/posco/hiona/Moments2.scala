@@ -19,18 +19,19 @@ final case class Moments2(count: Double, mean: Double, mom2: Double) {
   }
 
   /**
-   * (v - mean) / stddev
-   */
+    * (v - mean) / stddev
+    */
   @inline def zscore(v: Double): Double =
     (v - mean) / stddev
 
   /**
-   * population variance (not sample)
-   */
+    * population variance (not sample)
+    */
   @inline def variance: Double = mom2 / count
+
   /**
-   * population stddev (not sample)
-   */
+    * population stddev (not sample)
+    */
   @inline def stddev: Double = math.sqrt(variance)
 }
 
@@ -60,19 +61,19 @@ object Moments2 {
     }
 
   /**
-   * Stolen from Algebird:
-   * https://github.com/twitter/algebird/blob/d8071fd11a81512f4b577a5529a796dd83660a14/algebird-core/src/main/scala/com/twitter/algebird/MomentsGroup.scala#L96
-   *
-   * but we are modifying count to be a Double so we can do
-   * decaying Moments2
-   *
-   * Given two streams of doubles (n, an) and (k, ak) of form (count,
-   * mean), calculates the mean of the combined stream.
-   *
-   * Uses a more stable online algorithm which should be suitable for
-   * large numbers of records similar to:
-   * http://en.wikipedia.org/wiki/Algorithms_for_calculating_variance#Parallel_algorithm
-   */
+    * Stolen from Algebird:
+    * https://github.com/twitter/algebird/blob/d8071fd11a81512f4b577a5529a796dd83660a14/algebird-core/src/main/scala/com/twitter/algebird/MomentsGroup.scala#L96
+    *
+    * but we are modifying count to be a Double so we can do
+    * decaying Moments2
+    *
+    * Given two streams of doubles (n, an) and (k, ak) of form (count,
+    * mean), calculates the mean of the combined stream.
+    *
+    * Uses a more stable online algorithm which should be suitable for
+    * large numbers of records similar to:
+    * http://en.wikipedia.org/wiki/Algorithms_for_calculating_variance#Parallel_algorithm
+    */
   def combineMean(n: Double, an: Double, k: Double, ak: Double): Double =
     if (n < k) combineMean(k, ak, n, an)
     else {

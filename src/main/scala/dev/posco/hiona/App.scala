@@ -24,16 +24,13 @@ abstract class App[A: Row](results: Event[A]) extends IOApp {
     }
 }
 
-abstract class LabeledApp[K: Row, V: Row](results: LabeledEvent[K, V])
-    extends IOApp {
-
-  private val key: Row[K] = implicitly[Row[K]]
-  private val value: Row[V] = implicitly[Row[V]]
+abstract class LabeledApp[A: Row](results: LabeledEvent[A]) extends IOApp {
 
   override def run(args: List[String]): IO[ExitCode] =
     IO.suspend {
       App.command.parse(args) match {
-        case Right(cmd) => cmd.run(App.Args.LabeledArgs(key, value, results))
+        case Right(cmd) =>
+          cmd.run(App.Args.LabeledArgs(implicitly[Row[A]], results))
         case Left(err) =>
           IO {
             System.err.println(err)
@@ -50,14 +47,17 @@ object App {
   }
   object Args {
     case class EventArgs[A](row: Row[A], event: Event[A]) extends Args {
+      def columnNames: List[String] = row.columnNames(0)
+
       def sources: Map[String, Set[Event.Source[_]]] =
         Event.sourcesOf(event)
     }
-    case class LabeledArgs[K, V](
-        keyRow: Row[K],
-        valueRow: Row[V],
-        labeled: LabeledEvent[K, V]
+    case class LabeledArgs[A](
+        row: Row[A],
+        labeled: LabeledEvent[A]
     ) extends Args {
+      def columnNames: List[String] =
+        row.columnNames(0)
       def sources: Map[String, Set[Event.Source[_]]] =
         LabeledEvent.sourcesOf(labeled)
     }
@@ -92,8 +92,8 @@ object App {
           val io = args match {
             case Args.EventArgs(r, event) =>
               Engine.run(imap, event, output)(r, ctx)
-            case Args.LabeledArgs(k, v, l) =>
-              Engine.runLabeled(imap, l, output)(k, v, ctx)
+            case Args.LabeledArgs(r, l) =>
+              Engine.runLabeled(imap, l, output)(r, ctx)
           }
           io.map(_ => ExitCode.Success)
         case Left(dupNames) =>
@@ -119,12 +119,13 @@ object App {
 
   case object ShowCmd extends Cmd {
     def run(args: Args)(implicit ctx: ContextShift[IO]): IO[ExitCode] = {
-      val (srcs, lookups) =
+      val (cols, srcs, lookups) =
         args match {
-          case Args.EventArgs(_, event) =>
-            (Event.sourcesOf(event).keys, Event.lookupsOf(event))
-          case Args.LabeledArgs(_, _, lab) =>
+          case a @ Args.EventArgs(_, event) =>
+            (a.columnNames, Event.sourcesOf(event).keys, Event.lookupsOf(event))
+          case la @ Args.LabeledArgs(_, lab) =>
             (
+              la.columnNames,
               LabeledEvent.sourcesAndOffsetsOf(lab).keys,
               LabeledEvent.lookupsOf(lab)
             )
@@ -134,6 +135,7 @@ object App {
         println(s"sources: $names")
 
         println(s"lookups: ${lookups.size}")
+        println("output columns: " + cols.mkString(", "))
         ExitCode.Success
       }
     }

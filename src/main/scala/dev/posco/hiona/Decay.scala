@@ -10,10 +10,12 @@ case class Decay[H <: Duration, V](scaledTime: Double, value: V) {
     Timestamp(timestampDouble.toLong)
 
   /**
-   * What would the value be at the given timestamp assuming
-   * no other values
-   */
-  def atTimestamp(t: Timestamp)(implicit v: ValueOf[H], dmod: DoubleModule[V]): V = {
+    * What would the value be at the given timestamp assuming
+    * no other values
+    */
+  def atTimestamp(
+      t: Timestamp
+  )(implicit v: ValueOf[H], dmod: DoubleModule[V]): V = {
     val stime = Decay.scaledTime[H](t)
     val negDelta = scaledTime - stime
     val scaleFactor = math.exp(negDelta)
@@ -32,8 +34,7 @@ case class Decay[H <: Duration, V](scaledTime: Double, value: V) {
         val v1 =
           if (scaleFactor != 1.0) {
             dmod.monoid.combine(dmod.scale(scaleFactor, value), that.value)
-          }
-          else dmod.monoid.combine(value, that.value)
+          } else dmod.monoid.combine(value, that.value)
         Decay[H, V](that.scaledTime, v1)
       }
     }
@@ -70,10 +71,13 @@ object Decay {
       value
     )
 
-  implicit def monoidForDecay[H <: Duration, V: DoubleModule]: Monoid[Decay[H, V]] =
+  implicit def monoidForDecay[H <: Duration, V: DoubleModule]
+      : Monoid[Decay[H, V]] =
     new Monoid[Decay[H, V]] {
-      val empty = Decay[H, V](Double.NegativeInfinity,
-        implicitly[DoubleModule[V]].monoid.empty)
+      val empty = Decay[H, V](
+        Double.NegativeInfinity,
+        implicitly[DoubleModule[V]].monoid.empty
+      )
       def combine(l: Decay[H, V], r: Decay[H, V]): Decay[H, V] = l.combine(r)
     }
 }

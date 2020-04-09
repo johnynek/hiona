@@ -112,6 +112,9 @@ sealed trait Priority2NonEmptyRow {
 sealed trait Row[A] {
   // how many columns do we need to write A out
   def columns: Int
+  // the names of the columns. should be the same length as columns
+  def columnNames(offset: Int): List[String]
+  //(offset until (offset + columns)).map { c => s"_$c" }.toList
   // this writes A into an Array starting at a given offset
   def writeToStrings(a: A, offset: Int, dest: Array[String]): Unit
   // read A from a net.tixxit.delimited.Row (which is a wrapper for Array[String].
@@ -120,7 +123,7 @@ sealed trait Row[A] {
   def unsafeFromStrings(offset: Int, s: DRow): A
 }
 
-object Row extends Priority1Rows {
+object Row extends Priority0Rows {
   sealed abstract class Error(message: String) extends Exception(message) {
     def column: Int
     def columnText: String
@@ -131,37 +134,40 @@ object Row extends Priority1Rows {
         s"DecodeFailure in column: $column with <text>$columnText</text>. $extra"
       )
 
+  sealed abstract class PrimRow[A](val typeName: String) extends Row[A] {
+    final def columns = 1
+    def columnNames(offset: Int): List[String] = s"_$offset" :: Nil
+  }
+
   implicit case object UnitRow extends Row[Unit] {
     def columns = 0
     def writeToStrings(a: Unit, offset: Int, dest: Array[String]) = ()
     def unsafeFromStrings(offset: Int, s: DRow) = ()
+    def columnNames(offset: Int): List[String] = Nil
   }
 
   // a row we don't care about
   sealed trait Dummy
   final object Dummy extends Dummy
 
-  implicit case object DummyRow extends Row[Dummy] {
-    def columns = 1
+  implicit case object DummyRow extends PrimRow[Dummy]("Dummy") {
     def writeToStrings(a: Dummy, offset: Int, dest: Array[String]) =
       dest(offset) = ""
     def unsafeFromStrings(offset: Int, s: DRow) = Dummy
   }
 
-  implicit case object StringRow extends Row[String] {
-    def columns = 1
+  implicit case object StringRow extends PrimRow[String]("String") {
     def writeToStrings(a: String, offset: Int, dest: Array[String]) =
       dest(offset) = a
     def unsafeFromStrings(offset: Int, s: DRow): String =
       s(offset)
   }
 
-  abstract class NumberRow[A](val typeName: String) extends Row[A] {
+  abstract class NumberRow[A](typeName: String) extends PrimRow[A](typeName) {
     def fromString(s: String): A
     def toString(a: A): String = a.toString
 
     private val msg = s"couldn't decode to $typeName"
-    def columns = 1
     def writeToStrings(a: A, offset: Int, dest: Array[String]) =
       dest(offset) = toString(a)
 
@@ -207,8 +213,7 @@ object Row extends Priority1Rows {
       BigDecimal(new java.math.BigDecimal(s, java.math.MathContext.UNLIMITED))
   }
 
-  implicit case object BooleanRow extends Row[Boolean] {
-    def columns = 1
+  implicit case object BooleanRow extends PrimRow[Boolean]("Boolean") {
     def writeToStrings(a: Boolean, offset: Int, dest: Array[String]) =
       dest(offset) = a.toString
     def unsafeFromStrings(offset: Int, s: DRow): Boolean = {
@@ -219,14 +224,37 @@ object Row extends Priority1Rows {
     }
   }
 
-  implicit case object CharRow extends Row[Char] {
-    def columns = 1
+  implicit case object CharRow extends PrimRow[Char]("Char") {
     def writeToStrings(a: Char, offset: Int, dest: Array[String]) =
       dest(offset) = a.toString
     def unsafeFromStrings(offset: Int, s: DRow): Char = {
       val str = s(offset)
       if (str.length == 1) str.charAt(0)
       else sys.error(s"expected exactly one character at $offset, found: $str")
+    }
+  }
+
+  case class OptionRow[A](rowA: Row[A], ner: NonEmptyRow[A])
+      extends Row[Option[A]] {
+    val columns: Int = rowA.columns
+    def columnNames(offset: Int) = rowA.columnNames(offset)
+    def writeToStrings(a: Option[A], offset: Int, dest: Array[String]): Unit =
+      if (a.isDefined) {
+        rowA.writeToStrings(a.get, offset, dest)
+      } else {
+        var idx = 0
+        while (idx < columns) {
+          dest(offset + idx) = ""
+          idx += 1
+        }
+      }
+
+    // may throw an Error
+    def unsafeFromStrings(offset: Int, s: DRow): Option[A] = {
+      // if all these are empty, we have None, else we decode
+      val empty = ner.isMissing(offset, s)
+      if (empty) None
+      else Some(rowA.unsafeFromStrings(offset, s))
     }
   }
 
@@ -240,27 +268,7 @@ object Row extends Priority1Rows {
       implicit rowA: Row[A],
       ner: NonEmptyRow[A]
   ): Row[Option[A]] =
-    new Row[Option[A]] {
-      val columns: Int = rowA.columns
-      def writeToStrings(a: Option[A], offset: Int, dest: Array[String]): Unit =
-        if (a.isDefined) {
-          rowA.writeToStrings(a.get, offset, dest)
-        } else {
-          var idx = 0
-          while (idx < columns) {
-            dest(offset + idx) = ""
-            idx += 1
-          }
-        }
-
-      // may throw an Error
-      def unsafeFromStrings(offset: Int, s: DRow): Option[A] = {
-        // if all these are empty, we have None, else we decode
-        val empty = ner.isMissing(offset, s)
-        if (empty) None
-        else Some(rowA.unsafeFromStrings(offset, s))
-      }
-    }
+    OptionRow(rowA, ner)
 
   /**
     * Helper function to make a Resource for a PrintWriter. The Resource
@@ -284,13 +292,20 @@ object Row extends Priority1Rows {
     val format = DelimitedFormat.CSV
 
     val row = implicitly[Row[A]]
+    val header = DRow(row.columnNames(0): _*)
+    require(
+      header.size == row.columns,
+      s"expected $header size (${header.size}) to match: ${row.columns}"
+    )
 
     IO {
       { (items: Iterable[A]) =>
         IO {
           // use just a single buffer for this file
           val buffer = new Array[String](row.columns)
-
+          pw.print(header.render(format))
+          pw.print(format.rowDelim.value)
+          // write the header
           val iter = items.iterator
           while (iter.hasNext) {
             val a = iter.next()
@@ -310,6 +325,7 @@ object Row extends Priority1Rows {
 
   case class Coproduct1Row[A](rowA: Row[A]) extends Row[A :+: CNil] {
     val columns = rowA.columns
+    def columnNames(offset: Int) = rowA.columnNames(offset)
     def writeToStrings(a: A :+: CNil, offset: Int, dest: Array[String]) =
       a match {
         case Inl(a) => rowA.writeToStrings(a, offset, dest)
@@ -326,6 +342,8 @@ object Row extends Priority1Rows {
       rowB: Row[B]
   ) extends Row[A :+: B] {
     val columns = rowA.columns + rowB.columns
+    def columnNames(offset: Int) =
+      dedup(rowA.columnNames(offset), rowB.columnNames(offset + rowA.columns))
     def writeToStrings(ab: A :+: B, offset: Int, dest: Array[String]) =
       ab match {
         case Inl(a) =>
@@ -356,6 +374,8 @@ object Row extends Priority1Rows {
       neB: NonEmptyRow[B]
   ) extends Row[A :+: B] {
     val columns = rowA.columns + rowB.columns
+    def columnNames(offset: Int) =
+      dedup(rowA.columnNames(offset), rowB.columnNames(offset + rowA.columns))
     def writeToStrings(ab: A :+: B, offset: Int, dest: Array[String]) =
       ab match {
         case Inl(a) =>
@@ -380,23 +400,35 @@ object Row extends Priority1Rows {
       } else Inl(rowA.unsafeFromStrings(offset, s))
   }
 
-}
-
-/**
-  * This is using the fact that scala prefers implicit values in the direct class to superclasses
-  * to prioritize which implicits we choose. Here we want to make instances of Row for genericRow and the hlist
-  * (heterogenous lists, which are basically tuples that can be any size).
-  */
-sealed trait Priority1Rows extends Priority2Rows {
   implicit case object HNilRow extends Row[HNil] {
     def columns = 0
+    def columnNames(o: Int) = Nil
     def writeToStrings(a: HNil, offset: Int, dest: Array[String]) = ()
     def unsafeFromStrings(offset: Int, s: DRow) = HNil
+  }
+
+  private def dedup(left: List[String], right: List[String]): List[String] = {
+    val dups = right.toSet & left.toSet
+    if (dups.isEmpty) left ::: right
+    else {
+      val left0 = left.map {
+        case c if dups(c) => c + "0"
+        case c            => c
+      }
+      val right0 = right.map {
+        case c if dups(c) => c + "1"
+        case c            => c
+      }
+      dedup(left0, right0)
+    }
   }
 
   case class HConsRow[A, B <: HList](rowA: Row[A], rowB: Row[B])
       extends Row[A :: B] {
     val columns = rowA.columns + rowB.columns
+    def columnNames(offset: Int) =
+      dedup(rowA.columnNames(offset), rowB.columnNames(offset + rowA.columns))
+
     def writeToStrings(ab: A :: B, offset: Int, dest: Array[String]) = {
       val (a :: b) = ab
       rowA.writeToStrings(a, offset, dest)
@@ -411,6 +443,7 @@ sealed trait Priority1Rows extends Priority2Rows {
 
   case class LiteralString[S <: String](str: S) extends Row[S] {
     def columns = 1
+    def columnNames(o: Int) = str :: Nil
     def writeToStrings(s: S, offset: Int, dest: Array[String]) =
       dest(offset) = str
     def unsafeFromStrings(offset: Int, row: DRow): S =
@@ -418,22 +451,114 @@ sealed trait Priority1Rows extends Priority2Rows {
       else sys.error(s"expected: ${row(offset)} at offset = $offset to be $str")
   }
 
-  implicit def literalString[S <: String](implicit v: ValueOf[S]): Row[S] =
-    LiteralString(v.value)
-
-  implicit def hconsRow[A, B <: HList](
-      implicit rowA: Row[A],
-      rowB: Row[B]
-  ): Row[A :: B] =
-    HConsRow(rowA, rowB)
-
   case class GenRow[A, B](gen: Generic.Aux[A, B], rowB: Row[B]) extends Row[A] {
     val columns = rowB.columns
+    def columnNames(o: Int) = rowB.columnNames(o)
     def writeToStrings(a: A, offset: Int, dest: Array[String]) =
       rowB.writeToStrings(gen.to(a), offset, dest)
     def unsafeFromStrings(offset: Int, s: DRow): A =
       gen.from(rowB.unsafeFromStrings(offset, s))
   }
+
+  case class LGenRow[A, B](gen: LabelledGeneric.Aux[A, B], rowB: Row[B])
+      extends Row[A] {
+    val columns = rowB.columns
+    def columnNames(o: Int) = rowB.columnNames(o)
+    def writeToStrings(a: A, offset: Int, dest: Array[String]) =
+      rowB.writeToStrings(gen.to(a), offset, dest)
+    def unsafeFromStrings(offset: Int, s: DRow): A =
+      gen.from(rowB.unsafeFromStrings(offset, s))
+  }
+
+  implicit def literalString[S <: String](implicit v: ValueOf[S]): Row[S] =
+    LiteralString(v.value)
+
+  def isPrim[A](r: Row[A]): Boolean =
+    r match {
+      case _: PrimRow[_]       => true
+      case o: OptionRow[_]     => isPrim(o.rowA)
+      case g: GenRow[_, _]     => isPrim(g.rowB)
+      case l: LGenRow[_, _]    => isPrim(l.rowB)
+      case p: PrefixName[_, _] => isPrim(p.row)
+      case h: HConsRow[_, _] =>
+        (h.rowB == HNilRow) && isPrim(h.rowA)
+      case _ => false
+    }
+
+  def toUnderscore(name: String): String =
+    if (name.length <= 1) name.toLowerCase
+    else {
+      // two or more
+      def loop(h: Char, t: String): String =
+        if (t.isEmpty) ""
+        else {
+          val th = t.head
+          val thl = th.toLower
+          val tt = t.tail
+          val rest = thl.toString + loop(thl, tt)
+          if (h.isLower == th.isLower) rest
+          else "_" + rest
+        }
+
+      val h = name.head
+      val t = name.tail
+      h.toString + loop(h, t)
+    }
+
+  case class PrefixName[K <: Symbol, A](column: K, row: Row[A])
+      extends Row[labelled.FieldType[K, A]] {
+    val columns = row.columns
+    private[this] val colname = toUnderscore(column.name)
+    private[this] val isP = isPrim(row)
+
+    def columnNames(o: Int) =
+      if (isP) colname :: Nil
+      else row.columnNames(o).map(colname + "." + _)
+
+    def writeToStrings(
+        a: labelled.FieldType[K, A],
+        offset: Int,
+        dest: Array[String]
+    ) =
+      row.writeToStrings(a, offset, dest)
+    def unsafeFromStrings(offset: Int, s: DRow): labelled.FieldType[K, A] =
+      labelled.field[K](row.unsafeFromStrings(offset, s))
+  }
+
+  implicit def tuple2Row[A: Row, B: Row]: Row[(A, B)] = labelledGenericRow
+}
+
+sealed trait Priority0Rows extends Priority1Rows {
+  import labelled.FieldType
+
+  implicit def hconsKeyFieldRow[K <: Symbol, A, B <: HList](
+      implicit key: Witness.Aux[K],
+      rowA: Row[A],
+      rowB: Row[B]
+  ): Row[FieldType[K, A] :: B] =
+    Row.HConsRow(Row.PrefixName(key.value, rowA), rowB)
+
+  // A Generic is provided by shapeless, and it can give a conversion from
+  // case classes into HLists so this is what allows us to use case classes
+  // for inputs and outputs.
+  implicit def labelledGenericRow[A, B](
+      implicit gen: LabelledGeneric.Aux[A, B],
+      rowB: Row[B]
+  ): Row[A] =
+    Row.LGenRow(gen, rowB)
+}
+
+/**
+  * This is using the fact that scala prefers implicit values in the direct class to superclasses
+  * to prioritize which implicits we choose. Here we want to make instances of Row for genericRow and the hlist
+  * (heterogenous lists, which are basically tuples that can be any size).
+  */
+sealed trait Priority1Rows extends Priority2Rows {
+  implicit def hconsRow[A, B <: HList](
+      implicit rowA: Row[A],
+      rowB: Row[B]
+  ): Row[A :: B] =
+    Row.HConsRow(rowA, rowB)
 
   // A Generic is provided by shapeless, and it can give a conversion from
   // case classes into HLists so this is what allows us to use case classes
@@ -442,7 +567,7 @@ sealed trait Priority1Rows extends Priority2Rows {
       implicit gen: Generic.Aux[A, B],
       rowB: Row[B]
   ): Row[A] =
-    GenRow(gen, rowB)
+    Row.GenRow(gen, rowB)
 
   implicit def cnil1Row[A](implicit rowA: Row[A]): Row[A :+: CNil] =
     Row.Coproduct1Row(rowA)
