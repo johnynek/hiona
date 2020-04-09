@@ -144,45 +144,57 @@ object Feeder {
   }
 
   // this allocates mutable state so it has to be in IO
-  def multiFeeder(it: Iterable[Feeder]): IO[Feeder] = {
-    val cmp = new Comparator[(Point, Feeder)] {
-      val ordT = Timestamp.orderingForTimestamp
+  def multiFeeder(it: Iterable[Feeder]): IO[Feeder] =
+    if (it.size == 1) IO.pure(it.head)
+    else {
+      val cmp = new Comparator[(Point, Feeder)] {
+        val ordT = Timestamp.orderingForTimestamp
 
-      def compare(left: (Point, Feeder), right: (Point, Feeder)) = {
-        val lpoint = left._1
-        val rpoint = right._1
-        val res = Timestamp.compareDiff(
-          lpoint.ts,
-          lpoint.offset,
-          rpoint.ts,
-          rpoint.offset
-        )
-        if (res == 0) lpoint.name.compare(rpoint.name)
-        else res
+        def compare(left: (Point, Feeder), right: (Point, Feeder)) = {
+          val lpoint = left._1
+          val rpoint = right._1
+          val res = Timestamp.compareDiff(
+            lpoint.ts,
+            lpoint.offset,
+            rpoint.ts,
+            rpoint.offset
+          )
+          if (res == 0) {
+            // if two points happen at the same time, the one with
+            // the greater duration, is picked to come first.
+            // so we reverse the ordering here
+            // the motivation is so look-aheads should always come
+            // before the events that read them if they happen at the same
+            // adjusted time
+            val cmpDur =
+              java.lang.Long.compare(rpoint.offset.millis, lpoint.offset.millis)
+            if (cmpDur == 0) lpoint.name.compare(rpoint.name)
+            else cmpDur
+          } else res
+        }
       }
+
+      it.toList
+        .traverse { feeder =>
+          // read the first timestamp from each feeder
+          // since we go in order
+          feeder.next.map { pointOpt =>
+            pointOpt.toList
+              .map(point => (point, feeder))
+          }
+        }
+        .flatMap { init0 =>
+          val init = init0.flatten
+          val size = init.size
+          IO {
+            val queue = new PriorityQueue[(Point, Feeder)](size, cmp)
+            // now insert all the items into the queue by checking the first items in each feeder
+            init.foreach(queue.add(_))
+
+            MultiPointFeeder(queue)
+          }
+        }
     }
-
-    it.toList
-      .traverse { feeder =>
-        // read the first timestamp from each feeder
-        // since we go in order
-        feeder.next.map { pointOpt =>
-          pointOpt.toList
-            .map(point => (point, feeder))
-        }
-      }
-      .flatMap { init0 =>
-        val init = init0.flatten
-        val size = init.size
-        IO {
-          val queue = new PriorityQueue[(Point, Feeder)](size, cmp)
-          // now insert all the items into the queue by checking the first items in each feeder
-          init.foreach(queue.add(_))
-
-          MultiPointFeeder(queue)
-        }
-      }
-  }
 
   def fromPath[A](
       path: Path,

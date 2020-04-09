@@ -141,7 +141,7 @@ object Engine {
       }
 
     def fromEvent[A](ev: Event[A]): IO[Emitter[A]] =
-      Impl.fromEvent(ev, Duration.Zero)
+      Impl.fromEventDur(ev, Duration.Zero)
 
     def fromLabeledEvent[A](le: LabeledEvent[A]): IO[Emitter[A]] =
       le match {
@@ -210,49 +210,51 @@ object Engine {
 
   object FeatureState {
     def fromFeature[K, V](f: Feature[K, V]): IO[FeatureState[K, V]] =
-      Impl.fromFeature(f, Duration.Zero)
+      Impl.fromFeatureDur(f, Duration.Zero)
 
     def fromLabel[K, V](l: Label[K, V]): IO[FeatureState[K, V]] =
       Impl.fromLabel(l, Duration.Zero)
   }
 
   private object Impl {
-    def fromEvent[A](ev: Event[A], offset: Duration): IO[Emitter[A]] =
+    def fromEventDur[A](ev: Event[A], offset: Duration): IO[Emitter[A]] =
       ev match {
         case Event.Empty                 => IO.pure(EmptyEmitter)
         case src @ Event.Source(_, _, _) => IO.pure(SourceEmitter(src, offset))
         case Event.Concat(left, right) =>
           (
-            fromEvent(left, offset),
-            fromEvent(right, offset),
+            fromEventDur(left, offset),
+            fromEventDur(right, offset),
             Ref.of[IO, (Long, List[A])]((Long.MinValue, Nil))
           ).mapN(ConcatEmitter(_, _, _))
         case Event.WithTime(ev) =>
-          fromEvent(ev, offset).map(WithTimeEmitter(_))
+          fromEventDur(ev, offset).map(WithTimeEmitter(_))
         case Event.Mapped(ev, fn) =>
-          fromEvent(ev, offset).map(ConcatMapEmitter(_, MapToConcat(fn)))
+          fromEventDur(ev, offset).map(ConcatMapEmitter(_, MapToConcat(fn)))
         case f: Event.Filtered[a] =>
           def go[B1](ev: Event[B1], fn: B1 => Boolean): IO[Emitter[B1]] =
-            fromEvent(ev, offset).map(ConcatMapEmitter(_, FilterToConcat(fn)))
+            fromEventDur(ev, offset).map(
+              ConcatMapEmitter(_, FilterToConcat(fn))
+            )
 
           go[a](f.previous, f.fn)
         case Event.ConcatMapped(ev, fn) =>
-          fromEvent(ev, offset).map(ConcatMapEmitter(_, fn))
+          fromEventDur(ev, offset).map(ConcatMapEmitter(_, fn))
         case Event.ValueWithTime(ev) =>
-          fromEvent(ev, offset).map(ValueWithTimeEmitter(_))
+          fromEventDur(ev, offset).map(ValueWithTimeEmitter(_))
         case Event.Lookup(ev, feat, order) =>
-          (fromEvent(ev, offset), fromFeature(feat, offset))
+          (fromEventDur(ev, offset), fromFeatureDur(feat, offset))
             .mapN(LookupEmitter(_, _, order))
       }
 
-    def fromFeature[K, V](
+    def fromFeatureDur[K, V](
         f: Feature[K, V],
         offset: Duration
     ): IO[FeatureState[K, V]] =
       f match {
         case Feature.Summed(ev, monoid) =>
           (
-            fromEvent(ev, offset),
+            fromEventDur(ev, offset),
             Ref.of[IO, (Long, Map[K, V], Map[K, V])](
               (Long.MinValue, Map.empty, Map.empty)
             )
@@ -262,7 +264,7 @@ object Engine {
           // TODO make use of the window duration to prune old events from the state
           def go[B](l: Feature.Latest[K, B]): IO[FeatureState[K, Option[B]]] =
             (
-              fromEvent(l.event, offset),
+              fromEventDur(l.event, offset),
               Ref.of[IO, (Long, Map[K, B], Map[K, B])](
                 (Long.MinValue, Map.empty, Map.empty)
               )
@@ -270,9 +272,9 @@ object Engine {
 
           go(f)
         case Feature.Mapped(feat, fn) =>
-          fromFeature(feat, offset).map(MappedFS(_, fn))
+          fromFeatureDur(feat, offset).map(MappedFS(_, fn))
         case Feature.Zipped(left, right) =>
-          (fromFeature(left, offset), fromFeature(right, offset))
+          (fromFeatureDur(left, offset), fromFeatureDur(right, offset))
             .mapN(ZippedFS(_, _))
       }
 
@@ -281,7 +283,7 @@ object Engine {
         offset: Duration
     ): IO[FeatureState[K, V]] =
       l match {
-        case Label.FromFeature(f) => fromFeature(f, offset)
+        case Label.FromFeature(f) => fromFeatureDur(f, offset)
         case Label.LookForward(l, offset1) =>
           fromLabel(l, offset + offset1)
         case Label.Mapped(feat, fn) =>

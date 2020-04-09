@@ -54,7 +54,16 @@ object Example {
       correctTs
     )
 
-  val hkStockData: Event[StockData] = Event.source("hk-stocks", dateValidator)
+  val hkStockData: Event.Source[StockData] =
+    Event.source("hk-stocks", dateValidator)
+
+  val barEndSrc: Event.Source[StockData] = {
+    // to signal the end of bars we emit timestamps 1 ms after the end
+    // of a bar, so we know for sure that the bar would have been seen if it exists
+    val barEndValidator: Validator[StockData] =
+      dateValidator.shiftLater(Duration.millisecond)
+    Event.source("bar-end", barEndValidator)
+  }
 
   // all symbols we have ever seen
   val allSymbols: Feature[Unit, Set[String]] =
@@ -82,20 +91,13 @@ object Example {
 
   // these are timestamps of bar closings 1 ms after they happen
   val barEnd: Event[Timestamp] = {
-    // to signal the end of bars we emit timestamps 1 ms after the end
-    // of a bar, so we know for sure that the bar would have been seen if it exists
-    val barEndValidator: Validator[StockData] =
-      dateValidator.shiftLater(Duration.millisecond)
-
     val monoid = new Monoid[Boolean] {
       def empty = false
       def combine(a: Boolean, b: Boolean) = a || b
     }
 
     // de-duplicate this event stream
-    Event
-      .source("bar-end", barEndValidator)
-      .withTime
+    barEndSrc.withTime
       .map { case (_, ts) => (ts - Duration.millisecond, true) }
       .sum(monoid)
       .changes
