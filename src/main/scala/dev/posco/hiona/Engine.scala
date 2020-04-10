@@ -141,13 +141,25 @@ object Engine {
       }
 
     def fromEvent[A](ev: Event[A]): IO[Emitter[A]] =
-      Impl.fromEventDur(ev, Duration.Zero)
+      Impl.emptyECache
+        .product(Impl.emptyFCache)
+        .flatMap {
+          case (e, f) =>
+            Impl.fromEventDur(ev, Duration.Zero, e, f)
+        }
 
     def fromLabeledEvent[A](le: LabeledEvent[A]): IO[Emitter[A]] =
       le match {
         case LabeledEvent.WithLabel(ev, label) =>
-          (fromEvent(ev), FeatureState.fromLabel(label))
-            .mapN(Impl.LookupEmitter(_, _, LookupOrder.After))
+          Impl.emptyECache
+            .product(Impl.emptyFCache)
+            .flatMap {
+              case (e, f) =>
+                (
+                  Impl.fromEventDur(ev, Duration.Zero, e, f),
+                  Impl.fromLabel(label, Duration.Zero, e, f)
+                ).mapN(Impl.LookupEmitter(_, _, LookupOrder.After))
+            }
         case m @ LabeledEvent.Mapped(_, _) =>
           def go[A0](
               m: LabeledEvent.Mapped[A0, A]
@@ -210,87 +222,170 @@ object Engine {
 
   object FeatureState {
     def fromFeature[K, V](f: Feature[K, V]): IO[FeatureState[K, V]] =
-      Impl.fromFeatureDur(f, Duration.Zero)
+      Impl.emptyECache
+        .product(Impl.emptyFCache)
+        .flatMap {
+          case (ec, fc) =>
+            Impl.fromFeatureDur(f, Duration.Zero, ec, fc)
+        }
 
     def fromLabel[K, V](l: Label[K, V]): IO[FeatureState[K, V]] =
-      Impl.fromLabel(l, Duration.Zero)
+      Impl.emptyECache
+        .product(Impl.emptyFCache)
+        .flatMap {
+          case (e, f) =>
+            Impl.fromLabel(l, Duration.Zero, e, f)
+        }
   }
 
   private object Impl {
-    def fromEventDur[A](ev: Event[A], offset: Duration): IO[Emitter[A]] =
-      ev match {
-        case Event.Empty                 => IO.pure(EmptyEmitter)
-        case src @ Event.Source(_, _, _) => IO.pure(SourceEmitter(src, offset))
-        case Event.Concat(left, right) =>
-          (
-            fromEventDur(left, offset),
-            fromEventDur(right, offset),
-            Ref.of[IO, (Long, List[A])]((Long.MinValue, Nil))
-          ).mapN(ConcatEmitter(_, _, _))
-        case Event.WithTime(ev) =>
-          fromEventDur(ev, offset).map(WithTimeEmitter(_))
-        case Event.Mapped(ev, fn) =>
-          fromEventDur(ev, offset).map(ConcatMapEmitter(_, MapToConcat(fn)))
-        case f: Event.Filtered[a] =>
-          def go[B1](ev: Event[B1], fn: B1 => Boolean): IO[Emitter[B1]] =
-            fromEventDur(ev, offset).map(
-              ConcatMapEmitter(_, FilterToConcat(fn))
-            )
+    import scala.collection.mutable.{Map => MMap}
 
-          go[a](f.previous, f.fn)
-        case Event.ConcatMapped(ev, fn) =>
-          fromEventDur(ev, offset).map(ConcatMapEmitter(_, fn))
-        case Event.ValueWithTime(ev) =>
-          fromEventDur(ev, offset).map(ValueWithTimeEmitter(_))
-        case Event.Lookup(ev, feat, order) =>
-          (fromEventDur(ev, offset), fromFeatureDur(feat, offset))
-            .mapN(LookupEmitter(_, _, order))
+    // this is only safe if two keys that are equal
+    // have the same complete types
+    final class Cache1[K[_], V[_]](map: MMap[K[_], V[_]]) {
+      def apply[A](k: K[A])(iov: => IO[V[A]]): IO[V[A]] =
+        IO.suspend {
+          map.get(k) match {
+            case Some(v) => IO.pure(v.asInstanceOf[V[A]])
+            case None    => iov.flatMap(v => IO(map.update(k, v)).as(v))
+          }
+        }
+    }
+
+    object Cache1 {
+      def build[K[_], V[_]]: IO[Cache1[K, V]] =
+        // has to be in IO because we allocate mutable memory
+        IO(new Cache1[K, V](MMap.empty))
+    }
+
+    // this is only safe if two keys that are equal
+    // have the same complete types
+    final class Cache2[K[_, _], V[_, _]](map: MMap[K[_, _], V[_, _]]) {
+      def apply[A, B](k: K[A, B])(iov: => IO[V[A, B]]): IO[V[A, B]] =
+        IO.suspend {
+          map.get(k) match {
+            case Some(v) => IO.pure(v.asInstanceOf[V[A, B]])
+            case None    => iov.flatMap(v => IO(map.update(k, v)).as(v))
+          }
+        }
+    }
+
+    object Cache2 {
+      def build[K[_, _], V[_, _]]: IO[Cache2[K, V]] =
+        // has to be in IO because we allocate mutable memory
+        IO(new Cache2[K, V](MMap.empty))
+    }
+
+    type EvDur[A] = (Event[A], Duration)
+    type FeatDur[K, V] = (Feature[K, V], Duration)
+    type ECache = Cache1[EvDur, Emitter]
+    type FCache = Cache2[FeatDur, FeatureState]
+    val emptyECache: IO[ECache] = Cache1.build
+    val emptyFCache: IO[FCache] = Cache2.build
+
+    def fromEventDur[A](
+        ev: Event[A],
+        offset: Duration,
+        ecache: ECache,
+        fcache: FCache
+    ): IO[Emitter[A]] =
+      ecache((ev, offset)) {
+        ev match {
+          case Event.Empty => IO.pure(EmptyEmitter)
+          case src @ Event.Source(_, _, _) =>
+            IO.pure(SourceEmitter(src, offset))
+          case Event.Concat(left, right) =>
+            (
+              fromEventDur(left, offset, ecache, fcache),
+              fromEventDur(right, offset, ecache, fcache),
+              Ref.of[IO, (Long, List[A])]((Long.MinValue, Nil))
+            ).mapN(ConcatEmitter(_, _, _))
+          case Event.WithTime(ev) =>
+            fromEventDur(ev, offset, ecache, fcache).map(WithTimeEmitter(_))
+          case Event.Mapped(ev, fn) =>
+            fromEventDur(ev, offset, ecache, fcache).map(
+              ConcatMapEmitter(_, MapToConcat(fn))
+            )
+          case f: Event.Filtered[a] =>
+            def go[B1](ev: Event[B1], fn: B1 => Boolean): IO[Emitter[B1]] =
+              fromEventDur(ev, offset, ecache, fcache).map(
+                ConcatMapEmitter(_, FilterToConcat(fn))
+              )
+
+            go[a](f.previous, f.fn)
+          case Event.ConcatMapped(ev, fn) =>
+            fromEventDur(ev, offset, ecache, fcache).map(
+              ConcatMapEmitter(_, fn)
+            )
+          case Event.ValueWithTime(ev) =>
+            fromEventDur(ev, offset, ecache, fcache).map(
+              ValueWithTimeEmitter(_)
+            )
+          case Event.Lookup(ev, feat, order) =>
+            (
+              fromEventDur(ev, offset, ecache, fcache),
+              fromFeatureDur(feat, offset, ecache, fcache)
+            ).mapN(LookupEmitter(_, _, order))
+        }
       }
 
     def fromFeatureDur[K, V](
         f: Feature[K, V],
-        offset: Duration
+        offset: Duration,
+        ecache: ECache,
+        fcache: FCache
     ): IO[FeatureState[K, V]] =
-      f match {
-        case Feature.Summed(ev, monoid) =>
-          (
-            fromEventDur(ev, offset),
-            Ref.of[IO, (Long, Map[K, V], Map[K, V])](
-              (Long.MinValue, Map.empty, Map.empty)
-            )
-          ).mapN(SummedFS(_, _, monoid))
-
-        case f @ Feature.Latest(_, _) =>
-          // TODO make use of the window duration to prune old events from the state
-          def go[B](l: Feature.Latest[K, B]): IO[FeatureState[K, Option[B]]] =
+      fcache((f, offset)) {
+        f match {
+          case Feature.Summed(ev, monoid) =>
             (
-              fromEventDur(l.event, offset),
-              Ref.of[IO, (Long, Map[K, B], Map[K, B])](
+              fromEventDur(ev, offset, ecache, fcache),
+              Ref.of[IO, (Long, Map[K, V], Map[K, V])](
                 (Long.MinValue, Map.empty, Map.empty)
               )
-            ).mapN(LatestFS[K, B](_, _))
+            ).mapN(SummedFS(_, _, monoid))
 
-          go(f)
-        case Feature.Mapped(feat, fn) =>
-          fromFeatureDur(feat, offset).map(MappedFS(_, fn))
-        case Feature.Zipped(left, right) =>
-          (fromFeatureDur(left, offset), fromFeatureDur(right, offset))
-            .mapN(ZippedFS(_, _))
+          case f @ Feature.Latest(_, _) =>
+            // TODO make use of the window duration to prune old events from the state
+            def go[B](l: Feature.Latest[K, B]): IO[FeatureState[K, Option[B]]] =
+              (
+                fromEventDur(l.event, offset, ecache, fcache),
+                Ref.of[IO, (Long, Map[K, B], Map[K, B])](
+                  (Long.MinValue, Map.empty, Map.empty)
+                )
+              ).mapN(LatestFS[K, B](_, _))
+
+            go(f)
+          case Feature.Mapped(feat, fn) =>
+            fromFeatureDur(feat, offset, ecache, fcache).map(MappedFS(_, fn))
+          case Feature.Zipped(left, right) =>
+            (
+              fromFeatureDur(left, offset, ecache, fcache),
+              fromFeatureDur(right, offset, ecache, fcache)
+            ).mapN(ZippedFS(_, _))
+        }
       }
 
     def fromLabel[K, V](
         l: Label[K, V],
-        offset: Duration
+        offset: Duration,
+        ecache: ECache,
+        fcache: FCache
     ): IO[FeatureState[K, V]] =
       l match {
-        case Label.FromFeature(f) => fromFeatureDur(f, offset)
+        case Label.FromFeature(f) => fromFeatureDur(f, offset, ecache, fcache)
         case Label.LookForward(l, offset1) =>
-          fromLabel(l, offset + offset1)
+          fromLabel(l, offset + offset1, ecache, fcache)
         case Label.Mapped(feat, fn) =>
-          fromLabel(feat, offset).map(MappedFS(_, Feature.Ignore3(fn)))
+          fromLabel(feat, offset, ecache, fcache).map(
+            MappedFS(_, Feature.Ignore3(fn))
+          )
         case Label.Zipped(left, right) =>
-          (fromLabel(left, offset), fromLabel(right, offset))
-            .mapN(ZippedFS(_, _))
+          (
+            fromLabel(left, offset, ecache, fcache),
+            fromLabel(right, offset, ecache, fcache)
+          ).mapN(ZippedFS(_, _))
       }
 
     case class MapToConcat[A, B](fn: A => B) extends Function1[A, Iterable[B]] {
