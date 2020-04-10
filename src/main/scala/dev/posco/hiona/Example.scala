@@ -131,55 +131,61 @@ object Example {
       }
 
   // represents the current decayed value over four different decay half lifes
-  case class D4(hour: Float, day: Float, week: Float, quarter: Float)
-  case class DecayedFeature(close: D4, logClose: D4, vol: D4, logVol: D4)
+  case class DValues(
+      close: Moments2,
+      logClose: Moments2,
+      vol: Moments2,
+      logVol: Moments2
+  )
+  object DValues {
+    import ShapelessMonoid._
+
+    // DValues is just a named tuple, combine point-wise
+    implicit val dvalueMonoid: Monoid[DValues] =
+      genericMonoid
+
+    // DValues is just a named tuple, combine point-wise
+    implicit val dvalueModule: DoubleModule[DValues] =
+      DoubleModule.genericModule
+  }
+
+  case class DecayedFeature(
+      hour: DValues,
+      day: DValues,
+      week: DValues,
+      quarter: DValues
+  )
 
   val decayFeatures: Feature[String, DecayedFeature] = {
-    def make4[N: Numeric](fn: PriceData => N) = {
-      (input: (PriceData, Timestamp)) =>
-        val (pd, ts) = input
-        val v = fn(pd)
-        (
-          Decay.toFloat[Duration.hour.type, N](ts, v),
-          Decay.toFloat[Duration.day.type, N](ts, v),
-          Decay.toFloat[Duration.week.type, N](ts, v),
-          Decay.toFloat[Duration.quarter.type, N](ts, v)
-        )
-    }
-
-    val makeClose = make4(_.closePrice)
-    val makeLogClose = make4(sd => Targets.Log1(sd.closePrice.toFloat))
-    val makeVol = make4(_.volume)
-    val makeLogVol = make4(sd => Targets.Log1(sd.volume.toFloat))
 
     val inputs = densePriceData.withTime.map {
       case ((symbol, pd), ts) =>
-        val pair = (pd, ts)
-        val value =
-          (makeClose(pair), makeLogClose(pair), makeVol(pair), makeLogVol(pair))
-        (symbol, value)
+        val dv = DValues(
+          Moments2.numeric(pd.closePrice),
+          Moments2.numeric(Targets.Log1(pd.closePrice.toFloat)),
+          Moments2.numeric(pd.volume),
+          Moments2.numeric(Targets.Log1(pd.volume.toFloat))
+        )
+
+        val decayed =
+          (
+            Decay.fromTimestamped[Duration.hour.type, DValues](ts, dv),
+            Decay.fromTimestamped[Duration.day.type, DValues](ts, dv),
+            Decay.fromTimestamped[Duration.week.type, DValues](ts, dv),
+            Decay.fromTimestamped[Duration.quarter.type, DValues](ts, dv)
+          )
+
+        (symbol, decayed)
     }.sum
 
     inputs.mapWithKeyTime {
       case (_, (dh, dlh, dv, dlv), ts) =>
-        import Duration._
-
-        def toD4(
-            tuple: (
-                Decay[hour.type, Float],
-                Decay[day.type, Float],
-                Decay[week.type, Float],
-                Decay[quarter.type, Float]
-            )
-        ) =
-          D4(
-            tuple._1.atTimestamp(ts),
-            tuple._2.atTimestamp(ts),
-            tuple._3.atTimestamp(ts),
-            tuple._4.atTimestamp(ts)
-          )
-
-        DecayedFeature(toD4(dh), toD4(dlh), toD4(dv), toD4(dlv))
+        DecayedFeature(
+          dh.atTimestamp(ts),
+          dlh.atTimestamp(ts),
+          dv.atTimestamp(ts),
+          dlv.atTimestamp(ts)
+        )
     }
   }
 
@@ -303,16 +309,42 @@ object Example {
 
   }
 
+  case class ZScores(close: Float, logClose: Float, vol: Float, logVol: Float)
+  case class DecayZScores(
+      hour: ZScores,
+      day: ZScores,
+      week: ZScores,
+      quarter: ZScores
+  )
+
+  def zscores(zh: ZeroHistoryFeatures, dv: DValues): ZScores =
+    ZScores(
+      dv.close.zscore(zh.currentClose.toDouble).toFloat,
+      dv.logClose.zscore(zh.currentLogClose.toDouble).toFloat,
+      dv.vol.zscore(zh.currentVolume.toDouble).toFloat,
+      dv.logVol.zscore(zh.currentLogVolume.toDouble).toFloat
+    )
+
   // here if the full labeled data
   case class Result(
       symbol: String,
       zeroHistory: ZeroHistoryFeatures,
       decayed: DecayedFeature,
+      decayedZ: DecayZScores,
       target: Targets.Target
   )
 
   val fullLabeled = LabeledEvent(eventWithDecay, Targets.label)
-    .map { case (k, ((z, d), t)) => Result(k, z, d, t) }
+    .map {
+      case (k, ((z, d), t)) =>
+        val dz = DecayZScores(
+          hour = zscores(z, d.hour),
+          day = zscores(z, d.day),
+          week = zscores(z, d.week),
+          quarter = zscores(z, d.quarter)
+        )
+        Result(k, z, d, dz, t)
+    }
 }
 
 object ExampleApp extends LabeledApp(Example.fullLabeled)

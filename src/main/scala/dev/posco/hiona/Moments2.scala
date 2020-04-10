@@ -2,6 +2,9 @@ package dev.posco.hiona
 
 import cats.Monoid
 
+/**
+  * The first two moments computed in a stable way.
+  */
 final case class Moments2(count: Double, mean: Double, mom2: Double) {
   def +(that: Moments2): Moments2 = {
     val c1 = count + that.count
@@ -21,8 +24,11 @@ final case class Moments2(count: Double, mean: Double, mom2: Double) {
   /**
     * (v - mean) / stddev
     */
-  @inline def zscore(v: Double): Double =
-    (v - mean) / stddev
+  @inline def zscore(v: Double): Double = {
+    val diff = v - mean
+    if (diff == 0.0) 0.0
+    else diff / stddev
+  }
 
   /**
     * population variance (not sample)
@@ -38,6 +44,12 @@ final case class Moments2(count: Double, mean: Double, mom2: Double) {
 object Moments2 {
 
   val zero: Moments2 = Moments2(0.0, 0.0, 0.0)
+
+  def value(d: Double): Moments2 =
+    Moments2(1.0, d, 0.0)
+
+  def numeric[N: Numeric](n: N): Moments2 =
+    value(implicitly[Numeric[N]].toDouble(n))
 
   implicit val moments2Monoid: Monoid[Moments2] =
     new Monoid[Moments2] {

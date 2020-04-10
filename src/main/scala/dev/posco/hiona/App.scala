@@ -135,7 +135,7 @@ object App {
         println(s"sources: $names")
 
         println(s"lookups: ${lookups.size}")
-        println("output columns: " + cols.mkString(", "))
+        println(s"output columns (${cols.size}): " + cols.mkString(", "))
         ExitCode.Success
       }
     }
