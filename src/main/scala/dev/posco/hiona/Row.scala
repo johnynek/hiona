@@ -299,24 +299,29 @@ object Row extends Priority0Rows {
     )
 
     IO {
+      // use just a single buffer for this file
+      val buffer = new Array[String](row.columns)
+      // This is printing a header for each block of rows
+      pw.print(header.render(format))
+      pw.print(format.rowDelim.value)
+
+      // write the header
       { (items: Iterable[A]) =>
         IO {
-          // use just a single buffer for this file
-          val buffer = new Array[String](row.columns)
-          pw.print(header.render(format))
-          pw.print(format.rowDelim.value)
-          // write the header
-          val iter = items.iterator
-          while (iter.hasNext) {
-            val a = iter.next()
-            row.writeToStrings(a, 0, buffer)
-            var idx = 0
-            while (idx < buffer.length) {
-              if (idx != 0) pw.print(format.separator)
-              pw.print(format.render(buffer(idx)))
-              idx += 1
+          // only one thread at a time can access the buffer
+          buffer.synchronized {
+            val iter = items.iterator
+            while (iter.hasNext) {
+              val a = iter.next()
+              row.writeToStrings(a, 0, buffer)
+              var idx = 0
+              while (idx < buffer.length) {
+                if (idx != 0) pw.print(format.separator)
+                pw.print(format.render(buffer(idx)))
+                idx += 1
+              }
+              pw.print(format.rowDelim.value)
             }
-            pw.print(format.rowDelim.value)
           }
         }
       }
