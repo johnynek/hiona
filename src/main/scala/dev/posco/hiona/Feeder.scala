@@ -255,7 +255,7 @@ object Feeder {
     }
 
   def fromInputs(
-      paths: Map[String, Path],
+      paths: Iterable[(String, Path)],
       ev: Event[Any]
   ): Resource[IO, Feeder] = {
     val srcs = Event.sourcesOf(ev)
@@ -272,15 +272,19 @@ object Feeder {
         srcs.iterator.map { case (n, singleton) => (n, singleton.head) }.toMap
 
       // we need exactly the same names
-      keyMatch(srcMap, paths) match {
+      keyMatch(srcMap, paths.groupBy(_._1)) match {
         case Left((missing, extra)) =>
           Resource.liftF(IO.raiseError(MismatchInputs(missing, extra)))
         case Right(matched) =>
           // the keyset is exactly the same:
           matched.toList
             .sortBy(_._1)
+            .flatMap {
+              case (_, (src, paths)) =>
+                paths.map { case (_, p) => (src, p) }
+            }
             .traverse {
-              case (_, (src, path)) =>
+              case (src, path) =>
                 fromPath(path, src, Duration.Zero)
             }
             .flatMap(feeds => Resource.liftF(multiFeeder(feeds)))
@@ -289,7 +293,7 @@ object Feeder {
   }
 
   def fromInputsLabels[A](
-      paths: Map[String, Path],
+      paths: Iterable[(String, Path)],
       ev: LabeledEvent[A]
   ): Resource[IO, Feeder] = {
     val srcs = LabeledEvent.sourcesAndOffsetsOf(ev)
@@ -310,15 +314,19 @@ object Feeder {
         }.toMap
 
       // we need exactly the same names
-      keyMatch(srcMap, paths) match {
+      keyMatch(srcMap, paths.groupBy(_._1)) match {
         case Left((missing, extra)) =>
           Resource.liftF(IO.raiseError(MismatchInputs(missing, extra)))
         case Right(matched) =>
           // the keyset is exactly the same:
           matched.toList
             .sortBy(_._1)
+            .flatMap {
+              case (_, (so, paths)) =>
+                paths.map { case (_, p) => (so, p) }
+            }
             .traverse {
-              case (_, ((src, offsets), path)) =>
+              case ((src, offsets), path) =>
                 offsets.traverse(offset => fromPath(path, src, offset))
             }
             .flatMap(feeds => Resource.liftF(multiFeeder(feeds.flatten)))

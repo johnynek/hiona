@@ -62,6 +62,14 @@ object DoubleModule extends Priority1DoubleModule {
         gen.from(b1)
       }
     }
+
+  implicit def tuple2Module[A: DoubleModule, B: DoubleModule]
+      : DoubleModule[(A, B)] =
+    genericModule
+
+  implicit def tuple3Module[A: DoubleModule, B: DoubleModule, C: DoubleModule]
+      : DoubleModule[(A, B, C)] =
+    genericModule
 }
 
 sealed trait Priority1DoubleModule {

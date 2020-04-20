@@ -19,12 +19,49 @@ final case class Timestamp(epochMillis: Long) {
         if (m1 <= epochMillis) Timestamp(m1)
         else Timestamp.MinValue
     }
+
+  def /(that: Duration): Long =
+    that match {
+      case Duration.Infinite => 0L
+      case Duration.Finite(thatMillis) =>
+        val d = epochMillis / thatMillis
+        if (epochMillis >= 0) d
+        else (d - 1L)
+    }
+
+  /**
+    * what is the remainder in millis
+    * of this duration.
+    */
+  def %(that: Duration): Duration =
+    that match {
+      case Duration.Infinite => Duration.zero
+      case Duration.Finite(thatMillis) =>
+        if (thatMillis == 0L) Duration.Infinite
+        else {
+          val rem = epochMillis % thatMillis
+          val remPos =
+            if (rem < 0) rem + thatMillis
+            else rem
+          Duration.Finite(remPos)
+        }
+    }
+
+  def unixDayOfWeek: Int =
+    ((this % Duration.week).millis / Duration.day.millis).toInt
+
+  def unixHourOfDay: Int =
+    ((this % Duration.day).millis / Duration.hour.millis).toInt
+
+  def unixMinuteOfDay: Int =
+    ((this % Duration.day).millis / Duration.minute.millis).toInt
 }
 
 object Timestamp {
   import Duration.Finite
 
   val MinValue: Timestamp = Timestamp(Long.MinValue)
+  val Zero: Timestamp = Timestamp(0L)
   val MaxValue: Timestamp = Timestamp(Long.MaxValue)
 
   implicit val orderingForTimestamp: Ordering[Timestamp] =

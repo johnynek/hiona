@@ -86,27 +86,15 @@ object App {
   }
 
   case class RunCmd(inputs: List[(String, Path)], output: Path) extends Cmd {
-    def run(args: Args)(implicit ctx: ContextShift[IO]): IO[ExitCode] =
-      Feeder.toMap(inputs) match {
-        case Right(imap) =>
-          val io = args match {
-            case Args.EventArgs(r, event) =>
-              Engine.run(imap, event, output)(r, ctx)
-            case Args.LabeledArgs(r, l) =>
-              Engine.runLabeled(imap, l, output)(r, ctx)
-          }
-          io.map(_ => ExitCode.Success)
-        case Left(dupNames) =>
-          // this is an error
-          IO {
-            System.err.println("duplicated sources:")
-            System.err.println(
-              dupNames.toList.sortBy(_._1).mkString("\t", "\n", "")
-            )
-            System.err.flush()
-            ExitCode.Error
-          }
+    def run(args: Args)(implicit ctx: ContextShift[IO]): IO[ExitCode] = {
+      val io = args match {
+        case Args.EventArgs(r, event) =>
+          Engine.run(inputs, event, output)(r, ctx)
+        case Args.LabeledArgs(r, l) =>
+          Engine.runLabeled(inputs, l, output)(r, ctx)
       }
+      io.map(_ => ExitCode.Success)
+    }
   }
 
   private val runCmd: Command[RunCmd] =

@@ -1,0 +1,3 @@
+#!/bin/sh
+
+java -cp target/scala-2.13/hiona-assembly-0.1.0-SNAPSHOT.jar $@

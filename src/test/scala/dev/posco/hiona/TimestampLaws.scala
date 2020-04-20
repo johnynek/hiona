@@ -126,4 +126,29 @@ class TimestampLaws extends munit.ScalaCheckSuite {
       }
     }
   }
+
+  property("t / d = r, then d * r ~= t") {
+    forAll(genTimestampFull, genDuration) { (t, d) =>
+      val rD = t / d
+      val diff = t % d
+
+      if (d.isInfinite) {
+        assertEquals(rD, 0L)
+        assertEquals(diff, Duration.zero)
+      } else {
+        val tapprox =
+          if (rD >= 0) (Timestamp.Zero + (d * rD))
+          else (Timestamp.Zero - (d * (-rD)))
+
+        val o = Ordering[Timestamp]
+        if (tapprox != Timestamp.MaxValue && tapprox != Timestamp.MinValue) {
+          val texact = tapprox + diff
+
+          assert(o.lteq(tapprox, t))
+          assert(o.gteq(tapprox + d, t))
+          assertEquals(texact, t, s"rD = $rD, tapprox = $tapprox")
+        }
+      }
+    }
+  }
 }

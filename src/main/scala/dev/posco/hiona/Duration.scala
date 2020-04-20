@@ -4,8 +4,8 @@ sealed abstract class Duration(val isInfinite: Boolean) {
   def +(that: Duration): Duration
   def millis: Long
 
-  def *(that: Int): Duration
-  def /(that: Int): Duration
+  def *(that: Long): Duration
+  def /(that: Long): Duration
 }
 
 object Duration {
@@ -18,13 +18,13 @@ object Duration {
 
     def millis = Long.MaxValue
 
-    def *(that: Int): Duration = {
+    def *(that: Long): Duration = {
       require(that >= 0, "we cannot multiply by a negative number")
       if (that == 0) zero
       else this
     }
 
-    def /(that: Int): Duration = {
+    def /(that: Long): Duration = {
       require(that > 0, "can only divide by a number > 0")
       this
     }
@@ -46,10 +46,10 @@ object Duration {
           }
       }
 
-    def *(that: Int): Duration = {
-      require(that >= 0, "we cannot multiply by a negative number")
-      if (that == 0) zero
-      else if (that == 1) this
+    def *(that: Long): Duration = {
+      require(that >= 0L, "we cannot multiply by a negative number")
+      if (that == 0L) zero
+      else if (that == 1L) this
       else {
         val thatL = that.toLong
         val m1 = millis * thatL
@@ -62,13 +62,13 @@ object Duration {
       }
     }
 
-    def /(that: Int): Duration =
-      if (that <= 0)
+    def /(that: Long): Duration =
+      if (that <= 0L)
         sys.error(s"can only divide a Duration by > 0, found: $this / $that")
-      else if (that == 1) this
+      else if (that == 1L) this
       else {
         val m1 = millis / that.toLong
-        if (m1 == 0) zero
+        if (m1 == 0L) zero
         else Finite(m1)
       }
   }
@@ -99,6 +99,6 @@ object Duration {
   val quarter: Duration = year / 4
   val month: Duration = quarter / 3
 
-  def minutes(cnt: Int): Duration =
+  def minutes(cnt: Long): Duration =
     minute * cnt
 }

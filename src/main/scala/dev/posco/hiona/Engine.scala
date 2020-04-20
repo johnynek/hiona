@@ -27,7 +27,11 @@ object Engine {
           Emitter.run(feeder, batchSize = 1000, emitter)(writer)
       }
 
-  def run[A: Row](inputs: Map[String, Path], event: Event[A], output: Path)(
+  def run[A: Row](
+      inputs: Iterable[(String, Path)],
+      event: Event[A],
+      output: Path
+  )(
       implicit ctx: ContextShift[IO]
   ): IO[Unit] =
     Emitter
@@ -35,7 +39,7 @@ object Engine {
       .flatMap(runEmitter(Feeder.fromInputs(inputs, event), _, output))
 
   def runLabeled[A: Row](
-      inputs: Map[String, Path],
+      inputs: Iterable[(String, Path)],
       labeled: LabeledEvent[A],
       output: Path
   )(implicit ctx: ContextShift[IO]): IO[Unit] =

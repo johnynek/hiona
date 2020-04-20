@@ -22,6 +22,11 @@ object Validator {
   case class TimestampParseFailure[A](from: A, badString: String)
       extends Error(s"couldn't parse: $badString in $from")
 
+  def pure[A](fn: A => Timestamp): Validator[A] =
+    new Validator[A] {
+      def validate(a: A) = Right(fn(a))
+    }
+
   def parseAndShift[A](
       parseString: String,
       tz: TimeZone,

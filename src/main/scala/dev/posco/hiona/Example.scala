@@ -5,6 +5,10 @@ import cats.implicits._
 import cats.Monoid
 
 object Example {
+
+  val hours2: Duration = Duration.hour * 2
+  val days3: Duration = Duration.day * 3
+
   // rows like
   // symbol,whatToShow,rth_only,bar_start_utc,open,high,low,close,volume
   // 1:HK,TRADES,False,2015-07-02 01:30:00 UTC,113.2,113.9,112.9,113.0,1039500
@@ -151,9 +155,9 @@ object Example {
 
   case class DecayedFeature(
       hour: DValues,
+      hours2: DValues,
       day: DValues,
-      week: DValues,
-      quarter: DValues
+      days3: DValues
   )
 
   val decayFeatures: Feature[String, DecayedFeature] = {
@@ -170,9 +174,9 @@ object Example {
         val decayed =
           (
             Decay.fromTimestamped[Duration.hour.type, DValues](ts, dv),
+            Decay.fromTimestamped[hours2.type, DValues](ts, dv),
             Decay.fromTimestamped[Duration.day.type, DValues](ts, dv),
-            Decay.fromTimestamped[Duration.week.type, DValues](ts, dv),
-            Decay.fromTimestamped[Duration.quarter.type, DValues](ts, dv)
+            Decay.fromTimestamped[days3.type, DValues](ts, dv)
           )
 
         (symbol, decayed)
@@ -312,9 +316,9 @@ object Example {
   case class ZScores(close: Float, logClose: Float, vol: Float, logVol: Float)
   case class DecayZScores(
       hour: ZScores,
+      hours2: ZScores,
       day: ZScores,
-      week: ZScores,
-      quarter: ZScores
+      days3: ZScores
   )
 
   def zscores(zh: ZeroHistoryFeatures, dv: DValues): ZScores =
@@ -339,9 +343,9 @@ object Example {
       case (k, ((z, d), t)) =>
         val dz = DecayZScores(
           hour = zscores(z, d.hour),
+          hours2 = zscores(z, d.hours2),
           day = zscores(z, d.day),
-          week = zscores(z, d.week),
-          quarter = zscores(z, d.quarter)
+          days3 = zscores(z, d.days3)
         )
         Result(k, z, d, dz, t)
     }
