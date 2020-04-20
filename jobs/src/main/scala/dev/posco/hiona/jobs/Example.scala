@@ -1,4 +1,6 @@
-package dev.posco.hiona
+package dev.posco.hiona.jobs
+
+import dev.posco.hiona._
 
 import java.util.{Calendar, TimeZone}
 import cats.implicits._
@@ -268,7 +270,7 @@ object Example {
       def apply(f: Float) = f
     }
     case object Log1 extends Transform {
-      def apply(f: Float) = math.log(f + 1.0f).toFloat
+      def apply(f: Float) = math.log(f.toDouble + 1.0).toFloat
     }
 
     case class Values[Min <: Int, T <: Transform](
@@ -293,7 +295,7 @@ object Example {
 
     def makeValue[Min <: Int: ValueOf, T <: Transform: ValueOf]
         : Label[String, Option[Values[Min, T]]] = {
-      val dur = Duration.minutes(valueOf[Min])
+      val dur = Duration.minutes(valueOf[Min].toLong)
 
       Label(
         coreEvent[Min, T].latest(Duration.Infinite)

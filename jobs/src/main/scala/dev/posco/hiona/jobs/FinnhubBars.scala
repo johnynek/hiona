@@ -161,7 +161,7 @@ object FinnhubBars {
             b.symbol,
             ts.unixMinuteOfDay,
             ts.unixDayOfWeek,
-            log = v.map { d => math.log(d + 1e-6) },
+            log = v.map(d => math.log(d + 1e-6)),
             lin = v
           )
       }

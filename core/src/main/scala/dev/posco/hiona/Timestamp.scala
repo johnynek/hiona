@@ -58,7 +58,6 @@ final case class Timestamp(epochMillis: Long) {
 }
 
 object Timestamp {
-  import Duration.Finite
 
   val MinValue: Timestamp = Timestamp(Long.MinValue)
   val Zero: Timestamp = Timestamp(0L)
@@ -88,8 +87,8 @@ object Timestamp {
       1
     } else {
       // they are both different, but not infinite, be careful with underflow
-      val Finite(leftOff) = leftD
-      val Finite(rightOff) = rightD
+      val leftOff = leftD.millis
+      val rightOff = rightD.millis
 
       val left0 = leftT.epochMillis
       val right0 = rightT.epochMillis
