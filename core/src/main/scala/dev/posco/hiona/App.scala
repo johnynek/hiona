@@ -1,7 +1,7 @@
 package dev.posco.hiona
 
 import cats.data.{Validated, ValidatedNel}
-import cats.effect.{ContextShift, ExitCode, IO, IOApp}
+import cats.effect.{ContextShift, ExitCode, IO, IOApp, Resource}
 import com.monovore.decline.{Argument, Command, Opts}
 import java.nio.file.Path
 
@@ -9,12 +9,10 @@ import cats.implicits._
 
 abstract class App[A: Row](results: Event[A]) extends IOApp {
 
-  private val row: Row[A] = implicitly[Row[A]]
-
   override def run(args: List[String]): IO[ExitCode] =
     IO.suspend {
       App.command.parse(args) match {
-        case Right(cmd) => cmd.run(App.Args.EventArgs(row, results))
+        case Right(cmd) => cmd.run(Args.event(results))
         case Left(err) =>
           IO {
             System.err.println(err)
@@ -30,7 +28,7 @@ abstract class LabeledApp[A: Row](results: LabeledEvent[A]) extends IOApp {
     IO.suspend {
       App.command.parse(args) match {
         case Right(cmd) =>
-          cmd.run(App.Args.LabeledArgs(implicitly[Row[A]], results))
+          cmd.run(Args.labeledEvent(results))
         case Left(err) =>
           IO {
             System.err.println(err)
@@ -40,28 +38,79 @@ abstract class LabeledApp[A: Row](results: LabeledEvent[A]) extends IOApp {
     }
 }
 
-object App {
+object App extends GenApp {
+  type Ref = Path
+  implicit def argumentForRef: Argument[Path] =
+    Argument.readPath
 
-  sealed abstract class Args {
-    def sources: Map[String, Set[Event.Source[_]]]
-  }
-  object Args {
-    case class EventArgs[A](row: Row[A], event: Event[A]) extends Args {
-      def columnNames: List[String] = row.columnNames(0)
+  def run(args: Args, inputs: List[(String, Ref)], output: Ref)(
+      implicit ctx: ContextShift[IO]
+  ): IO[Unit] =
+    args match {
+      case Args.EventArgs(r, event) =>
+        Engine.run(inputs, event, output)(r, ctx)
+      case Args.LabeledArgs(r, l) =>
+        Engine.runLabeled(inputs, l, output)(r, ctx)
+    }
 
-      def sources: Map[String, Set[Event.Source[_]]] =
-        Event.sourcesOf(event)
-    }
-    case class LabeledArgs[A](
-        row: Row[A],
-        labeled: LabeledEvent[A]
-    ) extends Args {
-      def columnNames: List[String] =
-        row.columnNames(0)
-      def sources: Map[String, Set[Event.Source[_]]] =
-        LabeledEvent.sourcesOf(labeled)
-    }
+  def feeder[A](
+      input: Path,
+      ev: Event.Source[A],
+      dur: Duration,
+      strictTime: Boolean
+  ): Resource[IO, Feeder] =
+    Feeder.fromPath(input, ev, dur, strictTime)
+
+  def writer[A](
+      output: Path,
+      row: Row[A]
+  ): Resource[IO, Iterable[A] => IO[Unit]] =
+    Row.writerRes[A](output)(row)
+}
+
+sealed abstract class Args {
+  def sources: Map[String, Set[Event.Source[_]]]
+}
+
+object Args {
+  def event[A](ev: Event[A])(implicit r: Row[A]): EventArgs[A] =
+    EventArgs(r, ev)
+
+  def labeledEvent[A](ev: LabeledEvent[A])(implicit r: Row[A]): LabeledArgs[A] =
+    LabeledArgs(r, ev)
+
+  final case class EventArgs[A](row: Row[A], event: Event[A]) extends Args {
+    def columnNames: List[String] = row.columnNames(0)
+
+    def sources: Map[String, Set[Event.Source[_]]] =
+      Event.sourcesOf(event)
   }
+
+  final case class LabeledArgs[A](
+      row: Row[A],
+      labeled: LabeledEvent[A]
+  ) extends Args {
+    def columnNames: List[String] =
+      row.columnNames(0)
+    def sources: Map[String, Set[Event.Source[_]]] =
+      LabeledEvent.sourcesOf(labeled)
+  }
+}
+
+abstract class GenApp { self =>
+  type Ref
+  implicit def argumentForRef: Argument[Ref]
+
+  def run(args: Args, inputs: List[(String, Ref)], output: Ref)(
+      implicit ctx: ContextShift[IO]
+  ): IO[Unit]
+  def feeder[A](
+      input: Ref,
+      ev: Event.Source[A],
+      dur: Duration,
+      strictTime: Boolean
+  ): Resource[IO, Feeder]
+  def writer[A](output: Ref, row: Row[A]): Resource[IO, Iterable[A] => IO[Unit]]
 
   implicit def named[A: Argument]: Argument[(String, A)] =
     new Argument[(String, A)] {
@@ -85,23 +134,16 @@ object App {
     def run(args: Args)(implicit ctx: ContextShift[IO]): IO[ExitCode]
   }
 
-  case class RunCmd(inputs: List[(String, Path)], output: Path) extends Cmd {
-    def run(args: Args)(implicit ctx: ContextShift[IO]): IO[ExitCode] = {
-      val io = args match {
-        case Args.EventArgs(r, event) =>
-          Engine.run(inputs, event, output)(r, ctx)
-        case Args.LabeledArgs(r, l) =>
-          Engine.runLabeled(inputs, l, output)(r, ctx)
-      }
-      io.map(_ => ExitCode.Success)
-    }
+  case class RunCmd(inputs: List[(String, Ref)], output: Ref) extends Cmd {
+    def run(args: Args)(implicit ctx: ContextShift[IO]): IO[ExitCode] =
+      self.run(args, inputs, output).map(_ => ExitCode.Success)
   }
 
   private val runCmd: Command[RunCmd] =
     Command("run", "run an event and write all results to a csv file") {
       (
-        Opts.options[(String, Path)]("input", "named path to CSV").orEmpty,
-        Opts.option[Path]("output", "path to write")
+        Opts.options[(String, Ref)]("input", "named path to CSV").orEmpty,
+        Opts.option[Ref]("output", "path to write")
       ).mapN(RunCmd(_, _))
     }
 
@@ -135,11 +177,11 @@ object App {
     }
 
   case class SortCmd(
-      inputs: List[(String, Path)],
-      outputs: List[(String, Path)]
+      inputs: List[(String, Ref)],
+      outputs: List[(String, Ref)]
   ) extends Cmd {
     def run(arg: Args)(implicit ctx: ContextShift[IO]): IO[ExitCode] = {
-      val data: IO[List[(String, ((Path, Path), Event.Source[_]))]] = {
+      val data: IO[List[(String, ((Ref, Ref), Event.Source[_]))]] = {
         def pathMap[V](
             label: String,
             i: List[(String, V)]
@@ -187,14 +229,13 @@ object App {
       }
 
       // TODO: this could exhaust the memory, we could do an external sort
-      def sortPath[A](
-          input: Path,
-          output: Path,
+      def sortRef[A](
+          input: Ref,
+          output: Ref,
           ev: Event.Source[A]
       ): IO[Unit] =
-        Feeder
-          .fromPath(input, ev, Duration.zero, strictTime = false)
-          .product(Row.writerRes[A](output)(ev.row))
+        feeder(input, ev, Duration.zero, strictTime = false)
+          .product(writer(output, ev.row))
           .use {
             case (feeder, writer) =>
               def allPoints(lines: Int, prev: List[Point]): IO[Array[Point]] =
@@ -242,7 +283,7 @@ object App {
       for {
         d <- data
         _ <- d.parTraverse_ {
-          case (_, ((in, out), ev)) => sortPath(in, out, ev)
+          case (_, ((in, out), ev)) => sortRef(in, out, ev)
         }
       } yield ExitCode.Success
     }
@@ -254,10 +295,10 @@ object App {
     ) {
       (
         Opts
-          .options[(String, Path)]("input", "named path to input CSV")
+          .options[(String, Ref)]("input", "named path to input CSV")
           .orEmpty,
         Opts
-          .options[(String, Path)]("output", "named path to target CSV")
+          .options[(String, Ref)]("output", "named path to target CSV")
           .orEmpty
       ).mapN(SortCmd(_, _))
     }

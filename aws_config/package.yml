@@ -1,0 +1,20 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: An AWS Lambda application that calls the Lambda API.
+Resources:
+  function:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: s3://dev-posco-0/3cf7705c4267c1e2f802b008173c5b32
+      Handler: dev.posco.hiona.jobs.AwsWordcount
+      Runtime: java8
+      Description: Java function
+      MemorySize: 1024
+      Timeout: 900
+      Policies:
+      - AWSLambdaBasicExecutionRole
+      - AWSLambdaReadOnlyAccess
+      - AWSXrayWriteOnlyAccess
+      - AWSLambdaVPCAccessExecutionRole
+      - AmazonS3FullAccess
+      Tracing: Active

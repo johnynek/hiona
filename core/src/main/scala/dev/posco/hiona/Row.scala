@@ -271,6 +271,16 @@ object Row extends Priority0Rows {
     OptionRow(rowA, ner)
 
   /**
+    * create a temp path that can be used while the resource is active
+    */
+  def tempPath(prefix: String, suffix: String): Resource[IO, Path] =
+    Resource
+      .make(IO {
+        java.io.File.createTempFile(prefix, suffix)
+      })(file => IO { file.delete(); () })
+      .map(_.toPath)
+
+  /**
     * Helper function to make a Resource for a PrintWriter. The Resource
     * will close the PrintWriter when done.
     */
@@ -288,7 +298,11 @@ object Row extends Priority0Rows {
     fileWriter(path)
       .flatMap(pw => Resource.liftF(writer[A](pw)))
 
-  private def writer[A: Row](pw: PrintWriter): IO[Iterable[A] => IO[Unit]] = {
+  /**
+    * use a PrintWriter for an output function. This does not
+    * close the PrintWriter, that is the caller's responsibility
+    */
+  def writer[A: Row](pw: PrintWriter): IO[Iterable[A] => IO[Unit]] = {
     val format = DelimitedFormat.CSV
 
     val row = implicitly[Row[A]]

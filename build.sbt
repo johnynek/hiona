@@ -30,6 +30,10 @@ lazy val commonSettings =
     scalacOptions in (Compile, console) ~= { _.filterNot("-Xlint" == _) },
     scalacOptions in (Test, console) := (scalacOptions in (Compile, console)).value,
     addCompilerPlugin("com.olegpy" %% "better-monadic-for" % "0.3.1"),
+    assemblyMergeStrategy in assembly := {
+      case PathList("META-INF", "MANIFEST.MF") => MergeStrategy.discard
+      case _ => MergeStrategy.first
+    },
   )
 
 lazy val core = (project in file("core"))
@@ -50,6 +54,23 @@ lazy val core = (project in file("core"))
     commonSettings,
   )
 
+lazy val aws = (project in file("aws"))
+  .settings(
+    name := "hiona-aws",
+    moduleName := "hiona-aws",
+    libraryDependencies ++= Seq(
+      munit % Test,
+      munitScalaCheck % Test,
+      scalaCheck % Test,
+      awsS3,
+      awsLambdaCore1,
+      jawnAst,
+      jawnParser,
+    ),
+    commonSettings,
+  )
+  .dependsOn(core)
+
 lazy val jobs = (project in file("jobs"))
   .settings(
     name := "hiona-jobs",
@@ -61,4 +82,4 @@ lazy val jobs = (project in file("jobs"))
     ),
     commonSettings,
   )
-  .dependsOn(core)
+  .dependsOn(core, aws)

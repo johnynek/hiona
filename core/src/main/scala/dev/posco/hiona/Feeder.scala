@@ -2,7 +2,7 @@ package dev.posco.hiona
 
 import cats.data.NonEmptyList
 import cats.effect.{IO, Resource}
-import java.io.{BufferedReader, FileReader}
+import java.io.{BufferedReader, FileReader, InputStream}
 import java.nio.file.Path
 import java.util.{Comparator, PriorityQueue}
 import net.tixxit.delimited.{
@@ -222,6 +222,26 @@ object Feeder {
     }
   }
 
+  def fromInputStream[A](
+      is: Resource[IO, InputStream],
+      src: Event.Source[A],
+      offset: Duration,
+      strictTime: Boolean = true
+  ): Resource[IO, Feeder] =
+    is.flatMap { is =>
+      Resource.liftF(
+        IO {
+          // todo, this should be more principled:
+          val it = DelimitedParser(DelimitedFormat.CSV).parseInputStream(is)
+          if (it.hasNext) {
+            // skip the header
+            it.next()
+          }
+          IteratorFeeder(src, offset, it, strictTime)
+        }
+      )
+    }
+
   def iterableFeeder[A](
       src: Event.Source[A],
       offset: Duration,
@@ -257,7 +277,13 @@ object Feeder {
   def fromInputs(
       paths: Iterable[(String, Path)],
       ev: Event[Any]
-  ): Resource[IO, Feeder] = {
+  ): Resource[IO, Feeder] =
+    fromInputsFn(paths, ev)((nm, path) => fromPath(path, nm, Duration.Zero))
+
+  def fromInputsFn[A](
+      paths: Iterable[(String, A)],
+      ev: Event[Any]
+  )(fn: (Event.Source[_], A) => Resource[IO, Feeder]): Resource[IO, Feeder] = {
     val srcs = Event.sourcesOf(ev)
     val badSrcs = srcs.filter { case (_, nel) => nel.size > 1 }
 
@@ -285,7 +311,7 @@ object Feeder {
             }
             .traverse {
               case (src, path) =>
-                fromPath(path, src, Duration.Zero)
+                fn(src, path)
             }
             .flatMap(feeds => Resource.liftF(multiFeeder(feeds)))
       }
@@ -295,6 +321,16 @@ object Feeder {
   def fromInputsLabels[A](
       paths: Iterable[(String, Path)],
       ev: LabeledEvent[A]
+  ): Resource[IO, Feeder] =
+    fromInputsLabelsFn[Path](paths, ev) { (src, path, dur) =>
+      fromPath(path, src, dur)
+    }
+
+  def fromInputsLabelsFn[A](
+      paths: Iterable[(String, A)],
+      ev: LabeledEvent[_]
+  )(
+      fn: (Event.Source[_], A, Duration) => Resource[IO, Feeder]
   ): Resource[IO, Feeder] = {
     val srcs = LabeledEvent.sourcesAndOffsetsOf(ev)
     val badSrcs = srcs.filter { case (_, (srcs, _)) => srcs.size > 1 }
@@ -327,7 +363,7 @@ object Feeder {
             }
             .traverse {
               case ((src, offsets), path) =>
-                offsets.traverse(offset => fromPath(path, src, offset))
+                offsets.traverse(offset => fn(src, path, offset))
             }
             .flatMap(feeds => Resource.liftF(multiFeeder(feeds.flatten)))
       }

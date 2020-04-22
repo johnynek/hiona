@@ -1,0 +1,10 @@
+{
+  "body": {
+    "args":
+      [
+        "run",
+        "--input", "data=s3://dev-posco-0/test/word_data.csv",
+        "--output", "s3://dev-posco-0/test/wordcount_out_rem.csv"
+      ]
+    }
+}

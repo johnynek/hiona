@@ -14,13 +14,12 @@ import cats.implicits._
   */
 object Engine {
 
-  private def runEmitter[A: Row](
+  def runEmitter[A: Row](
       feedRes: Resource[IO, Feeder],
       emitter: Emitter[A],
-      output: Path
+      outputRes: Resource[IO, Iterable[A] => IO[Unit]]
   )(implicit ctx: ContextShift[IO]): IO[Unit] =
-    Row
-      .writerRes(output)
+    outputRes
       .product(feedRes)
       .use {
         case (writer, feeder) =>
@@ -36,7 +35,9 @@ object Engine {
   ): IO[Unit] =
     Emitter
       .fromEvent(event)
-      .flatMap(runEmitter(Feeder.fromInputs(inputs, event), _, output))
+      .flatMap(
+        runEmitter(Feeder.fromInputs(inputs, event), _, Row.writerRes(output))
+      )
 
   def runLabeled[A: Row](
       inputs: Iterable[(String, Path)],
@@ -45,7 +46,13 @@ object Engine {
   )(implicit ctx: ContextShift[IO]): IO[Unit] =
     Emitter
       .fromLabeledEvent(labeled)
-      .flatMap(runEmitter(Feeder.fromInputsLabels(inputs, labeled), _, output))
+      .flatMap(
+        runEmitter(
+          Feeder.fromInputsLabels(inputs, labeled),
+          _,
+          Row.writerRes(output)
+        )
+      )
 
   /**
     * An emitter is a something that can process an input event,
