@@ -2,14 +2,13 @@ package dev.posco.hiona.aws
 
 import cats.data.{Validated, ValidatedNel}
 import cats.effect.{ContextShift, IO, Resource}
-import cats.effect.concurrent.Ref
 import com.amazonaws.services.lambda.runtime.{Context, RequestStreamHandler}
 import com.monovore.decline.Argument
 import java.io.{InputStream, OutputStream}
 import java.nio.channels.Channels
 import org.typelevel.jawn.ast
 import scala.util.control.NonFatal
-import software.amazon.awssdk.services.s3
+import com.amazonaws.services.s3
 
 import dev.posco.hiona._
 
@@ -87,7 +86,7 @@ abstract class LambdaApp(appArgs: Args) extends RequestStreamHandler {
 class S3App extends GenApp {
   type Ref = S3Addr
 
-  val s3Client = s3.S3Client.builder().build()
+  val s3Client = s3.AmazonS3ClientBuilder.defaultClient()
   val awsIO = new AWSIO(s3Client)
 
   implicit def argumentForRef: Argument[S3Addr] =
@@ -126,6 +125,7 @@ class S3App extends GenApp {
         Engine.Emitter
           .fromEvent(event)
           .flatMap(em => Engine.runEmitter(feederRes, em, outRes)(r, ctx))
+
       case Args.LabeledArgs(r, l) =>
         val outRes = writer(output, r)
         val feederRes = Feeder.fromInputsLabelsFn(inputs, l) {
@@ -150,21 +150,6 @@ class S3App extends GenApp {
       output: S3Addr,
       row: Row[A]
   ): Resource[IO, Iterable[A] => IO[Unit]] =
-    for {
-      path <- Row.tempPath("output", "csv")
-      allGood <- Resource.liftF(Ref.of[IO, Boolean](true))
-      _ <- Resource.make(IO.unit) { _ =>
-        allGood.get.flatMap {
-          case true  => awsIO.putPath(output, path)
-          case false => IO.unit
-        }
-      }
-      writeFn <- Row.writerRes(path)(row)
-    } yield { it: Iterable[A] =>
-      writeFn(it)
-        .redeemWith(
-          e => allGood.set(false).flatMap(_ => IO.raiseError(e)),
-          IO.pure(_)
-        )
-    }
+    //awsIO.tempWriter(output, row)
+    awsIO.multiPartOutput(output, row)
 }

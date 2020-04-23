@@ -62,10 +62,11 @@ lazy val aws = (project in file("aws"))
       munit % Test,
       munitScalaCheck % Test,
       scalaCheck % Test,
-      awsS3,
+      awsS3v1,
       awsLambdaCore1,
       jawnAst,
       jawnParser,
+      streamUpload,
     ),
     commonSettings,
   )

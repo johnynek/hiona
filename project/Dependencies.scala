@@ -2,16 +2,15 @@ import sbt._
 
 object Dependencies {
   val typelevel = "org.typelevel"
-  val aws2 = "software.amazon.awssdk"
+  val aws1 = "com.amazonaws"
 
   object V {
     val munit = "0.7.1"
-    val aws2 = "2.11.14"
     val jawn = "1.0.0"
   }
 
-  lazy val awsS3 = aws2 % "s3" % V.aws2
   lazy val awsLambdaCore1 = "com.amazonaws" % "aws-lambda-java-core" % "1.2.0"
+  lazy val awsS3v1 = aws1 % "aws-java-sdk-s3" % "1.11.766"
   lazy val cats = typelevel %% "cats-core" % "2.1.1"
   lazy val catsCollections = typelevel %% "cats-collections-core" % "0.9.0"
   lazy val catsEffect = typelevel %% "cats-effect" % "2.1.2"
@@ -24,4 +23,5 @@ object Dependencies {
   lazy val scalaCheck = "org.scalacheck" %% "scalacheck" % "1.14.3"
   lazy val scalaTest = "org.scalatest" %% "scalatest" % "3.0.8"
   lazy val shapeless = "com.chuusai" %% "shapeless" % "2.3.3"
+  lazy val streamUpload = "com.github.alexmojaki" % "s3-stream-upload" % "2.2.0"
 }

@@ -5,7 +5,7 @@ Resources:
   function:
     Type: AWS::Serverless::Function
     Properties:
-      CodeUri: jobs/target/scala-2.13/hiona-jobs-assembly-0.1.0-SNAPSHOT.jar
+      CodeUri: ../jobs/target/scala-2.13/hiona-jobs-assembly-0.1.0-SNAPSHOT.jar
       Handler: dev.posco.hiona.jobs.AwsWordcount
       Runtime: java8
       Description: Java function

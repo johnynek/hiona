@@ -19,3 +19,5 @@ object Wordcount {
 }
 
 class AwsWordcount extends aws.LambdaApp(Args.event(Wordcount.totalCount))
+
+object CliWordcount extends App(Wordcount.totalCount)
