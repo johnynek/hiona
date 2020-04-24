@@ -46,3 +46,8 @@ appears to correcly "create new project" for hiona (from github)
 ONLY after `brew uninstall sbt` -- brew's `sbt` seems to
 interfere with the proper import process, which results in eg `build.sbt`
 file being all red. 
+
+## Python
+We're targeting python 3.6 for simple scripting, without external libs.
+On a mac, follow instructions at [homebrew-python github](https://github.com/sashkab/homebrew-python) to install:
+`brew install sashkab/python/python@3.6`
