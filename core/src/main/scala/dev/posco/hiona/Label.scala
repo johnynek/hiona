@@ -13,7 +13,7 @@ sealed abstract class Label[K, V] {
     Label.LookForward(this, duration)
 
   final def zip[W](that: Label[K, W]): Label[K, (V, W)] =
-    Label.Zipped(this, that)
+    Label.Zipped(this, that, implicitly[(V, W) =:= (V, W)])
 
   final def map[W](fn: V => W): Label[K, W] =
     mapWithKey(Feature.ValueMap(fn))
@@ -31,8 +31,11 @@ object Label {
       extends Label[K, V]
   case class Mapped[K, V, W](initial: Label[K, V], fn: (K, V) => W)
       extends Label[K, W]
-  case class Zipped[K, V, W](left: Label[K, V], right: Label[K, W])
-      extends Label[K, (V, W)]
+  case class Zipped[K, X, Y, Z](
+      left: Label[K, X],
+      right: Label[K, Y],
+      cast: (X, Y) =:= Z
+  ) extends Label[K, Z]
 
   def sourcesAndOffsetsOf[K, V](
       label: Label[K, V],
@@ -47,7 +50,7 @@ object Label {
           .toMap
       case LookForward(l, off1) => sourcesAndOffsetsOf(l, offset + off1)
       case Mapped(l, _)         => sourcesAndOffsetsOf(l, offset)
-      case Zipped(l, r) =>
+      case Zipped(l, r, _) =>
         Monoid[Map[String, (Set[Event.Source[_]], Set[Duration])]]
           .combine(
             sourcesAndOffsetsOf(l, offset),
@@ -60,7 +63,7 @@ object Label {
       case FromFeature(f)    => Feature.lookupsOf(f)
       case LookForward(l, _) => lookupsOf(l)
       case Mapped(l, _)      => lookupsOf(l)
-      case Zipped(l, r)      => lookupsOf(l) | lookupsOf(r)
+      case Zipped(l, r, _)   => lookupsOf(l) | lookupsOf(r)
     }
 }
 
@@ -79,13 +82,13 @@ object LabeledEvent {
       event: Event[(K, V)],
       label: Label[K, W]
   ): LabeledEvent[(K, (V, W))] =
-    WithLabel(event, label)
+    WithLabel(event, label, implicitly[(K, (V, W)) =:= (K, (V, W))])
 
   def sourcesAndOffsetsOf[A](
       ev: LabeledEvent[A]
   ): Map[String, (Set[Event.Source[_]], Set[Duration])] =
     ev match {
-      case WithLabel(ev, label) =>
+      case WithLabel(ev, label, _) =>
         Monoid[Map[String, (Set[Event.Source[_]], Set[Duration])]]
           .combine(
             Event
@@ -106,14 +109,17 @@ object LabeledEvent {
 
   def lookupsOf[A](le: LabeledEvent[A]): Set[Event.Lookup[_, _, _]] =
     le match {
-      case WithLabel(ev, label) =>
+      case WithLabel(ev, label, _) =>
         Event.lookupsOf(ev) | Label.lookupsOf(label)
       case Mapped(l, _)   => lookupsOf(l)
       case Filtered(l, _) => lookupsOf(l)
     }
 
-  case class WithLabel[K, V, W](event: Event[(K, V)], label: Label[K, W])
-      extends LabeledEvent[(K, (V, W))]
+  case class WithLabel[K, X, Y, Z](
+      event: Event[(K, X)],
+      label: Label[K, Y],
+      cast: (K, (X, Y)) =:= Z
+  ) extends LabeledEvent[Z]
   case class Mapped[A, B](labeled: LabeledEvent[A], fn: A => B)
       extends LabeledEvent[B]
   case class Filtered[A](labeled: LabeledEvent[A], fn: A => Boolean)

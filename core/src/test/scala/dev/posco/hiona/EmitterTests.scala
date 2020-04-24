@@ -3,56 +3,10 @@ package dev.posco.hiona
 import cats.effect.{ContextShift, IO}
 
 import cats.implicits._
-
-object EmitterTests {
-
-  abstract class FromIterable {
-    type A
-    val event: Event.Source[A]
-    val iterable: Iterable[A]
-  }
-
-  object FromIterable {
-    def apply[A0](
-        ev: Event.Source[A0],
-        iter: Iterable[A0]
-    ): FromIterable { type A = A0 } =
-      new FromIterable {
-        type A = A0
-        val event = ev
-        val iterable = iter
-      }
-  }
-
-  def feederFor(
-      its: Iterable[FromIterable],
-      feeds: Map[String, (Set[Event.Source[_]], Set[Duration])]
-  ): IO[Feeder] =
-    its.toList
-      .traverse { fromIt =>
-        val (srcs, durs) = feeds(fromIt.event.name)
-
-        assert(srcs == Set(fromIt.event))
-
-        durs.toList.sorted.traverse { dur =>
-          Feeder.iterableFeeder[fromIt.A](fromIt.event, dur, fromIt.iterable)
-        }
-      }
-      .flatMap(llf => Feeder.multiFeeder(llf.flatten))
-
-  def feederForEvent[A](its: Iterable[FromIterable], ev: Event[A]): IO[Feeder] =
-    feederFor(its, Event.sourcesOf(ev).map {
-      case (k, v) => (k, (v, Set(Duration.Zero)))
-    })
-
-  def feederForLabeledEvent[A](
-      its: Iterable[FromIterable],
-      ev: LabeledEvent[A]
-  ): IO[Feeder] =
-    feederFor(its, LabeledEvent.sourcesAndOffsetsOf(ev))
-}
+import Feeder.FromIterable
 
 class EmitterTests extends munit.FunSuite {
+
   implicit val ec = scala.concurrent.ExecutionContext.global
 
   implicit val ctx: ContextShift[IO] = IO.contextShift(ec)
@@ -76,11 +30,11 @@ class EmitterTests extends munit.FunSuite {
     })
 
     val data = List((0L, 42), (1L, 43), (2L, 44))
-    val fromIters = List(EmitterTests.FromIterable(src, data))
+    val fromIters = List(FromIterable(src, data))
 
     val res = src.map { case (_, i) => i.toString }
     val feeder =
-      EmitterTests.feederForEvent(fromIters, res)
+      FromIterable.feederForEvent(fromIters, res)
 
     result(res, feeder)
       .flatMap { lst =>
@@ -97,14 +51,14 @@ class EmitterTests extends munit.FunSuite {
     })
     val data = List((0L, 42), (1L, 43), (2L, 44), (3L, 45))
 
-    val fromIters = List(EmitterTests.FromIterable(src, data))
+    val fromIters = List(FromIterable(src, data))
 
     val feat = src.map { case (_, i) => (i % 2, i) }.sum
     val keys = src.map { case (_, i) => (i % 2, ()) }
     val res = keys.preLookup(feat)
 
     val feeder =
-      EmitterTests.feederForEvent(fromIters, res)
+      FromIterable.feederForEvent(fromIters, res)
 
     result(res, feeder)
       .flatMap { lst =>
@@ -123,14 +77,14 @@ class EmitterTests extends munit.FunSuite {
       def validate(v: (Long, Int)) = Right(Timestamp(v._1))
     })
     val data = List((0L, 42), (1L, 43), (2L, 44), (3L, 45))
-    val fromIters = List(EmitterTests.FromIterable(src, data))
+    val fromIters = List(FromIterable(src, data))
 
     val feat = src.map { case (_, i) => (i % 2, i) }.sum
     val keys = src.map { case (_, i) => (i % 2, ()) }
     val res = keys.postLookup(feat)
 
     val feeder =
-      EmitterTests.feederForEvent(fromIters, res)
+      FromIterable.feederForEvent(fromIters, res)
 
     result(res, feeder)
       .flatMap { lst =>
@@ -150,7 +104,7 @@ class EmitterTests extends munit.FunSuite {
     })
     val data = List((0L, 1), (1L, 2), (2L, 3), (3L, 4), (4L, 5), (5L, 6))
 
-    val fromIters = List(EmitterTests.FromIterable(src, data))
+    val fromIters = List(FromIterable(src, data))
 
     val label =
       Label(src.map { case (_, i) => (i % 2, i) }.sum).lookForward(Duration(3L))
@@ -158,7 +112,7 @@ class EmitterTests extends munit.FunSuite {
     val res = LabeledEvent(keys, label)
 
     val feeder =
-      EmitterTests.feederForLabeledEvent(fromIters, res)
+      FromIterable.feederForLabeledEvent(fromIters, res)
 
     resultLabel(res, feeder)
       .flatMap { lst =>
@@ -185,7 +139,7 @@ class EmitterTests extends munit.FunSuite {
     })
     val data = List((0L, 1), (1L, 2), (2L, 3), (3L, 4), (4L, 5), (5L, 6))
 
-    val fromIters = List(EmitterTests.FromIterable(src, data))
+    val fromIters = List(FromIterable(src, data))
 
     val feat = src.map { case (_, i) => (i % 2, i) }.sum
     // exercise a lookahead where an read and write collide,
@@ -198,7 +152,7 @@ class EmitterTests extends munit.FunSuite {
     val res = LabeledEvent(keys, label)
 
     val feeder =
-      EmitterTests.feederForLabeledEvent(fromIters, res)
+      FromIterable.feederForLabeledEvent(fromIters, res)
 
     resultLabel(res, feeder)
       .flatMap { lst =>

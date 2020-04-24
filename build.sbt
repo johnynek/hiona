@@ -84,3 +84,12 @@ lazy val jobs = (project in file("jobs"))
     commonSettings,
   )
   .dependsOn(core, aws)
+
+lazy val bench = (project in file("bench"))
+  .enablePlugins(JmhPlugin)
+  .settings(
+    name := "hiona-bench",
+    moduleName := "hiona-bench",
+    commonSettings,
+  )
+  .dependsOn(core)

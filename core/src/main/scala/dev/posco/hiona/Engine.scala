@@ -14,7 +14,7 @@ import cats.implicits._
   */
 object Engine {
 
-  def runEmitter[A: Row](
+  def runEmitter[A](
       feedRes: Resource[IO, Feeder],
       emitter: Emitter[A],
       outputRes: Resource[IO, Iterable[A] => IO[Unit]]
@@ -152,30 +152,32 @@ object Engine {
       }
 
     def fromEvent[A](ev: Event[A]): IO[Emitter[A]] =
-      Impl.emptyECache
-        .product(Impl.emptyFCache)
-        .flatMap {
-          case (e, f) =>
-            Impl.fromEventDur(ev, Duration.Zero, e, f)
-        }
+      Impl
+        .newState(Impl.Node.fanOutFn(ev))
+        .flatMap(state => state.fromEventDur(ev, Duration.Zero))
 
     def fromLabeledEvent[A](le: LabeledEvent[A]): IO[Emitter[A]] =
       le match {
-        case LabeledEvent.WithLabel(ev, label) =>
-          Impl.emptyECache
-            .product(Impl.emptyFCache)
-            .flatMap {
-              case (e, f) =>
-                (
-                  Impl.fromEventDur(ev, Duration.Zero, e, f),
-                  Impl.fromLabel(label, Duration.Zero, e, f)
-                ).mapN(Impl.LookupEmitter(_, _, LookupOrder.After))
+        case LabeledEvent.WithLabel(ev, label, cast) =>
+          Impl
+            .newState(Impl.Node.fanOutFn(le))
+            .flatMap { state =>
+              (
+                state.fromEventDur(ev, Duration.Zero),
+                state.fromLabel(label, Duration.Zero)
+              ).mapN((e, l) =>
+                cast.substituteCo[Emitter](
+                  Impl.LookupEmitter(e, l, LookupOrder.After)
+                )
+              )
             }
         case m @ LabeledEvent.Mapped(_, _) =>
           def go[A0](
               m: LabeledEvent.Mapped[A0, A]
           ): IO[Emitter[A]] =
             fromLabeledEvent(m.labeled).map(
+              // TODO we could do fusion
+              // here, we know there is no fanout
               Impl.ConcatMapEmitter(
                 _,
                 Impl.MapToConcat(
@@ -186,6 +188,8 @@ object Engine {
 
           go(m)
         case LabeledEvent.Filtered(ev, fn) =>
+          // TODO we could do fusion
+          // here, we know there is no fanout
           fromLabeledEvent(ev).map(
             Impl.ConcatMapEmitter(_, Impl.FilterToConcat(fn))
           )
@@ -233,20 +237,14 @@ object Engine {
 
   object FeatureState {
     def fromFeature[K, V](f: Feature[K, V]): IO[FeatureState[K, V]] =
-      Impl.emptyECache
-        .product(Impl.emptyFCache)
-        .flatMap {
-          case (ec, fc) =>
-            Impl.fromFeatureDur(f, Duration.Zero, ec, fc)
-        }
+      Impl
+        .newState(Impl.Node.fanOutFn(f))
+        .flatMap(state => state.fromFeatureDur(f, Duration.Zero))
 
     def fromLabel[K, V](l: Label[K, V]): IO[FeatureState[K, V]] =
-      Impl.emptyECache
-        .product(Impl.emptyFCache)
-        .flatMap {
-          case (e, f) =>
-            Impl.fromLabel(l, Duration.Zero, e, f)
-        }
+      Impl
+        .newState(Impl.Node.fanOutFn(l))
+        .flatMap(state => state.fromLabel(l, Duration.Zero))
   }
 
   private object Impl {
@@ -295,109 +293,227 @@ object Engine {
     val emptyECache: IO[ECache] = Cache1.build
     val emptyFCache: IO[FCache] = Cache2.build
 
-    def fromEventDur[A](
-        ev: Event[A],
-        offset: Duration,
-        ecache: ECache,
-        fcache: FCache
-    ): IO[Emitter[A]] =
-      ecache((ev, offset)) {
-        ev match {
-          case Event.Empty => IO.pure(EmptyEmitter)
-          case src @ Event.Source(_, _, _) =>
-            IO.pure(SourceEmitter(src, offset))
-          case Event.Concat(left, right) =>
-            (
-              fromEventDur(left, offset, ecache, fcache),
-              fromEventDur(right, offset, ecache, fcache),
-              Ref.of[IO, (Long, List[A])]((Long.MinValue, Nil))
-            ).mapN(ConcatEmitter(_, _, _))
-          case Event.WithTime(ev) =>
-            fromEventDur(ev, offset, ecache, fcache).map(WithTimeEmitter(_))
-          case Event.Mapped(ev, fn) =>
-            fromEventDur(ev, offset, ecache, fcache).map(
-              ConcatMapEmitter(_, MapToConcat(fn))
-            )
-          case f: Event.Filtered[a] =>
-            def go[B1](ev: Event[B1], fn: B1 => Boolean): IO[Emitter[B1]] =
-              fromEventDur(ev, offset, ecache, fcache).map(
-                ConcatMapEmitter(_, FilterToConcat(fn))
-              )
+    sealed trait Node
+    object Node {
+      case class ENode[A](ev: Event[A], dur: Duration) extends Node
+      case class LENode[A](le: LabeledEvent[A], dur: Duration) extends Node
+      case class FNode[K, V](f: Feature[K, V], dur: Duration) extends Node
+      case class LNode[K, V](l: Label[K, V], dur: Duration) extends Node
 
-            go[a](f.previous, f.fn)
-          case Event.ConcatMapped(ev, fn) =>
-            fromEventDur(ev, offset, ecache, fcache).map(
-              ConcatMapEmitter(_, fn)
-            )
-          case Event.ValueWithTime(ev) =>
-            fromEventDur(ev, offset, ecache, fcache).map(
-              ValueWithTimeEmitter(_)
-            )
-          case Event.Lookup(ev, feat, order) =>
-            (
-              fromEventDur(ev, offset, ecache, fcache),
-              fromFeatureDur(feat, offset, ecache, fcache)
-            ).mapN(LookupEmitter(_, _, order))
+      def dependsOn(n: Node): List[Node] =
+        n match {
+          case ENode(Event.Source(_, _, _) | Event.Empty, _) => Nil
+          case ENode(Event.Concat(a, b), dur) =>
+            ENode(a, dur) :: ENode(b, dur) :: Nil
+          case ENode(Event.Lookup(e, f, _), dur) =>
+            ENode(e, dur) :: FNode(f, dur) :: Nil
+          case ENode(ns: Event.NonSource[_], dur) =>
+            ENode(ns.previous, dur) :: Nil
+          case LENode(LabeledEvent.WithLabel(e, l, _), dur) =>
+            ENode(e, dur) :: LNode(l, dur) :: Nil
+          case LENode(LabeledEvent.Mapped(e, _), dur)   => LENode(e, dur) :: Nil
+          case LENode(LabeledEvent.Filtered(e, _), dur) => LENode(e, dur) :: Nil
+          case FNode(Feature.Summed(ev, _), dur)        => ENode(ev, dur) :: Nil
+          case FNode(Feature.Latest(ev, _, _), dur)     => ENode(ev, dur) :: Nil
+          case FNode(Feature.Mapped(f, _), dur)         => FNode(f, dur) :: Nil
+          case FNode(Feature.Zipped(l, r, _), dur) =>
+            FNode(l, dur) :: FNode(r, dur) :: Nil
+          case LNode(Label.FromFeature(f), dur)     => FNode(f, dur) :: Nil
+          case LNode(Label.LookForward(l, d0), dur) => LNode(l, d0 + dur) :: Nil
+          case LNode(Label.Mapped(l, _), dur)       => LNode(l, dur) :: Nil
+          case LNode(Label.Zipped(l, r, _), dur) =>
+            LNode(l, dur) :: LNode(r, dur) :: Nil
         }
-      }
 
-    def fromFeatureDur[K, V](
-        f: Feature[K, V],
-        offset: Duration,
-        ecache: ECache,
-        fcache: FCache
-    ): IO[FeatureState[K, V]] =
-      fcache((f, offset)) {
-        f match {
-          case Feature.Summed(ev, monoid) =>
-            (
-              fromEventDur(ev, offset, ecache, fcache),
-              Ref.of[IO, (Long, Map[K, V], Map[K, V])](
-                (Long.MinValue, Map.empty, Map.empty)
-              )
-            ).mapN(SummedFS(_, _, monoid))
+      def fanOutFn[A](ev: Event[A]): Node => Int =
+        Graph.fanOutCount(Set[Node](ENode(ev, Duration.Zero)))(dependsOn(_))
 
-          case f @ Feature.Latest(_, _) =>
-            // TODO make use of the window duration to prune old events from the state
-            def go[B](l: Feature.Latest[K, B]): IO[FeatureState[K, Option[B]]] =
+      def fanOutFn[A](ev: LabeledEvent[A]): Node => Int =
+        Graph.fanOutCount(Set[Node](LENode(ev, Duration.Zero)))(dependsOn(_))
+
+      def fanOutFn[A, B](le: Label[A, B]): Node => Int =
+        Graph.fanOutCount(Set[Node](LNode(le, Duration.Zero)))(dependsOn(_))
+
+      def fanOutFn[A, B](f: Feature[A, B]): Node => Int =
+        Graph.fanOutCount(Set[Node](FNode(f, Duration.Zero)))(dependsOn(_))
+    }
+
+    def newState(fo: Node => Int): IO[State] =
+      (emptyECache, emptyFCache).mapN(new State(_, _, fo))
+
+    class State(ecache: ECache, fcache: FCache, fanOut: Node => Int) {
+
+      def fromEventDur[A](
+          ev: Event[A],
+          offset: Duration
+      ): IO[Emitter[A]] =
+        ecache((ev, offset)) {
+          val uncached: IO[Emitter[A]] = ev match {
+            case Event.Empty => IO.pure(EmptyEmitter)
+            case src @ Event.Source(_, _, _) =>
+              IO.pure(SourceEmitter(src, offset))
+            case Event.Concat(left, right) =>
               (
-                fromEventDur(l.event, offset, ecache, fcache),
-                Ref.of[IO, (Long, Map[K, B], Map[K, B])](
+                fromEventDur(left, offset),
+                fromEventDur(right, offset)
+              ).mapN(ConcatEmitter(_, _))
+            case Event.WithTime(ev) =>
+              fromEventDur(ev, offset).map(WithTimeEmitter(_))
+            case Event.Mapped(ev1 @ Event.Mapped(ev0, fn0), fn1)
+                if fanOut(Node.ENode(ev1, offset)) < 2 =>
+              // ev1 is only used here, we can compose:
+              val composed = Event.Mapped(ev0, AndThen.build(fn0, fn1))
+              fromEventDur(composed, offset)
+            case Event.ConcatMapped(ev1 @ Event.ConcatMapped(ev0, fn0), fn1)
+                if fanOut(Node.ENode(ev1, offset)) < 2 =>
+              // ev1 is only used here, we can compose:
+              val composed = Event.ConcatMapped(ev0, AndThenIt.build(fn0, fn1))
+              fromEventDur(composed, offset)
+            case Event.Filtered(ev1 @ Event.Filtered(ev0, fn0, c0), fn1, c1)
+                if fanOut(Node.ENode(ev1, offset)) < 2 =>
+              // ev1 is only used here, we can compose:
+              val composed =
+                Event.Filtered(ev0, AndFn.build(fn0, fn1), c0.andThen(c1))
+              fromEventDur(composed, offset)
+            case Event.Mapped(ev, fn) =>
+              // rewrite this node
+              val rewrite = Event.ConcatMapped(ev, MapToConcat(fn))
+              fromEventDur(rewrite, offset)
+            case Event.Filtered(ev, fn, cast) =>
+              // rewrite this node
+              val rewrite = Event.ConcatMapped(ev, FilterToConcat(fn))
+              type T[Z] = IO[Emitter[Z]]
+
+              cast.substituteCo[T](fromEventDur(rewrite, offset))
+            case Event.ConcatMapped(ev, fn) =>
+              fromEventDur(ev, offset).map(
+                ConcatMapEmitter(_, fn)
+              )
+            case Event.ValueWithTime(ev) =>
+              fromEventDur(ev, offset).map(
+                ValueWithTimeEmitter(_)
+              )
+            case Event.Lookup(ev, feat, order) =>
+              (
+                fromEventDur(ev, offset),
+                fromFeatureDur(feat, offset)
+              ).mapN(LookupEmitter(_, _, order))
+          }
+
+          if (fanOut(Node.ENode(ev, offset)) > 1) {
+            (uncached, Ref.of[IO, (Long, List[A])]((Long.MinValue, Nil)))
+              .mapN(CacheEmitter[A](_, _))
+          } else uncached
+        }
+
+      def fromFeatureDur[K, V](
+          f: Feature[K, V],
+          offset: Duration
+      ): IO[FeatureState[K, V]] =
+        fcache((f, offset)) {
+          f match {
+            case Feature.Summed(ev, monoid) =>
+              (
+                fromEventDur(ev, offset),
+                Ref.of[IO, (Long, Map[K, V], Map[K, V])](
                   (Long.MinValue, Map.empty, Map.empty)
                 )
-              ).mapN(LatestFS[K, B](_, _))
+              ).mapN(SummedFS(_, _, monoid))
 
-            go(f)
-          case Feature.Mapped(feat, fn) =>
-            fromFeatureDur(feat, offset, ecache, fcache).map(MappedFS(_, fn))
-          case Feature.Zipped(left, right) =>
-            (
-              fromFeatureDur(left, offset, ecache, fcache),
-              fromFeatureDur(right, offset, ecache, fcache)
-            ).mapN(ZippedFS(_, _))
+            case f @ Feature.Latest(_, _, _) =>
+              // TODO make use of the window duration to prune old events from the state
+              // we know that C == Option[B]
+              type Z[A] = FeatureState[K, A]
+              def go[B, C](l: Feature.Latest[K, B, C]): IO[FeatureState[K, C]] =
+                (
+                  fromEventDur(l.event, offset),
+                  Ref.of[IO, (Long, Map[K, B], Map[K, B])](
+                    (Long.MinValue, Map.empty, Map.empty)
+                  )
+                ).mapN((e, r) => l.cast.substituteCo[Z](LatestFS[K, B](e, r)))
+
+              go(f)
+
+            case Feature.Mapped(feat, fn) =>
+              fromFeatureDur(feat, offset).map(MappedFS(_, fn))
+
+            case Feature.Zipped(left, right, cast) =>
+              // we know there exists W, X such that V =:= (W, X)
+              // scala intoduces unknowns for W and X
+              type Z[A] = FeatureState[K, A]
+              (
+                fromFeatureDur(left, offset), // W
+                fromFeatureDur(right, offset) // X
+              ).mapN((l, r) => cast.substituteCo[Z](ZippedFS(l, r)))
+            // cast goes from F[(W, X)] to F[V] which is what I want
+          }
         }
-      }
 
-    def fromLabel[K, V](
-        l: Label[K, V],
-        offset: Duration,
-        ecache: ECache,
-        fcache: FCache
-    ): IO[FeatureState[K, V]] =
-      l match {
-        case Label.FromFeature(f) => fromFeatureDur(f, offset, ecache, fcache)
-        case Label.LookForward(l, offset1) =>
-          fromLabel(l, offset + offset1, ecache, fcache)
-        case Label.Mapped(feat, fn) =>
-          fromLabel(feat, offset, ecache, fcache).map(
-            MappedFS(_, Feature.Ignore3(fn))
-          )
-        case Label.Zipped(left, right) =>
-          (
-            fromLabel(left, offset, ecache, fcache),
-            fromLabel(right, offset, ecache, fcache)
-          ).mapN(ZippedFS(_, _))
-      }
+      def fromLabel[K, V](
+          l: Label[K, V],
+          offset: Duration
+      ): IO[FeatureState[K, V]] =
+        l match {
+          case Label.FromFeature(f) => fromFeatureDur(f, offset)
+          case Label.LookForward(l, offset1) =>
+            fromLabel(l, offset + offset1)
+          case Label.Mapped(feat, fn) =>
+            fromLabel(feat, offset).map(
+              MappedFS(_, Feature.Ignore3(fn))
+            )
+          case Label.Zipped(left, right, cast) =>
+            type FS[A] = FeatureState[K, A]
+            (
+              fromLabel(left, offset),
+              fromLabel(right, offset)
+            ).mapN((l, r) => cast.substituteCo[FS](ZippedFS(l, r)))
+        }
+    }
+
+    case class AndThen[A, B, C](fn1: A => B, fn2: B => C)
+        extends Function1[A, C] {
+      def apply(a: A): C = fn2(fn1(a))
+    }
+
+    object AndThen {
+      def build[A, B, C](fn1: A => B, fn2: B => C): A => C =
+        fn1 match {
+          case AndThen(x, y) => build(x, build(y, fn2))
+          case notAndThen    => AndThen(notAndThen, fn2)
+        }
+    }
+
+    case class AndThenIt[A, B, C](fn1: A => Iterable[B], fn2: B => Iterable[C])
+        extends Function1[A, Iterable[C]] {
+      def apply(a: A): Iterable[C] = fn1(a).flatMap(fn2)
+    }
+
+    object AndThenIt {
+      def build[A, B, C](
+          fn1: A => Iterable[B],
+          fn2: B => Iterable[C]
+      ): A => Iterable[C] =
+        fn1 match {
+          case AndThenIt(x, y) =>
+            // we want a deep chain to be: fn(a).flatMap(x => f2(x).flatMap(y => ...
+            // so that we short circuit if any are empty
+            build(x, build(y, fn2))
+          case notAndThen => AndThenIt(notAndThen, fn2)
+        }
+    }
+
+    case class AndFn[A](fn1: A => Boolean, fn2: A => Boolean)
+        extends Function1[A, Boolean] {
+      def apply(a: A): Boolean = fn1(a) && fn2(a)
+    }
+
+    object AndFn {
+      def build[A](fn1: A => Boolean, fn2: A => Boolean): A => Boolean =
+        fn1 match {
+          case AndFn(x, y) => build(x, build(y, fn2))
+          case notAnd      => AndFn(notAnd, fn2)
+        }
+    }
 
     case class MapToConcat[A, B](fn: A => B) extends Function1[A, Iterable[B]] {
       def apply(a: A): Iterable[B] = fn(a) :: Nil
@@ -433,10 +549,28 @@ object Engine {
         } else ioNil
     }
 
+    case class CacheEmitter[A](prev: Emitter[A], ref: Ref[IO, (Long, List[A])])
+        extends Emitter[A] {
+
+      def consumes = prev.consumes
+
+      def feed(point: Point, seq: Long): IO[List[A]] =
+        for {
+          ((seq0, as), set) <- ref.access
+          res <- if (seq0 == seq) IO.pure(as)
+          else {
+            for {
+              res <- prev.feed(point, seq)
+              success <- set((seq, res))
+              res1 <- if (success) IO.pure(res) else feed(point, seq)
+            } yield res1
+          }
+        } yield res
+    }
+
     case class ConcatEmitter[A](
         left: Emitter[A],
-        right: Emitter[A],
-        ref: Ref[IO, (Long, List[A])]
+        right: Emitter[A]
     ) extends Emitter[A] {
       val consumes = left.consumes | right.consumes
 
@@ -446,13 +580,7 @@ object Engine {
         val rightRes =
           if (right.consumes(nmOff)) right.feed(point, seq) else ioNil
 
-        val run = (leftRes, rightRes).mapN(_ ::: _)
-
-        for {
-          ((seq0, as), set) <- ref.access
-          res <- if (seq0 == seq) IO.pure(as)
-          else run.flatMap(res => set((seq, res)).as(res))
-        } yield res
+        (leftRes, rightRes).mapN(_ ::: _)
       }
     }
 

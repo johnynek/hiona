@@ -124,7 +124,7 @@ class S3App extends GenApp {
         }
         Engine.Emitter
           .fromEvent(event)
-          .flatMap(em => Engine.runEmitter(feederRes, em, outRes)(r, ctx))
+          .flatMap(em => Engine.runEmitter(feederRes, em, outRes))
 
       case Args.LabeledArgs(r, l) =>
         val outRes = writer(output, r)
@@ -135,7 +135,7 @@ class S3App extends GenApp {
         }
         Engine.Emitter
           .fromLabeledEvent(l)
-          .flatMap(em => Engine.runEmitter(feederRes, em, outRes)(r, ctx))
+          .flatMap(em => Engine.runEmitter(feederRes, em, outRes))
     }
 
   def feeder[A](

@@ -39,6 +39,15 @@ works on my machine.
 To make changes, try changing Example.scala and then reissue the `assembly` command in the sbt
 prompt.
 
+## Running the benchmarks
+
+At the sbt prompt:
+```
+bench/jmh:run -i 3 -wi 3 -f1 -t1 .*Bench.*
+```
+or use any regular expression to select the benchmark class you want to run. Change the parameters
+higher numbers for more reliable output, but longer running benchmarks.
+
 ## IntelliJ
 
 IntelliJ 2020.1 Beta (201.6668.13) (on Mac catalina)

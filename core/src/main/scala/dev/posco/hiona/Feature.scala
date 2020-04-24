@@ -6,7 +6,7 @@ import cats.implicits._
 sealed abstract class Feature[K, V] {
 
   final def zip[W](that: Feature[K, W]): Feature[K, (V, W)] =
-    Feature.Zipped(this, that)
+    Feature.Zipped(this, that, implicitly[(V, W) =:= (V, W)])
 
   final def map[W](fn: V => W): Feature[K, W] =
     mapWithKey(Feature.ValueMap(fn))
@@ -53,10 +53,10 @@ object Feature {
 
   def sourcesOf[K, V](f: Feature[K, V]): Map[String, Set[Event.Source[_]]] =
     f match {
-      case Summed(ev, _) => Event.sourcesOf(ev)
-      case Latest(ev, _) => Event.sourcesOf(ev)
-      case Mapped(f, _)  => sourcesOf(f)
-      case Zipped(left, right) =>
+      case Summed(ev, _)    => Event.sourcesOf(ev)
+      case Latest(ev, _, _) => Event.sourcesOf(ev)
+      case Mapped(f, _)     => sourcesOf(f)
+      case Zipped(left, right, _) =>
         Monoid[Map[String, Set[Event.Source[_]]]]
           .combine(sourcesOf(left), sourcesOf(right))
     }
@@ -64,10 +64,10 @@ object Feature {
   def triggersOf[K, V](f: Feature[K, V]): Event[(K, Unit)] = {
     def loop[W](f: Feature[K, W]): List[Event[(K, Unit)]] =
       f match {
-        case Summed(ev, _) => ev.triggers :: Nil
-        case Latest(ev, _) => ev.triggers :: Nil
-        case Mapped(f, _)  => loop(f)
-        case Zipped(l, r)  => loop(l) ::: loop(r)
+        case Summed(ev, _)    => ev.triggers :: Nil
+        case Latest(ev, _, _) => ev.triggers :: Nil
+        case Mapped(f, _)     => loop(f)
+        case Zipped(l, r, _)  => loop(l) ::: loop(r)
       }
 
     loop(f).distinct.reduce(_ ++ _)
@@ -75,18 +75,27 @@ object Feature {
 
   def lookupsOf[K, V](f: Feature[K, V]): Set[Event.Lookup[_, _, _]] =
     f match {
-      case Summed(ev, _) => Event.lookupsOf(ev)
-      case Latest(ev, _) => Event.lookupsOf(ev)
-      case Mapped(f, _)  => lookupsOf(f)
-      case Zipped(l, r)  => lookupsOf(l) | lookupsOf(r)
+      case Summed(ev, _)    => Event.lookupsOf(ev)
+      case Latest(ev, _, _) => Event.lookupsOf(ev)
+      case Mapped(f, _)     => lookupsOf(f)
+      case Zipped(l, r, _)  => lookupsOf(l) | lookupsOf(r)
     }
 
   case class Summed[K, V](event: Event[(K, V)], monoid: Monoid[V])
       extends Feature[K, V]
-  case class Latest[K, V](event: Event[(K, V)], within: Duration)
-      extends Feature[K, Option[V]]
+
+  case class Latest[K, W, V](
+      event: Event[(K, W)],
+      within: Duration,
+      cast: Option[W] =:= V
+  ) extends Feature[K, V]
+
   case class Mapped[K, V, W](initial: Feature[K, V], fn: (K, V, Timestamp) => W)
       extends Feature[K, W]
-  case class Zipped[K, V, W](left: Feature[K, V], right: Feature[K, W])
-      extends Feature[K, (V, W)]
+
+  case class Zipped[K, W, X, Y](
+      left: Feature[K, W],
+      right: Feature[K, X],
+      cast: (W, X) =:= Y
+  ) extends Feature[K, Y]
 }

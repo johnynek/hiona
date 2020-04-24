@@ -67,6 +67,54 @@ object Feeder {
         s"mismatch inputs: missing=$missingPaths, extra = $extraPaths"
       )
 
+  sealed abstract class FromIterable {
+    type A
+    val event: Event.Source[A]
+    val iterable: Iterable[A]
+  }
+
+  object FromIterable {
+    def apply[A0](
+        ev: Event.Source[A0],
+        iter: Iterable[A0]
+    ): FromIterable { type A = A0 } =
+      new FromIterable {
+        type A = A0
+        val event = ev
+        val iterable = iter
+      }
+
+    def feederFor(
+        its: Iterable[FromIterable],
+        feeds: Map[String, (Set[Event.Source[_]], Set[Duration])]
+    ): IO[Feeder] =
+      its.toList
+        .traverse { fromIt =>
+          val (srcs, durs) = feeds(fromIt.event.name)
+
+          assert(srcs == Set(fromIt.event))
+
+          durs.toList.sorted.traverse { dur =>
+            Feeder.iterableFeeder[fromIt.A](fromIt.event, dur, fromIt.iterable)
+          }
+        }
+        .flatMap(llf => Feeder.multiFeeder(llf.flatten))
+
+    def feederForEvent[A](
+        its: Iterable[FromIterable],
+        ev: Event[A]
+    ): IO[Feeder] =
+      feederFor(its, Event.sourcesOf(ev).map {
+        case (k, v) => (k, (v, Set(Duration.Zero)))
+      })
+
+    def feederForLabeledEvent[A](
+        its: Iterable[FromIterable],
+        ev: LabeledEvent[A]
+    ): IO[Feeder] =
+      feederFor(its, LabeledEvent.sourcesAndOffsetsOf(ev))
+  }
+
   private case class IteratorFeeder[A](
       event: Event.Source[A],
       offset: Duration,

@@ -14,7 +14,7 @@ sealed abstract class Event[+A] {
     Event.Mapped(this, fn)
 
   final def filter(fn: A => Boolean): Event[A] =
-    Event.Filtered(this, fn)
+    Event.Filtered(this, fn, implicitly[A =:= A])
 
   final def concatMap[B](fn: A => Iterable[B]): Event[B] =
     Event.ConcatMapped(this, fn)
@@ -77,7 +77,7 @@ object Event {
       Feature.Summed(ev, m)
 
     final def latest(within: Duration): Feature[K, Option[V]] =
-      Feature.Latest(ev, within)
+      Feature.Latest(ev, within, implicitly[Option[V] =:= Option[V]])
 
     final def mapValues[W](fn: V => W): Event[(K, W)] =
       ev.map(Event.MapValuesFn(fn, implicitly[(K, V) <:< (K, V)]))
@@ -170,8 +170,8 @@ object Event {
     type Prior = A
     def previous = init
   }
-  case class Filtered[A](init: Event[A], fn: A => Boolean)
-      extends NonSource[A] {
+  case class Filtered[A, B](init: Event[A], fn: A => Boolean, cast: A =:= B)
+      extends NonSource[B] {
     type Prior = A
     def previous = init
   }
