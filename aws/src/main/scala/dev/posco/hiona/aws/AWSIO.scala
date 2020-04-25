@@ -5,14 +5,9 @@ import cats.effect.{IO, Resource}
 import cats.effect.concurrent.Ref
 import com.amazonaws.services.s3
 import dev.posco.hiona.Row
-import java.io.{
-  BufferedWriter,
-  InputStream,
-  OutputStream,
-  OutputStreamWriter,
-  PrintWriter
-}
+import java.io.{InputStream, OutputStream}
 import java.nio.file.Path
+import java.util.zip.{GZIPInputStream, GZIPOutputStream}
 
 import cats.implicits._
 
@@ -20,7 +15,9 @@ final class AWSIO(s3client: s3.AmazonS3) {
 
   def read(s3Addr: S3Addr): Resource[IO, InputStream] =
     Resource.make(IO {
-      s3client.getObject(s3Addr.bucket, s3Addr.key).getObjectContent()
+      val is = s3client.getObject(s3Addr.bucket, s3Addr.key).getObjectContent()
+      if (s3Addr.key.endsWith(".gz")) new GZIPInputStream(is)
+      else is
     })(is => IO(is.close()))
 
   def putPath(s3Addr: S3Addr, path: Path): IO[Unit] =
@@ -51,14 +48,17 @@ final class AWSIO(s3client: s3.AmazonS3) {
   def tempWriter[A](
       output: S3Addr,
       row: Row[A]
-  ): Resource[IO, Iterable[A] => IO[Unit]] =
+  ): Resource[IO, Iterable[A] => IO[Unit]] = {
+    val suffix =
+      if (output.key.endsWith(".gz")) "csv.gz" else "csv"
     for {
-      path <- Row.tempPath("output", "csv")
+      path <- Row.tempPath("output", suffix)
       fn <- onFail[Unit, Iterable[A]](IO.unit, {
         case (None, _)    => putPath(output, path)
         case (Some(_), _) => IO.unit
       }, _ => Row.writerRes(path)(row))
     } yield fn
+  }
 
   /**
     * use the code from:
@@ -77,8 +77,11 @@ final class AWSIO(s3client: s3.AmazonS3) {
         .partSize(10) // 10 MB chunks
 
       val os = m.getMultiPartOutputStreams.get(0)
+      val s =
+        if (s3Addr.key.endsWith(".gz")) new GZIPOutputStream(os)
+        else os
 
-      (m, os)
+      (m, s)
     }
 
     val close: (Option[Throwable], (StreamTransferManager, OutputStream)) => IO[
@@ -99,20 +102,8 @@ final class AWSIO(s3client: s3.AmazonS3) {
         (StreamTransferManager, OutputStream)
     ) => Resource[IO, Iterable[A] => IO[Unit]] = {
       case (_, os) =>
-        val pwIO =
-          IO(
-            new PrintWriter(
-              new BufferedWriter(
-                new OutputStreamWriter(
-                  os,
-                  java.nio.charset.StandardCharsets.UTF_8
-                )
-              )
-            )
-          )
-
         for {
-          pw <- Resource.make(pwIO)(pw => IO(pw.close()))
+          pw <- Row.toPrintWriter(os)
           wfn <- Resource.liftF(Row.writer(pw)(row))
         } yield wfn
     }

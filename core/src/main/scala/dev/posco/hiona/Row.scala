@@ -1,9 +1,16 @@
 package dev.posco.hiona
 
 import cats.effect.{IO, Resource}
-import java.io.{BufferedWriter, FileWriter, PrintWriter}
+import java.io.{
+  BufferedWriter,
+  FileOutputStream,
+  OutputStream,
+  OutputStreamWriter,
+  PrintWriter
+}
 import java.nio.file.Path
 import net.tixxit.delimited.{DelimitedFormat, Row => DRow}
+import java.util.zip.GZIPOutputStream
 
 import shapeless._
 
@@ -280,16 +287,30 @@ object Row extends Priority0Rows {
       })(file => IO { file.delete(); () })
       .map(_.toPath)
 
+  def toPrintWriter(os: => OutputStream): Resource[IO, PrintWriter] =
+    Resource.make {
+      IO(
+        new PrintWriter(
+          new BufferedWriter(
+            new OutputStreamWriter(
+              os,
+              java.nio.charset.StandardCharsets.UTF_8
+            )
+          )
+        )
+      )
+    }(pw => IO(pw.close()))
+
   /**
     * Helper function to make a Resource for a PrintWriter. The Resource
     * will close the PrintWriter when done.
     */
   def fileWriter(path: Path): Resource[IO, PrintWriter] =
-    Resource.make(IO {
-      val fw = new FileWriter(path.toFile)
-      val bw = new BufferedWriter(fw)
-      new PrintWriter(bw)
-    })(pw => IO(pw.close()))
+    toPrintWriter {
+      val fos = new FileOutputStream(path.toFile)
+      if (path.toString.endsWith(".gz")) new GZIPOutputStream(fos)
+      else fos
+    }
 
   /**
     * Make a Resource for a function that can write out items into a given path

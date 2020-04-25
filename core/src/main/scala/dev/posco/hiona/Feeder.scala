@@ -2,9 +2,10 @@ package dev.posco.hiona
 
 import cats.data.NonEmptyList
 import cats.effect.{IO, Resource}
-import java.io.{BufferedReader, FileReader, InputStream}
+import java.io.{BufferedInputStream, FileInputStream, InputStream}
 import java.nio.file.Path
 import java.util.{Comparator, PriorityQueue}
+import java.util.zip.GZIPInputStream
 import net.tixxit.delimited.{
   DelimitedError,
   DelimitedParser,
@@ -244,31 +245,22 @@ object Feeder {
         }
     }
 
+  private def inputStreamFor(p: Path): Resource[IO, InputStream] =
+    Resource.make(IO {
+      val fis = new FileInputStream(p.toFile)
+      val bis = new BufferedInputStream(fis)
+      if (p.toString.endsWith(".gz")) {
+        new GZIPInputStream(bis)
+      } else bis
+    })(is => IO(is.close()))
+
   def fromPath[A](
       path: Path,
       src: Event.Source[A],
       offset: Duration,
       strictTime: Boolean = true
-  ): Resource[IO, Feeder] = {
-    // feeder
-    val resBR = Resource.make(IO {
-      new BufferedReader(new FileReader(path.toFile))
-    })(br => IO(br.close()))
-
-    resBR.flatMap { br =>
-      Resource.liftF(
-        IO {
-          // todo, this should be more principled:
-          val it = DelimitedParser(DelimitedFormat.CSV).parseReader(br)
-          if (it.hasNext) {
-            // skip the header
-            it.next()
-          }
-          IteratorFeeder(src, offset, it, strictTime)
-        }
-      )
-    }
-  }
+  ): Resource[IO, Feeder] =
+    fromInputStream(inputStreamFor(path), src, offset, strictTime)
 
   def fromInputStream[A](
       is: Resource[IO, InputStream],
