@@ -23,7 +23,7 @@ sealed abstract class Event[+A] {
     * For each event, attach the timestamp it occurs at
     */
   final def withTime: Event[(A, Timestamp)] =
-    Event.WithTime(this)
+    Event.WithTime(this, implicitly[(A, Timestamp) =:= (A, Timestamp)])
 
   /**
     * Merge two event streams together
@@ -71,7 +71,10 @@ object Event {
       Event.Lookup(ev, that, LookupOrder.Before)
 
     final def valueWithTime: Event[(K, (V, Timestamp))] =
-      Event.ValueWithTime(ev)
+      Event.ValueWithTime(
+        ev,
+        implicitly[(K, (V, Timestamp)) =:= (K, (V, Timestamp))]
+      )
 
     final def sum(implicit m: Monoid[V]): Feature[K, V] =
       Feature.Summed(ev, m)
@@ -180,7 +183,8 @@ object Event {
     type Prior = A
     def previous = init
   }
-  case class WithTime[A](init: Event[A]) extends NonSource[(A, Timestamp)] {
+  case class WithTime[A, B](init: Event[A], cast: (A, Timestamp) =:= B)
+      extends NonSource[B] {
     type Prior = A
     def previous = init
   }
@@ -189,13 +193,12 @@ object Event {
       event: Event[(K, V)],
       feature: Feature[K, W],
       order: LookupOrder
-  ) extends NonSource[(K, (V, W))] {
-    type Prior = (K, V)
-    def previous = event
-  }
+  ) extends Event[(K, (V, W))]
 
-  case class ValueWithTime[K, V](event: Event[(K, V)])
-      extends NonSource[(K, (V, Timestamp))] {
+  case class ValueWithTime[K, V, W](
+      event: Event[(K, V)],
+      cast: (K, (V, Timestamp)) =:= W
+  ) extends NonSource[W] {
     type Prior = (K, V)
     def previous = event
   }

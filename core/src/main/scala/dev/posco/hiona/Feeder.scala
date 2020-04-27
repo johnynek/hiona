@@ -12,6 +12,7 @@ import net.tixxit.delimited.{
   DelimitedFormat,
   Row => DRow
 }
+import scala.collection.mutable.{Map => MMap}
 
 import cats.implicits._
 
@@ -19,15 +20,60 @@ sealed abstract class Point {
   def ts: Timestamp
   def offset: Duration
   def name: String
+  def key: Point.Key
 }
 
 object Point {
+
+  /**
+    * like a case class, but we cache hashCode because these
+    * are used as hashkeys, and we very rarely allocate them
+    * (we cache the keys themselves inside the Feeders)
+    */
+  final class Key private (
+      val name: String,
+      val offset: Duration,
+      override val hashCode: Int
+  ) {
+
+    override def equals(that: Any) =
+      that match {
+        case k: Key =>
+          // since we keep a cache table of these
+          // if two are equal, they are referentially equal
+          this eq k
+        case _ => false
+      }
+  }
+
+  object Key {
+    private var nextHashCode: Int = 1
+    private val cache: MMap[(String, Duration), Key] =
+      MMap()
+
+    def apply(name: String, offset: Duration): Key =
+      // this is okay to be a bit slow because we almost
+      // never allocate these, and never in a hot-loop
+      cache.synchronized {
+        cache.getOrElseUpdate(
+          (name, offset), {
+            val hc = nextHashCode
+            // multiply by a prime to make a non-repeating
+            // cycle of hashcodes
+            nextHashCode = nextHashCode * 61
+            new Key(name, offset, hc)
+          }
+        )
+      }
+  }
+
   case class Sourced[A](
       src: Event.Source[A],
       value: A,
       ts: Timestamp,
-      offset: Duration
+      key: Key
   ) extends Point {
+    def offset: Duration = key.offset
     def name: String = src.name
   }
 }
@@ -123,6 +169,7 @@ object Feeder {
       strictTime: Boolean
   ) extends Feeder {
     private var highWater: Timestamp = null
+    private val key = Point.Key(event.name, offset)
 
     protected def unsafeNext(): Point =
       if (iter.hasNext) {
@@ -139,7 +186,7 @@ object Feeder {
                   }
                 }
                 highWater = ts
-                Point.Sourced(event, a, ts, offset)
+                Point.Sourced(event, a, ts, key)
               case Left(err) =>
                 throw err
             }
@@ -156,6 +203,8 @@ object Feeder {
       strictTime: Boolean
   ) extends Feeder {
     private var highWater: Timestamp = null
+    private val key: Point.Key = Point.Key(event.name, offset)
+
     protected def unsafeNext(): Point =
       if (iter.hasNext) {
         val a = iter.next()
@@ -169,7 +218,7 @@ object Feeder {
               }
             }
             highWater = ts
-            Point.Sourced(event, a, ts, offset)
+            Point.Sourced(event, a, ts, key)
           case Left(err) => throw err
         }
       } else null

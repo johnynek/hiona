@@ -68,7 +68,7 @@ object Engine {
       * emitter cares about. As an optimization, we can just ignore
       * any event from a source/offset not in this set.
       */
-    def consumes: Set[(String, Duration)]
+    def consumes: Set[Point.Key]
     // TODO:
     // we can index nodes in a graph by some arbitrary order, so we
     // have a 1:1 mapping of Int to Event[_]. Then we can index sources
@@ -176,22 +176,24 @@ object Engine {
               m: LabeledEvent.Mapped[A0, A]
           ): IO[Emitter[A]] =
             fromLabeledEvent(m.labeled).map(
-              // TODO we could do fusion
-              // here, we know there is no fanout
-              Impl.ConcatMapEmitter(
-                _,
-                Impl.MapToConcat(
-                  m.fn
+              Impl
+                .MapLikeEmitter(
+                  _,
+                  Impl.ConcatToMapLike(
+                    Impl.MapToConcat(
+                      m.fn
+                    )
+                  )
                 )
-              )
+                .contract1
             )
 
           go(m)
         case LabeledEvent.Filtered(ev, fn) =>
-          // TODO we could do fusion
-          // here, we know there is no fanout
           fromLabeledEvent(ev).map(
-            Impl.ConcatMapEmitter(_, Impl.FilterToConcat(fn))
+            Impl
+              .MapLikeEmitter(_, Impl.ConcatToMapLike(Impl.FilterToConcat(fn)))
+              .contract1
           )
       }
   }
@@ -230,7 +232,7 @@ object Engine {
   }
 
   sealed abstract class FeatureState[K, V] {
-    def consumes: Set[(String, Duration)]
+    def consumes: Set[Point.Key]
     // consume these events and return the full state before and after these events
     def feed(point: Point, seq: Long): IO[(Reader[K, V], Reader[K, V])]
   }
@@ -357,8 +359,12 @@ object Engine {
                 fromEventDur(left, offset),
                 fromEventDur(right, offset)
               ).mapN(ConcatEmitter(_, _))
-            case Event.WithTime(ev) =>
-              fromEventDur(ev, offset).map(WithTimeEmitter(_))
+            case Event.Filtered(ev1 @ Event.Filtered(ev0, fn0, c0), fn1, c1)
+                if fanOut(Node.ENode(ev1, offset)) < 2 =>
+              // ev1 is only used here, we can compose:
+              val composed =
+                Event.Filtered(ev0, AndFn.build(fn0, fn1), c0.andThen(c1))
+              fromEventDur(composed, offset)
             case Event.Mapped(ev1 @ Event.Mapped(ev0, fn0), fn1)
                 if fanOut(Node.ENode(ev1, offset)) < 2 =>
               // ev1 is only used here, we can compose:
@@ -369,35 +375,51 @@ object Engine {
               // ev1 is only used here, we can compose:
               val composed = Event.ConcatMapped(ev0, AndThenIt.build(fn0, fn1))
               fromEventDur(composed, offset)
-            case Event.Filtered(ev1 @ Event.Filtered(ev0, fn0, c0), fn1, c1)
-                if fanOut(Node.ENode(ev1, offset)) < 2 =>
-              // ev1 is only used here, we can compose:
-              val composed =
-                Event.Filtered(ev0, AndFn.build(fn0, fn1), c0.andThen(c1))
-              fromEventDur(composed, offset)
-            case Event.Mapped(ev, fn) =>
-              // rewrite this node
-              val rewrite = Event.ConcatMapped(ev, MapToConcat(fn))
-              fromEventDur(rewrite, offset)
-            case Event.Filtered(ev, fn, cast) =>
-              // rewrite this node
-              val rewrite = Event.ConcatMapped(ev, FilterToConcat(fn))
-              type T[Z] = IO[Emitter[Z]]
-
-              cast.substituteCo[T](fromEventDur(rewrite, offset))
-            case Event.ConcatMapped(ev, fn) =>
-              fromEventDur(ev, offset).map(
-                ConcatMapEmitter(_, fn)
-              )
-            case Event.ValueWithTime(ev) =>
-              fromEventDur(ev, offset).map(
-                ValueWithTimeEmitter(_)
-              )
             case Event.Lookup(ev, feat, order) =>
               (
                 fromEventDur(ev, offset),
                 fromFeatureDur(feat, offset)
               ).mapN(LookupEmitter(_, _, order))
+            case ns: Event.NonSource[a] =>
+              val nsem: IO[Emitter[a]] =
+                ns match {
+                  case Event.Mapped(ev, fn) =>
+                    // rewrite this node
+                    val rewrite = Event.ConcatMapped(ev, MapToConcat(fn))
+                    fromEventDur(rewrite, offset)
+                  case Event.Filtered(ev, fn, cast) =>
+                    // rewrite this node
+                    val rewrite = Event.ConcatMapped(ev, FilterToConcat(fn))
+                    type T[Z] = IO[Emitter[Z]]
+
+                    cast.substituteCo[T](fromEventDur(rewrite, offset))
+                  case Event.ConcatMapped(ev, fn) =>
+                    fromEventDur(ev, offset).map { prev =>
+                      val fn1 = ConcatToMapLike(fn)
+                      MapLikeEmitter(prev, fn1)
+                    }
+                  case Event.WithTime(ev, cast) =>
+                    fromEventDur(ev, offset).map { prev =>
+                      cast.substituteCo[Emitter](
+                        MapLikeEmitter(prev, WithTimeFn())
+                      )
+                    }
+                  case vwt: Event.ValueWithTime[k, v, w] =>
+                    fromEventDur(vwt.event, offset)
+                      .map { prev: Emitter[(k, v)] =>
+                        vwt.cast.substituteCo[Emitter](
+                          MapLikeEmitter(prev, ValueWithTimeFn[k, v]())
+                        )
+                      }
+                }
+
+              nsem.map {
+                case ml: MapLikeEmitter[_, a] =>
+                  // there is no reason to have to adjacent MapLikeEmitters
+                  // since there is no cache or effect between them
+                  ml.contract1
+                case other => other
+              }
           }
 
           if (fanOut(Node.ENode(ev, offset)) > 1) {
@@ -515,6 +537,25 @@ object Engine {
         }
     }
 
+    case class AndThenCtx[Ctx, A, B, C](fn1: (Ctx, A) => B, fn2: (Ctx, B) => C)
+        extends Function2[Ctx, A, C] {
+      def apply(ctx: Ctx, a: A): C = {
+        val b = fn1(ctx, a)
+        fn2(ctx, b)
+      }
+    }
+
+    object AndThenCtx {
+      def build[Ctx, A, B, C](
+          fn1: (Ctx, A) => B,
+          fn2: (Ctx, B) => C
+      ): (Ctx, A) => C =
+        fn1 match {
+          case AndThenCtx(x, y) => build(x, build(y, fn2))
+          case notAnd           => AndThenCtx(notAnd, fn2)
+        }
+    }
+
     case class MapToConcat[A, B](fn: A => B) extends Function1[A, Iterable[B]] {
       def apply(a: A): Iterable[B] = fn(a) :: Nil
     }
@@ -528,10 +569,42 @@ object Engine {
       def apply(ab: (A, B)) = fn(ab._1, ab._2)
     }
 
+    case class ConcatToMapLike[A, B](fn: A => Iterable[B])
+        extends Function2[Timestamp, List[A], List[B]] {
+      def apply(ts: Timestamp, as: List[A]) = as.flatMap(fn)
+    }
+
+    case class WithTimeFn[A]()
+        extends Function2[Timestamp, List[A], List[(A, Timestamp)]] {
+      def apply(ts: Timestamp, as: List[A]) = {
+        val build = List.newBuilder[(A, Timestamp)]
+        var lst = as
+        while (lst != Nil) {
+          build += ((lst.head, ts))
+          lst = lst.tail
+        }
+        build.result()
+      }
+    }
+
+    case class ValueWithTimeFn[A, B]()
+        extends Function2[Timestamp, List[(A, B)], List[(A, (B, Timestamp))]] {
+      def apply(ts: Timestamp, abs: List[(A, B)]) = {
+        val build = List.newBuilder[(A, (B, Timestamp))]
+        var lst = abs
+        while (lst != Nil) {
+          val ab = lst.head
+          build += ((ab._1, (ab._2, ts)))
+          lst = lst.tail
+        }
+        build.result()
+      }
+    }
+
     val ioNil: IO[List[Nothing]] = IO.pure(Nil)
 
     case object EmptyEmitter extends Emitter[Nothing] {
-      val consumes: Set[(String, Duration)] = Set.empty
+      val consumes = Set.empty
 
       def feed(point: Point, seq: Long): IO[List[Nothing]] =
         ioNil
@@ -539,10 +612,11 @@ object Engine {
 
     case class SourceEmitter[A](ev: Event.Source[A], offset: Duration)
         extends Emitter[A] {
-      val consumes = Set((ev.name, offset))
+      val key = Point.Key(ev.name, offset)
+      val consumes = Set(key)
 
       def feed(point: Point, seq: Long): IO[List[A]] =
-        if (point.offset == offset && point.name == ev.name) {
+        if (point.key == key) {
           // Assume previous checks means I == A
           val Point.Sourced(_, item, _, _) = point
           IO(item.asInstanceOf[A] :: Nil)
@@ -552,7 +626,7 @@ object Engine {
     case class CacheEmitter[A](prev: Emitter[A], ref: Ref[IO, (Long, List[A])])
         extends Emitter[A] {
 
-      def consumes = prev.consumes
+      val consumes = prev.consumes
 
       def feed(point: Point, seq: Long): IO[List[A]] =
         for {
@@ -575,36 +649,29 @@ object Engine {
       val consumes = left.consumes | right.consumes
 
       def feed(point: Point, seq: Long): IO[List[A]] = {
-        val nmOff = (point.name, point.offset)
-        val leftRes = if (left.consumes(nmOff)) left.feed(point, seq) else ioNil
+        val leftRes =
+          if (left.consumes(point.key)) left.feed(point, seq) else ioNil
         val rightRes =
-          if (right.consumes(nmOff)) right.feed(point, seq) else ioNil
+          if (right.consumes(point.key)) right.feed(point, seq) else ioNil
 
         (leftRes, rightRes).mapN(_ ::: _)
       }
     }
 
-    case class WithTimeEmitter[A](prev: Emitter[A])
-        extends Emitter[(A, Timestamp)] {
-      def consumes = prev.consumes
-
-      def feed(point: Point, seq: Long): IO[List[(A, Timestamp)]] =
-        prev.feed(point, seq).map(_.map(a => (a, point.ts)))
-    }
-
-    case class ValueWithTimeEmitter[A, B](prev: Emitter[(A, B)])
-        extends Emitter[(A, (B, Timestamp))] {
-      def consumes = prev.consumes
-      def feed(point: Point, seq: Long): IO[List[(A, (B, Timestamp))]] =
-        prev.feed(point, seq).map(_.map { case (a, b) => (a, (b, point.ts)) })
-    }
-
-    case class ConcatMapEmitter[A, B](prev: Emitter[A], fn: A => Iterable[B])
-        extends Emitter[B] {
-      def consumes = prev.consumes
-      // we could cache here, but maybe not needed
+    case class MapLikeEmitter[A, B](
+        prev: Emitter[A],
+        fn: (Timestamp, List[A]) => List[B]
+    ) extends Emitter[B] {
+      val consumes = prev.consumes
       def feed(point: Point, seq: Long): IO[List[B]] =
-        prev.feed(point, seq).map(_.flatMap(fn))
+        prev.feed(point, seq).map(listA => fn(point.ts, listA))
+
+      def contract1: Emitter[B] =
+        prev match {
+          case MapLikeEmitter(p2, fn2) =>
+            MapLikeEmitter(p2, AndThenCtx.build(fn2, fn))
+          case _ => this
+        }
     }
 
     case class LookupEmitter[K, V, W](
@@ -615,8 +682,7 @@ object Engine {
       val consumes = ev.consumes | fs.consumes
 
       def feed(point: Point, seq: Long): IO[List[(K, (V, W))]] = {
-        val nameOff = (point.name, point.offset)
-        val evRes = if (ev.consumes(nameOff)) ev.feed(point, seq) else ioNil
+        val evRes = if (ev.consumes(point.key)) ev.feed(point, seq) else ioNil
         (evRes, fs.feed(point, seq))
           .mapN {
             case (evs, (before, after)) =>
@@ -637,7 +703,7 @@ object Engine {
     ) extends FeatureState[K, V] {
 
       private val empty = monoid.empty
-      def consumes = emitter.consumes
+      val consumes = emitter.consumes
 
       def feed(point: Point, seq: Long) =
         state.access
@@ -646,7 +712,7 @@ object Engine {
               if (seq0 < seq) {
                 // we need to process this
                 val emitRes =
-                  if (emitter.consumes((point.name, point.offset)))
+                  if (emitter.consumes(point.key))
                     emitter.feed(point, seq)
                   else ioNil
                 emitRes
@@ -688,7 +754,7 @@ object Engine {
         emitter: Emitter[(K, V)],
         state: Ref[IO, (Long, Map[K, V], Map[K, V])]
     ) extends FeatureState[K, Option[V]] {
-      def consumes = emitter.consumes
+      val consumes = emitter.consumes
       def feed(point: Point, seq: Long) =
         state.access
           .flatMap {
@@ -696,7 +762,7 @@ object Engine {
               if (seq0 < seq) {
                 // we need to process this
                 val emitRes =
-                  if (emitter.consumes((point.name, point.offset)))
+                  if (emitter.consumes(point.key))
                     emitter.feed(point, seq)
                   else ioNil
                 emitRes
@@ -734,7 +800,7 @@ object Engine {
         fs: FeatureState[K, V],
         fn: (K, V, Timestamp) => W
     ) extends FeatureState[K, W] {
-      def consumes = fs.consumes
+      val consumes = fs.consumes
       def feed(point: Point, seq: Long) =
         fs.feed(point, seq)
           .map {
