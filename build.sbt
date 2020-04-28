@@ -49,6 +49,8 @@ lazy val core = (project in file("core"))
       catsEffect,
       delimited,
       decline,
+      doobie,
+      fs2,
       shapeless,
     ),
     commonSettings,

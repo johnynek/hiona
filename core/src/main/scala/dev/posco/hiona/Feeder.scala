@@ -4,7 +4,7 @@ import cats.data.NonEmptyList
 import cats.effect.{IO, Resource}
 import java.io.{BufferedInputStream, FileInputStream, InputStream}
 import java.nio.file.Path
-import java.util.{Comparator, PriorityQueue}
+import java.util.PriorityQueue
 import java.util.zip.GZIPInputStream
 import net.tixxit.delimited.{
   DelimitedError,
@@ -12,71 +12,8 @@ import net.tixxit.delimited.{
   DelimitedFormat,
   Row => DRow
 }
-import scala.collection.mutable.{Map => MMap}
 
 import cats.implicits._
-
-sealed abstract class Point {
-  def ts: Timestamp
-  def offset: Duration
-  def name: String
-  def key: Point.Key
-}
-
-object Point {
-
-  /**
-    * like a case class, but we cache hashCode because these
-    * are used as hashkeys, and we very rarely allocate them
-    * (we cache the keys themselves inside the Feeders)
-    */
-  final class Key private (
-      val name: String,
-      val offset: Duration,
-      override val hashCode: Int
-  ) {
-
-    override def equals(that: Any) =
-      that match {
-        case k: Key =>
-          // since we keep a cache table of these
-          // if two are equal, they are referentially equal
-          this eq k
-        case _ => false
-      }
-  }
-
-  object Key {
-    private var nextHashCode: Int = 1
-    private val cache: MMap[(String, Duration), Key] =
-      MMap()
-
-    def apply(name: String, offset: Duration): Key =
-      // this is okay to be a bit slow because we almost
-      // never allocate these, and never in a hot-loop
-      cache.synchronized {
-        cache.getOrElseUpdate(
-          (name, offset), {
-            val hc = nextHashCode
-            // multiply by a prime to make a non-repeating
-            // cycle of hashcodes
-            nextHashCode = nextHashCode * 61
-            new Key(name, offset, hc)
-          }
-        )
-      }
-  }
-
-  case class Sourced[A](
-      src: Event.Source[A],
-      value: A,
-      ts: Timestamp,
-      key: Key
-  ) extends Point {
-    def offset: Duration = key.offset
-    def name: String = src.name
-  }
-}
 
 sealed abstract class Feeder {
   // return null for missing, throws when things go bad
@@ -245,32 +182,7 @@ object Feeder {
   def multiFeeder(it: Iterable[Feeder]): IO[Feeder] =
     if (it.size == 1) IO.pure(it.head)
     else {
-      val cmp = new Comparator[(Point, Feeder)] {
-        val ordT = Timestamp.orderingForTimestamp
-
-        def compare(left: (Point, Feeder), right: (Point, Feeder)) = {
-          val lpoint = left._1
-          val rpoint = right._1
-          val res = Timestamp.compareDiff(
-            lpoint.ts,
-            lpoint.offset,
-            rpoint.ts,
-            rpoint.offset
-          )
-          if (res == 0) {
-            // if two points happen at the same time, the one with
-            // the greater duration, is picked to come first.
-            // so we reverse the ordering here
-            // the motivation is so look-aheads should always come
-            // before the events that read them if they happen at the same
-            // adjusted time
-            val cmpDur =
-              java.lang.Long.compare(rpoint.offset.millis, lpoint.offset.millis)
-            if (cmpDur == 0) lpoint.name.compare(rpoint.name)
-            else cmpDur
-          } else res
-        }
-      }
+      val cmp = Point.orderingForPoint.on[(Point, Feeder)](_._1)
 
       it.toList
         .traverse { feeder =>

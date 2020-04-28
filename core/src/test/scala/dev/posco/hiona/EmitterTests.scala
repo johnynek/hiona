@@ -13,7 +13,18 @@ class EmitterTests extends munit.FunSuite {
 
   def result[A](ev: Event[A], feeder: IO[Feeder]): IO[List[A]] = {
     val emitterIO = Engine.Emitter.fromEvent(ev)
-    (feeder, emitterIO).mapN(Engine.Emitter.runToList(_, 100, _)).flatten
+    val withFeeder =
+      (feeder, emitterIO).mapN(Engine.Emitter.runToList(_, 100, _)).flatten
+
+    val strm = feeder.map(Fs2Tools.streamFromFeeder(_))
+    val withF2 =
+      (strm, emitterIO).mapN(Fs2Tools.run(_, _).compile.toList).flatten
+
+    (withFeeder, withF2).mapN { (as, bs) =>
+      // check that we get the same result running both ways
+      assertEquals(bs, as)
+      as
+    }
   }
 
   def resultLabel[A](

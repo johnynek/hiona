@@ -76,17 +76,21 @@ object Engine {
     // since we can add all the sources into an identically indexed array
     def feed(p: Point, seq: Long): IO[List[O]]
 
-    final def feedAll(batch: Iterable[Point], seq: Long): IO[(List[O], Long)] =
-      IO.suspend {
-        val iter = batch.iterator
-        def loop(seq: Long, acc: List[O]): IO[(List[O], Long)] =
-          if (iter.hasNext) {
-            feed(iter.next(), seq)
-              .flatMap(outs => loop(seq + 1L, outs reverse_::: acc))
-          } else IO.pure((acc.reverse, seq))
+    final def feedAll(batch: List[Point], seq: Long): IO[(List[O], Long)] = {
+      def loop(
+          batch: List[Point],
+          seq: Long,
+          acc: List[O]
+      ): IO[(List[O], Long)] =
+        batch match {
+          case h :: tail =>
+            feed(h, seq)
+              .flatMap(outs => loop(tail, seq + 1L, outs reverse_::: acc))
+          case Nil => IO.pure((acc.reverse, seq))
+        }
 
-        loop(seq, Nil)
-      }
+      loop(batch, seq, Nil)
+    }
   }
 
   object Emitter {
@@ -96,7 +100,7 @@ object Engine {
     )(implicit ctx: ContextShift[IO]): IO[Unit] = {
 
       def loop(
-          batch: Seq[Point],
+          batch: List[Point],
           seq: Long,
           writes: Option[Iterable[A]]
       ): IO[Unit] = {

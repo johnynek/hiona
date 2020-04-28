@@ -16,6 +16,8 @@ object Dependencies {
   lazy val catsEffect = typelevel %% "cats-effect" % "2.1.2"
   lazy val decline = "com.monovore" %% "decline" % "1.0.0"
   lazy val delimited = "net.tixxit" %% "delimited-core" % "0.10.0"
+  lazy val doobie = "org.tpolecat" %% "doobie-core" % "0.9.0"
+  lazy val fs2 = "co.fs2" %% "fs2-core" % "2.3.0"
   lazy val munit = "org.scalameta" %% "munit" % V.munit
   lazy val munitScalaCheck = "org.scalameta" %% "munit-scalacheck" % V.munit
   lazy val jawnParser = typelevel %% "jawn-parser" % V.jawn
