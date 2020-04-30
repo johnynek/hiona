@@ -1,9 +1,11 @@
 package dev.posco.hiona
 
 import cats.effect.{ContextShift, IO}
+import fs2.Stream
 
 import cats.implicits._
-import Feeder.FromIterable
+
+import Engine.InputFactory
 
 class EmitterTests extends munit.FunSuite {
 
@@ -11,29 +13,11 @@ class EmitterTests extends munit.FunSuite {
 
   implicit val ctx: ContextShift[IO] = IO.contextShift(ec)
 
-  def result[A](ev: Event[A], feeder: IO[Feeder]): IO[List[A]] = {
-    val emitterIO = Engine.Emitter.fromEvent(ev)
-    val withFeeder =
-      (feeder, emitterIO).mapN(Engine.Emitter.runToList(_, 100, _)).flatten
-
-    val strm = feeder.map(Fs2Tools.streamFromFeeder(_))
-    val withF2 =
-      (strm, emitterIO).mapN(Fs2Tools.run(_, _).compile.toList).flatten
-
-    (withFeeder, withF2).mapN { (as, bs) =>
-      // check that we get the same result running both ways
-      assertEquals(bs, as)
-      as
-    }
-  }
-
-  def resultLabel[A](
-      ev: LabeledEvent[A],
-      feeder: IO[Feeder]
-  ): IO[List[A]] = {
-    val emitterIO = Engine.Emitter.fromLabeledEvent(ev)
-    (feeder, emitterIO).mapN(Engine.Emitter.runToList(_, 100, _)).flatten
-  }
+  def result[E[_]: Engine.Emittable, A](
+      in: InputFactory[IO],
+      ev: E[A]
+  ): IO[List[A]] =
+    Engine.run(in, ev).compile.toList
 
   test("basic map/event processing") {
     val src = Event.source[(Long, Int)]("numsrc", new Validator[(Long, Int)] {
@@ -41,13 +25,11 @@ class EmitterTests extends munit.FunSuite {
     })
 
     val data = List((0L, 42), (1L, 43), (2L, 44))
-    val fromIters = List(FromIterable(src, data))
+    val ins = InputFactory.fromStream[IO, (Long, Int)](src, Stream(data: _*))
 
     val res = src.map { case (_, i) => i.toString }
-    val feeder =
-      FromIterable.feederForEvent(fromIters, res)
 
-    result(res, feeder)
+    result(ins, res)
       .flatMap { lst =>
         IO {
           assertEquals(lst, List("42", "43", "44"))
@@ -61,17 +43,13 @@ class EmitterTests extends munit.FunSuite {
       def validate(v: (Long, Int)) = Right(Timestamp(v._1))
     })
     val data = List((0L, 42), (1L, 43), (2L, 44), (3L, 45))
-
-    val fromIters = List(FromIterable(src, data))
+    val ins = InputFactory.fromStream[IO, (Long, Int)](src, Stream(data: _*))
 
     val feat = src.map { case (_, i) => (i % 2, i) }.sum
     val keys = src.map { case (_, i) => (i % 2, ()) }
     val res = keys.preLookup(feat)
 
-    val feeder =
-      FromIterable.feederForEvent(fromIters, res)
-
-    result(res, feeder)
+    result(ins, res)
       .flatMap { lst =>
         IO {
           assertEquals(
@@ -88,16 +66,13 @@ class EmitterTests extends munit.FunSuite {
       def validate(v: (Long, Int)) = Right(Timestamp(v._1))
     })
     val data = List((0L, 42), (1L, 43), (2L, 44), (3L, 45))
-    val fromIters = List(FromIterable(src, data))
+    val ins = InputFactory.fromStream[IO, (Long, Int)](src, Stream(data: _*))
 
     val feat = src.map { case (_, i) => (i % 2, i) }.sum
     val keys = src.map { case (_, i) => (i % 2, ()) }
     val res = keys.postLookup(feat)
 
-    val feeder =
-      FromIterable.feederForEvent(fromIters, res)
-
-    result(res, feeder)
+    result(ins, res)
       .flatMap { lst =>
         IO {
           assertEquals(
@@ -114,18 +89,14 @@ class EmitterTests extends munit.FunSuite {
       def validate(v: (Long, Int)) = Right(Timestamp(v._1))
     })
     val data = List((0L, 1), (1L, 2), (2L, 3), (3L, 4), (4L, 5), (5L, 6))
-
-    val fromIters = List(FromIterable(src, data))
+    val ins = InputFactory.fromStream[IO, (Long, Int)](src, Stream(data: _*))
 
     val label =
       Label(src.map { case (_, i) => (i % 2, i) }.sum).lookForward(Duration(3L))
     val keys = src.map { case (_, i) => (i % 2, ()) }
     val res = LabeledEvent(keys, label)
 
-    val feeder =
-      FromIterable.feederForLabeledEvent(fromIters, res)
-
-    resultLabel(res, feeder)
+    result(ins, res)
       .flatMap { lst =>
         IO {
           assertEquals(
@@ -149,8 +120,7 @@ class EmitterTests extends munit.FunSuite {
       def validate(v: (Long, Int)) = Right(Timestamp(v._1))
     })
     val data = List((0L, 1), (1L, 2), (2L, 3), (3L, 4), (4L, 5), (5L, 6))
-
-    val fromIters = List(FromIterable(src, data))
+    val ins = InputFactory.fromStream[IO, (Long, Int)](src, Stream(data: _*))
 
     val feat = src.map { case (_, i) => (i % 2, i) }.sum
     // exercise a lookahead where an read and write collide,
@@ -162,10 +132,7 @@ class EmitterTests extends munit.FunSuite {
     val keys = src.map { case (_, i) => (i % 2, ()) }
     val res = LabeledEvent(keys, label)
 
-    val feeder =
-      FromIterable.feederForLabeledEvent(fromIters, res)
-
-    resultLabel(res, feeder)
+    result(ins, res)
       .flatMap { lst =>
         IO {
           assertEquals(

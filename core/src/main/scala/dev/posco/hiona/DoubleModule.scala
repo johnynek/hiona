@@ -55,12 +55,16 @@ object DoubleModule extends Priority1DoubleModule {
   ): DoubleModule[A] =
     new DoubleModule[A] {
       lazy val monoid = ShapelessMonoid.genericMonoid[A, B](gen, modB.monoid)
+      lazy val zeroA = monoid.empty
 
-      def scale(s: Double, v: A): A = {
-        val b = gen.to(v)
-        val b1 = modB.scale(s, b)
-        gen.from(b1)
-      }
+      def scale(s: Double, v: A): A =
+        if (s == 0.0) zeroA
+        else if (s == 1.0) v
+        else {
+          val b = gen.to(v)
+          val b1 = modB.scale(s, b)
+          gen.from(b1)
+        }
     }
 
   implicit def tuple2Module[A: DoubleModule, B: DoubleModule]
@@ -82,15 +86,22 @@ sealed trait Priority1DoubleModule {
 
   implicit def hconsModule[A, B <: HList](
       implicit modA: DoubleModule[A],
-      modB: => DoubleModule[B]
+      lazyModB: => DoubleModule[B]
   ): DoubleModule[A :: B] =
     new DoubleModule[A :: B] {
+      lazy val modB = lazyModB
+
       lazy val monoid =
         ShapelessMonoid.hconsMonoid[A, B](modA.monoid, modB.monoid)
-      def scale(s: Double, v: A :: B) = {
-        val (va :: vb) = v
-        modA.scale(s, va) :: modB.scale(s, vb)
-      }
+      lazy val zero = monoid.empty
+
+      def scale(s: Double, v: A :: B) =
+        if (s == 0.0) zero
+        else if (s == 1.0) v
+        else {
+          val (va :: vb) = v
+          modA.scale(s, va) :: modB.scale(s, vb)
+        }
     }
 
 }

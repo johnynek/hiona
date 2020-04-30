@@ -1,9 +1,11 @@
 package dev.posco.hiona
 
-import cats.{Monoid, Parallel}
-import cats.effect.{ContextShift, IO, Resource}
+import cats.{ApplicativeError, Monoid /*, Parallel */}
+import cats.data.{NonEmptyList, Validated}
+import cats.effect.{Blocker, ContextShift, IO, LiftIO, /* Resource, */ Sync}
 import cats.effect.concurrent.Ref
 import java.nio.file.Path
+import fs2.{Chunk, Pull, Stream}
 
 import cats.implicits._
 
@@ -14,45 +16,70 @@ import cats.implicits._
   */
 object Engine {
 
-  def runEmitter[A](
-      feedRes: Resource[IO, Feeder],
-      emitter: Emitter[A],
-      outputRes: Resource[IO, Iterable[A] => IO[Unit]]
-  )(implicit ctx: ContextShift[IO]): IO[Unit] =
-    outputRes
-      .product(feedRes)
-      .use {
-        case (writer, feeder) =>
-          Emitter.run(feeder, batchSize = 1000, emitter)(writer)
+  def run[F[_]: LiftIO, E[_]: Emittable, A](
+      inputFactory: InputFactory[F],
+      ev: E[A]
+  ): Stream[F, A] = {
+    val inputs = inputFactory.allInputs(ev)
+
+    val ioEmit = Emittable[E].from(ev)
+    Stream
+      .eval(LiftIO[F].liftIO(ioEmit))
+      .flatMap(emit => runStream[F, A](inputs, emit))
+  }
+
+  def runStream[F[_]: LiftIO, A](
+      inputs: Stream[F, Point],
+      emit: Emitter[A]
+  ): Stream[F, A] = {
+    def feed(inputs: Stream[F, Point], seq: Long): Pull[F, A, Unit] =
+      inputs.pull.uncons
+        .flatMap {
+          case Some((points, rest)) =>
+            val batch = emit.feedAll(points, seq)
+            val batchF = LiftIO[F].liftIO(batch)
+            for {
+              (as, s1) <- Pull.eval(batchF)
+              _ <- Pull.output(Chunk.seq(as))
+              next <- feed(rest, s1)
+            } yield next
+          case None =>
+            Pull.done
+        }
+
+    feed(inputs, 0L).stream
+  }
+
+  sealed trait Emittable[F[_]] {
+    def from[A](f: F[A]): IO[Emitter[A]]
+    def sourcesAndOffsetsOf[A](
+        f: F[A]
+    ): Map[String, (Set[Event.Source[_]], Set[Duration])]
+  }
+
+  object Emittable {
+    def apply[F[_]](implicit f: Emittable[F]): Emittable[F] = f
+
+    implicit val eventIsEmittable: Emittable[Event] =
+      new Emittable[Event] {
+        def from[A](ev: Event[A]) = Emitter.fromEvent(ev)
+        def sourcesAndOffsetsOf[A](
+            f: Event[A]
+        ): Map[String, (Set[Event.Source[_]], Set[Duration])] = {
+          val inputs = Event.sourcesOf(f)
+          inputs.map { case (k, vs) => (k, (vs, Set(Duration.zero))) }
+        }
       }
 
-  def run[A: Row](
-      inputs: Iterable[(String, Path)],
-      event: Event[A],
-      output: Path
-  )(
-      implicit ctx: ContextShift[IO]
-  ): IO[Unit] =
-    Emitter
-      .fromEvent(event)
-      .flatMap(
-        runEmitter(Feeder.fromInputs(inputs, event), _, Row.writerRes(output))
-      )
-
-  def runLabeled[A: Row](
-      inputs: Iterable[(String, Path)],
-      labeled: LabeledEvent[A],
-      output: Path
-  )(implicit ctx: ContextShift[IO]): IO[Unit] =
-    Emitter
-      .fromLabeledEvent(labeled)
-      .flatMap(
-        runEmitter(
-          Feeder.fromInputsLabels(inputs, labeled),
-          _,
-          Row.writerRes(output)
-        )
-      )
+    implicit val labeledEventIsEmittable: Emittable[LabeledEvent] =
+      new Emittable[LabeledEvent] {
+        def from[A](ev: LabeledEvent[A]) = Emitter.fromLabeledEvent(ev)
+        def sourcesAndOffsetsOf[A](
+            f: LabeledEvent[A]
+        ): Map[String, (Set[Event.Source[_]], Set[Duration])] =
+          LabeledEvent.sourcesAndOffsetsOf(f)
+      }
+  }
 
   /**
     * An emitter is a something that can process an input event,
@@ -76,84 +103,22 @@ object Engine {
     // since we can add all the sources into an identically indexed array
     def feed(p: Point, seq: Long): IO[List[O]]
 
-    final def feedAll(batch: List[Point], seq: Long): IO[(List[O], Long)] = {
+    final def feedAll(batch: Chunk[Point], seq: Long): IO[(List[O], Long)] = {
       def loop(
-          batch: List[Point],
+          idx: Int,
           seq: Long,
           acc: List[O]
       ): IO[(List[O], Long)] =
-        batch match {
-          case h :: tail =>
-            feed(h, seq)
-              .flatMap(outs => loop(tail, seq + 1L, outs reverse_::: acc))
-          case Nil => IO.pure((acc.reverse, seq))
-        }
+        if (idx < batch.size) {
+          feed(batch(idx), seq)
+            .flatMap(outs => loop(idx + 1, seq + 1L, outs reverse_::: acc))
+        } else IO.pure((acc.reverse, seq))
 
-      loop(batch, seq, Nil)
+      loop(0, seq, Nil)
     }
   }
 
   object Emitter {
-
-    def run[A](feeder: Feeder, batchSize: Int, emitter: Emitter[A])(
-        writer: Iterable[A] => IO[Unit]
-    )(implicit ctx: ContextShift[IO]): IO[Unit] = {
-
-      def loop(
-          batch: List[Point],
-          seq: Long,
-          writes: Option[Iterable[A]]
-      ): IO[Unit] = {
-        val wRes = writes.fold(IO.unit)(writer)
-        if (batch.isEmpty) wRes
-        else {
-          // we can in parallel read the next batch and do this write
-          Parallel
-            .parProduct(
-              Parallel.parProduct(
-                feeder.nextBatch(batchSize),
-                emitter.feedAll(batch, seq)
-              ),
-              wRes
-            )
-            .flatMap {
-              case ((b, (items, nextSeq)), _) =>
-                loop(b, nextSeq, Some(items))
-            }
-        }
-      }
-
-      for {
-        batch <- feeder.nextBatch(batchSize)
-        _ <- loop(batch, 0L, None)
-      } yield ()
-    }
-
-    // A writer useful for testing
-    def listWriter[A]: IO[(Iterable[A] => IO[Unit], IO[List[A]])] =
-      Ref
-        .of[IO, List[A]](Nil)
-        .map {
-          case ref =>
-            val write = { (it: Iterable[A]) =>
-              ref.update { lst =>
-                it.foldLeft(lst)((tail, head) => head :: tail)
-              }
-            }
-
-            val read = ref.get.map(_.reverse)
-
-            (write, read)
-        }
-
-    def runToList[A](feeder: Feeder, batchSize: Int, emitter: Emitter[A])(
-        implicit ctx: ContextShift[IO]
-    ): IO[List[A]] =
-      listWriter[A].flatMap {
-        case (write, read) =>
-          run(feeder, batchSize, emitter)(write)
-            .flatMap(_ => read)
-      }
 
     def fromEvent[A](ev: Event[A]): IO[Emitter[A]] =
       Impl
@@ -251,6 +216,172 @@ object Engine {
       Impl
         .newState(Impl.Node.fanOutFn(l))
         .flatMap(state => state.fromLabel(l, Duration.Zero))
+  }
+
+  trait InputFactory[F[_]] { self =>
+    implicit def canRaise: fs2.RaiseThrowable[F]
+
+    def apply[A](
+        src: Event.Source[A],
+        offset: Duration
+    ): List[Stream[F, Point]]
+
+    private def build(
+        inputs: Map[String, (Set[Event.Source[_]], Set[Duration])]
+    ): Stream[F, Point] =
+      NonEmptyList.fromList(inputs.toList) match {
+        case Some(nel) =>
+          val checked = nel
+            .sortBy(_._1)
+            .traverse {
+              case (_, (sources, offsets)) =>
+                if (sources.size == 1) Validated.valid((sources.head, offsets))
+                else
+                  Validated.invalid(
+                    NonEmptyList.fromListUnsafe(sources.toList.sortBy(_.name))
+                  )
+            }
+            .leftMap(InputFactory.DuplicatedNames(_))
+            .andThen { events =>
+              events
+                .traverse {
+                  case (ev, offsets) =>
+                    val streams: List[List[Stream[F, Point]]] =
+                      offsets.toList.sorted.traverse(apply(ev, _))
+
+                    // each source event must result in at least one stream
+                    NonEmptyList.fromList(streams.flatten) match {
+                      case Some(nel) => Validated.valid(nel)
+                      case None      => Validated.invalidNel(ev)
+                    }
+                }
+                .leftMap(InputFactory.UnknownSources(_))
+            }
+
+          checked match {
+            case Validated.Valid(streams) =>
+              val allStreams: NonEmptyList[Stream[F, Point]] =
+                streams.flatten
+
+              Fs2Tools.sortMerge(allStreams.toList)
+            case Validated.Invalid(ife) => Stream.raiseError(ife)
+          }
+
+        case None => Stream.empty
+      }
+
+    final def allInputs[E[_]: Emittable, A](ev: E[A]): Stream[F, Point] =
+      build(Emittable[E].sourcesAndOffsetsOf(ev))
+
+    def through(fn: fs2.Pipe[F, Point, Point]): InputFactory[F] =
+      new InputFactory[F] {
+        def canRaise = self.canRaise
+
+        def apply[A](
+            src: Event.Source[A],
+            offset: Duration
+        ): List[Stream[F, Point]] = self.apply(src, offset).map(fn)
+      }
+  }
+
+  object InputFactory {
+    sealed abstract class InputFactoryException(msg: String)
+        extends Exception(msg)
+    case class UnknownSources(srcs: NonEmptyList[Event.Source[_]])
+        extends InputFactoryException(s"unknown sources: $srcs")
+    case class DuplicatedNames(srcs: NonEmptyList[Event.Source[_]])
+        extends InputFactoryException(s"duplicated name in sources: $srcs")
+
+    def empty[F[_]](implicit rt: fs2.RaiseThrowable[F]): InputFactory[F] =
+      new InputFactory[F] {
+        def canRaise = rt
+        def apply[A](
+            src: Event.Source[A],
+            offset: Duration
+        ): List[Stream[F, Point]] = Nil
+      }
+
+    def merge[F[_]](
+        factories: Iterable[InputFactory[F]]
+    )(implicit rt: fs2.RaiseThrowable[F]): InputFactory[F] =
+      new InputFactory[F] {
+        def canRaise = rt
+        def apply[A](
+            src: Event.Source[A],
+            offset: Duration
+        ): List[Stream[F, Point]] =
+          factories.toList.flatMap(_.apply(src, offset))
+      }
+
+    def fromMany[F[_]: fs2.RaiseThrowable, E[_]: Emittable, A, B](
+        paths: Iterable[(String, B)],
+        ev: E[A]
+    )(fn: (Event.Source[_], B) => InputFactory[F]): InputFactory[F] = {
+
+      val evMap = Emittable[E].sourcesAndOffsetsOf(ev)
+
+      val factories: List[InputFactory[F]] =
+        paths.groupBy(_._1).toList.flatMap {
+          case (name, namePaths) =>
+            evMap.get(name) match {
+              case None           => Nil
+              case Some((evs, _)) =>
+                // we have duplicate events, this will be caught later
+                val ev0 = evs.head
+                namePaths.toList.map {
+                  case (_, path) =>
+                    fn(ev0, path)
+                }
+            }
+        }
+
+      merge(factories)
+    }
+
+    def fromPaths[F[_]: Sync: ContextShift, E[_]: Emittable, A](
+        paths: Iterable[(String, Path)],
+        ev: E[A],
+        blocker: Blocker
+    ): InputFactory[F] =
+      fromMany[F, E, A, Path](paths, ev) { (ev0, path) =>
+        fromPath(ev0, path, blocker, skipHeader = true)
+      }
+
+    def fromPath[F[_]: Sync: ContextShift, T](
+        ev: Event.Source[T],
+        path: Path,
+        blocker: Blocker,
+        skipHeader: Boolean = true
+    ): InputFactory[F] = {
+      val decoded: Stream[F, T] = {
+        val bytes = Fs2Tools.fromPath[F](path, 1 << 16, blocker)
+        val toT =
+          fs2.text.utf8Decode
+            .andThen(Row.decodeFromCSV[F, T](ev.row, skipHeader))
+
+        toT(bytes)
+      }
+
+      fromStream(ev, decoded)
+    }
+
+    def fromStream[F[_], T](ev: Event.Source[T], stream: Stream[F, T])(
+        implicit ae: ApplicativeError[F, Throwable]
+    ): InputFactory[F] = {
+      val cr = implicitly[fs2.RaiseThrowable[F]]
+      new InputFactory[F] {
+        def canRaise = cr
+
+        def apply[A](
+            src: Event.Source[A],
+            offset: Duration
+        ): List[Stream[F, Point]] =
+          if (src == ev) {
+            val toPoints = Point.toPoints[F, T](ev, offset)
+            toPoints(stream) :: Nil
+          } else Nil
+      }
+    }
   }
 
   private object Impl {

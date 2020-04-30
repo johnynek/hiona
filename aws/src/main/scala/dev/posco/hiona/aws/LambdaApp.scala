@@ -1,14 +1,16 @@
 package dev.posco.hiona.aws
 
 import cats.data.{Validated, ValidatedNel}
-import cats.effect.{ContextShift, IO, Resource}
+import cats.effect.{Blocker, ContextShift, IO, Resource}
 import com.amazonaws.services.lambda.runtime.{Context, RequestStreamHandler}
+import com.amazonaws.services.s3
 import com.monovore.decline.Argument
 import java.io.{InputStream, OutputStream}
 import java.nio.channels.Channels
+import java.util.concurrent.Executors
 import org.typelevel.jawn.ast
+import scala.concurrent.ExecutionContext
 import scala.util.control.NonFatal
-import com.amazonaws.services.s3
 
 import dev.posco.hiona._
 
@@ -60,7 +62,7 @@ abstract class LambdaApp(appArgs: Args) extends RequestStreamHandler {
             case Right(cmd) =>
               implicit val ctx =
                 IO.contextShift(scala.concurrent.ExecutionContext.global)
-              cmd.run(appArgs).unsafeRunSync()
+              cmd.run(appArgs, s3App.blocker).unsafeRunSync()
               ()
               val result = ast.JString("done")
               outputStream.write(result.render().getBytes("US-ASCII"))
@@ -89,6 +91,25 @@ class S3App extends GenApp {
   val s3Client = s3.AmazonS3ClientBuilder.defaultClient()
   val awsIO = new AWSIO(s3Client)
 
+  /**
+    *  we only want one of these for the whole life of the lambda
+    *
+    *  These are used to handle blocking IO, so we don't want to
+    *  use the CPU-scaled execution context for those
+    */
+  val blocker: Blocker =
+    Blocker.liftExecutionContext(
+      ExecutionContext.fromExecutor(
+        Executors.newCachedThreadPool { (r: Runnable) =>
+          val t = new Thread(r)
+          // we always wait for all these
+          // threads, so we can consider them daemon threads
+          t.setDaemon(true)
+          t
+        }
+      )
+    )
+
   implicit def argumentForRef: Argument[S3Addr] =
     new Argument[S3Addr] {
       val defaultMetavar = "s3uri"
@@ -112,44 +133,26 @@ class S3App extends GenApp {
         }
     }
 
-  def run(args: Args, inputs: List[(String, S3Addr)], output: S3Addr)(
-      implicit ctx: ContextShift[IO]
-  ): IO[Unit] =
-    args match {
-      case Args.EventArgs(r, event) =>
-        val outRes = writer(output, r)
-        val feederRes = Feeder.fromInputsFn(inputs, event) { (src, s3path) =>
-          val is = awsIO.read(s3path)
-          Feeder.fromInputStream(is, src, Duration.Zero)
-        }
-        Engine.Emitter
-          .fromEvent(event)
-          .flatMap(em => Engine.runEmitter(feederRes, em, outRes))
+  def inputFactory[E[_]: Engine.Emittable, A](
+      inputs: Iterable[(String, S3Addr)],
+      e: E[A],
+      blocker: Blocker
+  )(implicit ctx: ContextShift[IO]): Engine.InputFactory[IO] =
+    Engine.InputFactory.fromMany(inputs, e) { (src, s3path) =>
+      def go[T](src: Event.Source[T]) = {
+        val is = awsIO.readStream[IO](s3path, 1 << 16, blocker)
+        val toT = fs2.text.utf8Decode
+          .andThen(Row.decodeFromCSV[IO, T](src.row, skipHeader = true))
+        Engine.InputFactory.fromStream(src, toT(is))
+      }
 
-      case Args.LabeledArgs(r, l) =>
-        val outRes = writer(output, r)
-        val feederRes = Feeder.fromInputsLabelsFn(inputs, l) {
-          (src, s3path, dur) =>
-            val is = awsIO.read(s3path)
-            Feeder.fromInputStream(is, src, dur)
-        }
-        Engine.Emitter
-          .fromLabeledEvent(l)
-          .flatMap(em => Engine.runEmitter(feederRes, em, outRes))
+      go(src)
     }
-
-  def feeder[A](
-      input: S3Addr,
-      ev: Event.Source[A],
-      dur: Duration,
-      strictTime: Boolean
-  ): Resource[IO, Feeder] =
-    Feeder.fromInputStream(awsIO.read(input), ev, dur, strictTime)
 
   def writer[A](
       output: S3Addr,
       row: Row[A]
-  ): Resource[IO, Iterable[A] => IO[Unit]] =
+  ): Resource[IO, Iterator[A] => IO[Unit]] =
     //awsIO.tempWriter(output, row)
     awsIO.multiPartOutput(output, row)
 }

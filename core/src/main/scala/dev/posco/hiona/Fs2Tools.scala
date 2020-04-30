@@ -1,44 +1,68 @@
 package dev.posco.hiona
 
-import cats.effect.IO
-import fs2.{Chunk, Pull, Stream}
+import cats.arrow.FunctionK
 import cats.collections.Heap
-
-import dev.posco.hiona.Engine.Emitter
+import cats.effect.{Blocker, Bracket, ContextShift, IO, LiftIO, Resource, Sync}
+import fs2.{Pipe, Pull, Stream}
+import java.nio.file.Path
+import java.io.{BufferedInputStream, FileInputStream, InputStream}
+import java.util.zip.GZIPInputStream
 
 import cats.implicits._
 
 object Fs2Tools {
-  def streamFromFeeder(f: Feeder, batchSize: Int = 1000): Stream[IO, Point] = {
-    val batch = f.nextBatch(batchSize)
 
-    lazy val loop: Pull[IO, Point, Unit] =
-      Pull
-        .eval(batch)
-        .flatMap {
-          case Nil    => Pull.done
-          case points => Pull.output(Chunk.seq(points)).flatMap(_ => loop)
-        }
+  /**
+    * This gives a stream of a single item that you can flatMap on to other streams to
+    * acquire and release a resource
+    */
+  def fromResource[F[_], A](
+      r: Resource[F, A]
+  )(implicit b: Bracket[F, Throwable]): Stream[F, A] =
+    Stream.bracket(r.allocated)(_._2).map(_._1)
 
-    loop.stream
+  def liftResource[F[_]: LiftIO: Sync, A, B](
+      res: Resource[IO, A => IO[B]]
+  ): Resource[F, A => F[B]] = {
+    val lift = LiftIO[F]
+
+    res
+      .mapK(new FunctionK[IO, F] {
+        def apply[T](f: IO[T]): F[T] = lift.liftIO(f)
+      })
+      .map(fn => fn.andThen(lift.liftIO))
   }
 
-  def run[A](inputs: Stream[IO, Point], emit: Emitter[A]): Stream[IO, A] = {
-    def feed(inputs: Stream[IO, Point], seq: Long): Pull[IO, A, Unit] =
-      inputs.pull.uncons
-        .flatMap {
-          case Some((points, rest)) =>
-            val batch = emit.feedAll(points.toList, seq)
-            for {
-              (as, s1) <- Pull.eval(batch)
-              _ <- Pull.output(Chunk.seq(as))
-              next <- feed(rest, s1)
-            } yield next
-          case None =>
-            Pull.done
-        }
+  /**
+    * Write a stream out with a given resource function and echo the results back
+    * into the stream
+    */
+  def tapStream[F[_], A](
+      input: Stream[F, A],
+      res: Resource[F, Iterable[A] => F[Unit]]
+  )(implicit b: Bracket[F, Throwable]): Stream[F, A] = {
+    val fn = fromResource(res)
 
-    feed(inputs, 0L).stream
+    fn.flatMap { writeFn =>
+      input.chunks
+        .evalMap(chunk => writeFn(chunk.toList).as(chunk))
+        .flatMap(Stream.chunk(_))
+    }
+  }
+
+  /**
+    * Like write stream, but returns an empty stream that only represents the effect
+    */
+  def sinkStream[F[_], A](
+      stream: Stream[F, A],
+      res: Resource[F, Iterator[A] => F[Unit]],
+      chunkSize: Int = 1024
+  )(implicit b: Bracket[F, Throwable]): Stream[F, fs2.INothing] = {
+    val fn = fromResource(res)
+
+    fn.flatMap { writeFn =>
+      stream.chunkMin(chunkSize).evalMap(chunk => writeFn(chunk.iterator)).drain
+    }
   }
 
   def sortMerge[F[_], A: Ordering](
@@ -128,4 +152,46 @@ object Fs2Tools {
           .stream
     }
   }
+
+  /**
+    * this pulls the next A from the stream while in parallel applying B
+    */
+  def scanF[F[_], A, B](init: B)(fn: (B, A) => F[B]): Pipe[F, A, B] = {
+    def loop(in: Stream[F, A], init: B): Pull[F, B, Unit] =
+      in.pull.uncons1
+        .flatMap {
+          case Some((a, rest)) =>
+            val fb = fn(init, a)
+            Pull
+              .eval(fb)
+              .flatMap(b => Pull.output1(b) >> loop(rest, b))
+          case None => Pull.done
+        }
+
+    { in: Stream[F, A] => Stream(init) ++ loop(in, init).stream }
+  }
+
+  def fromPath[F[_]: Sync: ContextShift](
+      path: Path,
+      chunkSize: Int,
+      blocker: Blocker
+  ): Stream[F, Byte] =
+    fs2.io.readInputStream(
+      openFile(path),
+      chunkSize,
+      blocker,
+      closeAfterUse = true
+    )
+
+  /**
+    * if the file ends with .gz, then use GZipInputStream to decode
+    */
+  def openFile[F[_]: Sync](path: Path): F[InputStream] =
+    Sync[F].delay {
+      val fis = new FileInputStream(path.toFile)
+      val bis = new BufferedInputStream(fis)
+      if (path.toString.endsWith(".gz")) {
+        new GZIPInputStream(bis)
+      } else bis
+    }
 }

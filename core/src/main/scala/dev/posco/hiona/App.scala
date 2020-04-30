@@ -1,7 +1,7 @@
 package dev.posco.hiona
 
 import cats.data.{Validated, ValidatedNel}
-import cats.effect.{ContextShift, ExitCode, IO, IOApp, Resource}
+import cats.effect.{Blocker, ContextShift, ExitCode, IO, IOApp, Resource}
 import com.monovore.decline.{Argument, Command, Opts}
 import java.nio.file.Path
 
@@ -12,7 +12,8 @@ abstract class App[A: Row](results: Event[A]) extends IOApp {
   override def run(args: List[String]): IO[ExitCode] =
     IO.suspend {
       App.command.parse(args) match {
-        case Right(cmd) => cmd.run(Args.event(results))
+        case Right(cmd) =>
+          Blocker[IO].use(cmd.run(Args.event(results), _))
         case Left(err) =>
           IO {
             System.err.println(err)
@@ -28,7 +29,7 @@ abstract class LabeledApp[A: Row](results: LabeledEvent[A]) extends IOApp {
     IO.suspend {
       App.command.parse(args) match {
         case Right(cmd) =>
-          cmd.run(Args.labeledEvent(results))
+          Blocker[IO].use(cmd.run(Args.labeledEvent(results), _))
         case Left(err) =>
           IO {
             System.err.println(err)
@@ -43,28 +44,17 @@ object App extends GenApp {
   implicit def argumentForRef: Argument[Path] =
     Argument.readPath
 
-  def run(args: Args, inputs: List[(String, Ref)], output: Ref)(
-      implicit ctx: ContextShift[IO]
-  ): IO[Unit] =
-    args match {
-      case Args.EventArgs(r, event) =>
-        Engine.run(inputs, event, output)(r, ctx)
-      case Args.LabeledArgs(r, l) =>
-        Engine.runLabeled(inputs, l, output)(r, ctx)
-    }
-
-  def feeder[A](
-      input: Path,
-      ev: Event.Source[A],
-      dur: Duration,
-      strictTime: Boolean
-  ): Resource[IO, Feeder] =
-    Feeder.fromPath(input, ev, dur, strictTime)
+  def inputFactory[E[_]: Engine.Emittable, A](
+      inputs: Iterable[(String, Ref)],
+      e: E[A],
+      blocker: Blocker
+  )(implicit ctx: ContextShift[IO]): Engine.InputFactory[IO] =
+    Engine.InputFactory.fromPaths(inputs, e, blocker)
 
   def writer[A](
       output: Path,
       row: Row[A]
-  ): Resource[IO, Iterable[A] => IO[Unit]] =
+  ): Resource[IO, Iterator[A] => IO[Unit]] =
     Row.writerRes[A](output)(row)
 }
 
@@ -101,16 +91,44 @@ abstract class GenApp { self =>
   type Ref
   implicit def argumentForRef: Argument[Ref]
 
-  def run(args: Args, inputs: List[(String, Ref)], output: Ref)(
+  def writer[A](output: Ref, row: Row[A]): Resource[IO, Iterator[A] => IO[Unit]]
+
+  def inputFactory[E[_]: Engine.Emittable, A](
+      inputs: Iterable[(String, Ref)],
+      e: E[A],
+      blocker: Blocker
+  )(implicit ctx: ContextShift[IO]): Engine.InputFactory[IO]
+
+  def pipe[A](implicit ctx: ContextShift[IO]): fs2.Pipe[IO, A, A] = { strm =>
+    strm
+      .chunkMin(1024)
+      .flatMap(fs2.Stream.chunk(_))
+      .prefetchN(10)
+  }
+
+  def run(
+      args: Args,
+      inputs: List[(String, Ref)],
+      output: Ref,
+      blocker: Blocker
+  )(
       implicit ctx: ContextShift[IO]
-  ): IO[Unit]
-  def feeder[A](
-      input: Ref,
-      ev: Event.Source[A],
-      dur: Duration,
-      strictTime: Boolean
-  ): Resource[IO, Feeder]
-  def writer[A](output: Ref, row: Row[A]): Resource[IO, Iterable[A] => IO[Unit]]
+  ): IO[Unit] = {
+
+    val (row, stream) = args match {
+      case Args.EventArgs(r, event) =>
+        val input: Engine.InputFactory[IO] =
+          inputFactory(inputs, event, blocker)
+        (r, Engine.run(input.through(pipe), event))
+      case Args.LabeledArgs(r, le) =>
+        val input: Engine.InputFactory[IO] =
+          inputFactory(inputs, le, blocker)
+        (r, Engine.run(input.through(pipe), le))
+    }
+    val writerRes = writer(output, row)
+
+    Fs2Tools.sinkStream(stream.through(pipe), writerRes).compile.drain
+  }
 
   implicit def named[A: Argument]: Argument[(String, A)] =
     new Argument[(String, A)] {
@@ -131,12 +149,16 @@ abstract class GenApp { self =>
     }
 
   sealed abstract class Cmd {
-    def run(args: Args)(implicit ctx: ContextShift[IO]): IO[ExitCode]
+    def run(args: Args, blocker: Blocker)(
+        implicit ctx: ContextShift[IO]
+    ): IO[ExitCode]
   }
 
   case class RunCmd(inputs: List[(String, Ref)], output: Ref) extends Cmd {
-    def run(args: Args)(implicit ctx: ContextShift[IO]): IO[ExitCode] =
-      self.run(args, inputs, output).map(_ => ExitCode.Success)
+    def run(args: Args, blocker: Blocker)(
+        implicit ctx: ContextShift[IO]
+    ): IO[ExitCode] =
+      self.run(args, inputs, output, blocker).map(_ => ExitCode.Success)
   }
 
   private val runCmd: Command[RunCmd] =
@@ -148,7 +170,9 @@ abstract class GenApp { self =>
     }
 
   case object ShowCmd extends Cmd {
-    def run(args: Args)(implicit ctx: ContextShift[IO]): IO[ExitCode] = {
+    def run(args: Args, blocker: Blocker)(
+        implicit ctx: ContextShift[IO]
+    ): IO[ExitCode] = {
       val (cols, srcs, lookups) =
         args match {
           case a @ Args.EventArgs(_, event) =>
@@ -180,13 +204,40 @@ abstract class GenApp { self =>
       inputs: List[(String, Ref)],
       outputs: List[(String, Ref)]
   ) extends Cmd {
-    def run(arg: Args)(implicit ctx: ContextShift[IO]): IO[ExitCode] = {
+    def toMap[K, V](
+        items: Iterable[(K, V)]
+    ): Either[Iterable[(K, V)], Map[K, V]] = {
+      val map = items.groupBy(_._1)
+      val badKeys = map.filter {
+        case (_, kvs) => kvs.iterator.take(2).size == 2
+      }
+      if (badKeys.isEmpty) Right(items.toMap)
+      else {
+        val badItems = items.filter { case (k, _) => badKeys.contains(k) }
+        Left(badItems)
+      }
+    }
+
+    def keyMatch[K, V1, V2](
+        m1: Map[K, V1],
+        m2: Map[K, V2]
+    ): Either[(Set[K], Set[K]), Map[K, (V1, V2)]] =
+      if (m1.keySet == m2.keySet) Right(m1.map {
+        case (k, v1) => (k, (v1, m2(k)))
+      })
+      else {
+        Left((m1.keySet -- m2.keySet, m2.keySet -- m1.keySet))
+      }
+
+    def run(arg: Args, blocker: Blocker)(
+        implicit ctx: ContextShift[IO]
+    ): IO[ExitCode] = {
       val data: IO[List[(String, ((Ref, Ref), Event.Source[_]))]] = {
         def pathMap[V](
             label: String,
             i: List[(String, V)]
         ): IO[Map[String, V]] =
-          Feeder.toMap(i) match {
+          toMap(i) match {
             case Right(m) => IO.pure(m)
             case Left(dups) =>
               IO.raiseError(new Exception(s"duplicates in $label: $dups"))
@@ -198,7 +249,7 @@ abstract class GenApp { self =>
             m1: Map[String, V1],
             m2: Map[String, V2]
         ): IO[Map[String, (V1, V2)]] =
-          Feeder.keyMatch(m1, m2) match {
+          keyMatch(m1, m2) match {
             case Right(m) => IO.pure(m)
             case Left((lextra, rextra)) =>
               IO.raiseError(
@@ -233,52 +284,31 @@ abstract class GenApp { self =>
           input: Ref,
           output: Ref,
           ev: Event.Source[A]
-      ): IO[Unit] =
-        feeder(input, ev, Duration.zero, strictTime = false)
-          .product(writer(output, ev.row))
-          .use {
-            case (feeder, writer) =>
-              def allPoints(lines: Int, prev: List[Point]): IO[Array[Point]] =
-                feeder
-                  .nextBatch(100)
-                  .flatMap {
-                    case Nil => IO.pure(prev.reverse.toArray)
-                    case nel =>
-                      val newlines = lines + nel.size
-                      val dbg =
-                        if (newlines % 10000 == 0)
-                          IO(println(s"read: $newlines"))
-                        else IO.unit
-                      dbg >> allPoints(lines + nel.size, nel reverse_::: prev)
-                  }
+      ): IO[Unit] = {
+        import scala.collection.mutable.ArrayBuffer
 
-              implicit val pointOrd: Ordering[Point] =
-                new Ordering[Point] {
-                  def compare(left: Point, right: Point) =
-                    java.lang.Long
-                      .compare(left.ts.epochMillis, right.ts.epochMillis)
-                }
+        val e: Event[A] = ev
+        val istream: fs2.Stream[IO, Point] =
+          inputFactory(List((ev.name, input)), e, blocker).allInputs(e)
 
-              allPoints(0, Nil)
-                .flatMap(l => IO { println("sorting"); l })
-                .map { ary =>
-                  java.util.Arrays.sort(ary, pointOrd)
-                  ary
-                }
-                .flatMap { sortPoints =>
-                  val bldr = collection.mutable.Buffer.newBuilder[A]
-                  bldr.sizeHint(sortPoints.length)
-                  var idx = 0
-                  while (idx < sortPoints.length) {
-                    val Point.Sourced(_, a, _, _) = sortPoints(idx)
-                    sortPoints(idx) = null
-                    bldr += a.asInstanceOf[A]
-                    idx += 1
-                  }
+        val points: IO[ArrayBuffer[Point]] =
+          istream.chunks.compile
+            .fold(ArrayBuffer[Point]()) { (buf, chunk) =>
+              buf ++= chunk.iterator; buf
+            }
+            .map(_.sortInPlace)
 
-                  IO(println("writing")) >> writer(bldr.result)
-                }
+        writer(output, ev.row)
+          .use { fn =>
+            for {
+              ps <- points
+              ait = ps.iterator.map {
+                case Point.Sourced(_, a, _, _) => a.asInstanceOf[A]
+              }
+              _ <- fn(ait.iterator)
+            } yield ()
           }
+      }
 
       for {
         d <- data

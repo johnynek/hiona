@@ -1,6 +1,6 @@
 package dev.posco.hiona.bench
 
-import cats.effect.{IO, Resource}
+import cats.effect.IO
 import dev.posco.hiona._
 import java.util.concurrent.TimeUnit
 import org.openjdk.jmh.annotations._
@@ -24,27 +24,28 @@ class EngineBenchmars {
       Validator.pure { case (_, ts) => Timestamp(ts.toLong) }
     )
 
-  def result[A](ev: Event[A], feeder: IO[Feeder]): IO[Unit] = {
-    val output = Resource.liftF(IO { it: Iterable[A] =>
-      IO(it.foreach(a => assert(a != null)))
-    })
-    Engine.Emitter
-      .fromEvent(ev)
-      .flatMap(Engine.runEmitter(Resource.liftF(feeder), _, output))
-  }
+  def result[A](ev: Event[A], inputs: Engine.InputFactory[IO]): IO[Unit] =
+    Engine.run(inputs, ev).compile.drain
 
   @Setup
   def setup(): Unit =
     strs = (1 to size).map(sz => ((sz % 37).toString, sz)).toVector
+
+  def pipe[A]: fs2.Pipe[IO, A, A] = { strm =>
+    strm
+      .chunkMin(1024)
+      .flatMap(fs2.Stream.chunk(_))
+  }
 
   @Benchmark
   def mapChain(): Unit = {
     val ev = strsSrc.map(_._1).map(_.toInt).filter(_ % 2 == 0)
     //val ev = strsSrc.map(_._1.toInt).filter(_ % 2 == 0)
 
-    val fromIters = List(Feeder.FromIterable(strsSrc, strs))
-    val feeder = Feeder.FromIterable.feederForEvent(fromIters, ev)
+    val inputs = Engine.InputFactory
+      .fromStream(strsSrc, fs2.Stream(strs: _*).covary[IO])
+      .through(pipe)
 
-    result(ev, feeder).unsafeRunSync()
+    result(ev, inputs).unsafeRunSync()
   }
 }

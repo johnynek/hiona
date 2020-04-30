@@ -1,11 +1,12 @@
 package dev.posco.hiona.aws
 
 import alex.mojaki.s3upload.StreamTransferManager
-import cats.effect.{IO, Resource}
+import cats.effect.{Blocker, ContextShift, IO, Resource, Sync}
 import cats.effect.concurrent.Ref
 import com.amazonaws.services.s3
 import dev.posco.hiona.Row
-import java.io.{InputStream, OutputStream}
+import fs2.Stream
+import java.io.{BufferedInputStream, InputStream, OutputStream}
 import java.nio.file.Path
 import java.util.zip.{GZIPInputStream, GZIPOutputStream}
 
@@ -13,12 +14,28 @@ import cats.implicits._
 
 final class AWSIO(s3client: s3.AmazonS3) {
 
-  def read(s3Addr: S3Addr): Resource[IO, InputStream] =
-    Resource.make(IO {
+  def openInputStream[F[_]: Sync](s3Addr: S3Addr): F[InputStream] =
+    Sync[F].delay {
       val is = s3client.getObject(s3Addr.bucket, s3Addr.key).getObjectContent()
-      if (s3Addr.key.endsWith(".gz")) new GZIPInputStream(is)
-      else is
-    })(is => IO(is.close()))
+      val bis = new BufferedInputStream(is)
+      if (s3Addr.key.endsWith(".gz")) new GZIPInputStream(bis)
+      else bis
+    }
+
+  def read[F[_]: Sync](s3Addr: S3Addr): Resource[F, InputStream] =
+    Resource.make(openInputStream(s3Addr))(is => Sync[F].delay(is.close()))
+
+  def readStream[F[_]: Sync: ContextShift](
+      s3Addr: S3Addr,
+      chunkSize: Int,
+      blocker: Blocker
+  ): Stream[F, Byte] =
+    fs2.io.readInputStream(
+      openInputStream(s3Addr),
+      chunkSize,
+      blocker,
+      closeAfterUse = true
+    )
 
   def putPath(s3Addr: S3Addr, path: Path): IO[Unit] =
     IO {
@@ -48,12 +65,12 @@ final class AWSIO(s3client: s3.AmazonS3) {
   def tempWriter[A](
       output: S3Addr,
       row: Row[A]
-  ): Resource[IO, Iterable[A] => IO[Unit]] = {
+  ): Resource[IO, Iterator[A] => IO[Unit]] = {
     val suffix =
       if (output.key.endsWith(".gz")) "csv.gz" else "csv"
     for {
       path <- Row.tempPath("output", suffix)
-      fn <- onFail[Unit, Iterable[A]](IO.unit, {
+      fn <- onFail[Unit, Iterator[A]](IO.unit, {
         case (None, _)    => putPath(output, path)
         case (Some(_), _) => IO.unit
       }, _ => Row.writerRes(path)(row))
@@ -68,7 +85,7 @@ final class AWSIO(s3client: s3.AmazonS3) {
   def multiPartOutput[A](
       s3Addr: S3Addr,
       row: Row[A]
-  ): Resource[IO, Iterable[A] => IO[Unit]] = {
+  ): Resource[IO, Iterator[A] => IO[Unit]] = {
     val mos = IO {
       val m = new StreamTransferManager(s3Addr.bucket, s3Addr.key, s3client)
         .numStreams(1)
@@ -100,7 +117,7 @@ final class AWSIO(s3client: s3.AmazonS3) {
 
     val makeWriter: (
         (StreamTransferManager, OutputStream)
-    ) => Resource[IO, Iterable[A] => IO[Unit]] = {
+    ) => Resource[IO, Iterator[A] => IO[Unit]] = {
       case (_, os) =>
         for {
           pw <- Row.toPrintWriter(os)

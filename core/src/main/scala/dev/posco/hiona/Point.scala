@@ -20,17 +20,7 @@ object Point {
       val name: String,
       val offset: Duration,
       override val hashCode: Int
-  ) {
-
-    override def equals(that: Any) =
-      that match {
-        case k: Key =>
-          // since we keep a cache table of these
-          // if two are equal, they are referentially equal
-          this eq k
-        case _ => false
-      }
-  }
+  )
 
   object Key {
     private var nextHashCode: Int = 1
@@ -86,4 +76,24 @@ object Point {
         } else res
       }
     }
+
+  /**
+    * convert validated A values to Points
+    */
+  def toPoints[F[_], A](src: Event.Source[A], offset: Duration)(
+      implicit ae: cats.ApplicativeError[F, Throwable]
+  ): fs2.Pipe[F, A, Point] = {
+    // allocate the key once, this is important since they are cached
+    val key = Key(src.name, offset)
+    val validator = src.validator
+
+    { in: fs2.Stream[F, A] =>
+      in.evalMap { a =>
+        validator.validate(a) match {
+          case Right(ts) => ae.pure(Sourced[A](src, a, ts, key): Point)
+          case Left(err) => ae.raiseError[Point](err)
+        }
+      }
+    }
+  }
 }

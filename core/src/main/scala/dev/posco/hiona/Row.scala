@@ -1,6 +1,7 @@
 package dev.posco.hiona
 
 import cats.effect.{IO, Resource}
+import fs2.{Chunk, Pipe, Pull, RaiseThrowable, Stream}
 import java.io.{
   BufferedWriter,
   FileOutputStream,
@@ -9,8 +10,14 @@ import java.io.{
   PrintWriter
 }
 import java.nio.file.Path
-import net.tixxit.delimited.{DelimitedFormat, Row => DRow}
+import net.tixxit.delimited.{
+  DelimitedError,
+  DelimitedFormat,
+  DelimitedParser,
+  Row => DRow
+}
 import java.util.zip.GZIPOutputStream
+import scala.collection.mutable.ArrayBuffer
 
 import shapeless._
 
@@ -207,7 +214,14 @@ object Row extends Priority0Rows {
   }
 
   implicit case object DoubleRow extends NumberRow[Double]("Double") {
+    private val zeroStr = 0.0.toString
+    private val oneStr = 1.0.toString
+
     def fromString(s: String) = s.toDouble
+    override def toString(a: Double): String =
+      if (a == 0.0) zeroStr
+      else if (a == 1.0) oneStr
+      else a.toString
   }
 
   implicit case object BigIntRow extends NumberRow[BigInt]("BigInt") {
@@ -315,7 +329,7 @@ object Row extends Priority0Rows {
   /**
     * Make a Resource for a function that can write out items into a given path
     */
-  def writerRes[A: Row](path: Path): Resource[IO, Iterable[A] => IO[Unit]] =
+  def writerRes[A: Row](path: Path): Resource[IO, Iterator[A] => IO[Unit]] =
     fileWriter(path)
       .flatMap(pw => Resource.liftF(writer[A](pw)))
 
@@ -323,7 +337,7 @@ object Row extends Priority0Rows {
     * use a PrintWriter for an output function. This does not
     * close the PrintWriter, that is the caller's responsibility
     */
-  def writer[A: Row](pw: PrintWriter): IO[Iterable[A] => IO[Unit]] = {
+  def writer[A: Row](pw: PrintWriter): IO[Iterator[A] => IO[Unit]] = {
     val format = DelimitedFormat.CSV
 
     val row = implicitly[Row[A]]
@@ -341,11 +355,10 @@ object Row extends Priority0Rows {
       pw.print(format.rowDelim.value)
 
       // write the header
-      { (items: Iterable[A]) =>
+      { (iter: Iterator[A]) =>
         IO {
           // only one thread at a time can access the buffer
           buffer.synchronized {
-            val iter = items.iterator
             while (iter.hasNext) {
               val a = iter.next()
               row.writeToStrings(a, 0, buffer)
@@ -361,6 +374,106 @@ object Row extends Priority0Rows {
         }
       }
     }
+  }
+
+  def decode[F[_], A](
+      implicit ae: cats.ApplicativeError[F, Throwable],
+      row: Row[A]
+  ): Pipe[F, DRow, A] = { input =>
+    input.evalMap { drow =>
+      try {
+        ae.pure(row.unsafeFromStrings(0, drow))
+      } catch {
+        case scala.util.control.NonFatal(err) =>
+          ae.raiseError[A](err)
+      }
+    }
+  }
+
+  /**
+    * convert csv data into type A
+    */
+  def decodeFromCSV[F[_], A](row: Row[A], skipHeader: Boolean = true)(
+      implicit ae: cats.ApplicativeError[F, Throwable]
+  ): fs2.Pipe[F, String, A] =
+    Row.parseCSV
+      .andThen(if (skipHeader) { s => s.drop(1) }
+      else { s => s })
+      .andThen(Row.decode[F, A](ae, row))
+
+  def parseCSV[F[_]: RaiseThrowable]: Pipe[F, String, DRow] =
+    parse(DelimitedParser(DelimitedFormat.CSV))
+
+  /**
+    * Parse a stream of strings into drows
+    *
+    * you may want fs2.text.utf8Decode to convert bytes to Strings
+    */
+  def parse[F[_]: RaiseThrowable](
+      dp: DelimitedParser
+  ): Pipe[F, String, DRow] = {
+
+    @inline def fill(
+        buf: ArrayBuffer[DRow],
+        items: Vector[Either[DelimitedError, DRow]]
+    ): DelimitedError = {
+      val iter = items.iterator
+      while (iter.hasNext) {
+        iter.next() match {
+          case Right(row) =>
+            buf += row
+          case Left(e) => return e
+        }
+      }
+
+      null
+    }
+
+    def loop(
+        dp: DelimitedParser,
+        strings: Stream[F, String]
+    ): Pull[F, DRow, Unit] =
+      strings.pull.uncons
+        .flatMap {
+          case Some((strings, nextStream)) =>
+            if (strings.isEmpty) loop(dp, nextStream)
+            else {
+              // this is a mutable approach but we are trying to avoid
+              // inefficiencies in the lowest levels
+              var err: DelimitedError = null
+              val buf = new ArrayBuffer[DRow](32)
+
+              var idx = 0
+              var thisDp = dp
+              val sz = strings.size
+              while (idx < sz) {
+                val string = strings(idx)
+                idx += 1
+
+                val (nextDp, chunk) = thisDp.parseChunk(Some(string))
+                err = fill(buf, chunk)
+                if (err != null) {
+                  idx = sz
+                }
+                thisDp = nextDp
+              }
+
+              if (err == null) {
+                Pull
+                  .output(Chunk.buffer(buf))
+                  .flatMap(_ => loop(thisDp, nextStream))
+              } else Pull.raiseError(err)
+            }
+          case None =>
+            val rows: Vector[Either[DelimitedError, DRow]] =
+              dp.parseChunk(None)._2
+            val buf = new ArrayBuffer[DRow](rows.size)
+            val err = fill(buf, rows)
+            if (err == null) Pull.output(Chunk.buffer(buf))
+            else Pull.raiseError(err)
+        }
+
+    { strings => loop(dp, strings).stream }
   }
 
   case class Coproduct1Row[A](rowA: Row[A]) extends Row[A :+: CNil] {
