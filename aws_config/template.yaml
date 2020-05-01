@@ -6,10 +6,10 @@ Resources:
     Type: AWS::Serverless::Function
     Properties:
       CodeUri: ../jobs/target/scala-2.13/hiona-jobs-assembly-0.1.0-SNAPSHOT.jar
-      Handler: dev.posco.hiona.jobs.AwsWordcount
+      Handler: dev.posco.hiona.jobs.AwsFinnhubBars
       Runtime: java8
       Description: Java function
-      MemorySize: 1024
+      MemorySize: 3008
       Timeout: 900
       # Function's execution role
       Policies:

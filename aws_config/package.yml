@@ -5,8 +5,8 @@ Resources:
   function:
     Type: AWS::Serverless::Function
     Properties:
-      CodeUri: s3://dev-posco-0/33e88aad6c9141fbad46edcb2d9516b7
-      Handler: dev.posco.hiona.jobs.AwsWordcount
+      CodeUri: s3://predictionmachine-data/d7244ed57f8a7c9ad45801b2e72c8f08
+      Handler: dev.posco.hiona.jobs.AwsFinnhubBars
       Runtime: java8
       Description: Java function
       MemorySize: 1024

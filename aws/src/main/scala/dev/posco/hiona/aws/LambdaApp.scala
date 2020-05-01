@@ -62,7 +62,10 @@ abstract class LambdaApp(appArgs: Args) extends RequestStreamHandler {
             case Right(cmd) =>
               implicit val ctx =
                 IO.contextShift(scala.concurrent.ExecutionContext.global)
+
+              logger.log(s"INFO: about to run")
               cmd.run(appArgs, s3App.blocker).unsafeRunSync()
+              logger.log(s"INFO: finished run")
               ()
               val result = ast.JString("done")
               outputStream.write(result.render().getBytes("US-ASCII"))

@@ -213,3 +213,6 @@ object FinnhubBars {
 }
 
 object FinnhubBarsApp extends LabeledApp(FinnhubBars.labeled)
+
+// This is the AWS-lambda version of the above
+class AwsFinnhubBars extends aws.LambdaApp(Args.labeledEvent(FinnhubBars.labeled))

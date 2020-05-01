@@ -1,0 +1,10 @@
+{
+  "body": {
+    "args":
+      [
+        "run",
+        "--input", "finnhub_bar=s3://predictionmachine-data/data/finnhub/HK/2020-02-15_2020-04-14_all_stocks.timesorted.csv.gz",
+        "--output", "s3://predictionmachine-data/temp/latest_opt_2.csv"
+      ]
+    }
+}
