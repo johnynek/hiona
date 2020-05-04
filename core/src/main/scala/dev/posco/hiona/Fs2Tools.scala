@@ -1,8 +1,9 @@
 package dev.posco.hiona
 
+import cats.Functor
 import cats.arrow.FunctionK
 import cats.collections.Heap
-import cats.effect.{Blocker, Bracket, ContextShift, IO, LiftIO, Resource, Sync}
+import cats.effect.{Blocker, ContextShift, IO, LiftIO, Resource, Sync}
 import fs2.{Pipe, Pull, Stream}
 import java.nio.file.Path
 import java.io.{BufferedInputStream, FileInputStream, InputStream}
@@ -11,15 +12,6 @@ import java.util.zip.GZIPInputStream
 import cats.implicits._
 
 object Fs2Tools {
-
-  /**
-    * This gives a stream of a single item that you can flatMap on to other streams to
-    * acquire and release a resource
-    */
-  def fromResource[F[_], A](
-      r: Resource[F, A]
-  )(implicit b: Bracket[F, Throwable]): Stream[F, A] =
-    Stream.bracket(r.allocated)(_._2).map(_._1)
 
   def liftResource[F[_]: LiftIO: Sync, A, B](
       res: Resource[IO, A => IO[B]]
@@ -37,18 +29,17 @@ object Fs2Tools {
     * Write a stream out with a given resource function and echo the results back
     * into the stream
     */
-  def tapStream[F[_], A](
+  def tapStream[F[_]: Functor, A](
       input: Stream[F, A],
       res: Resource[F, Iterable[A] => F[Unit]]
-  )(implicit b: Bracket[F, Throwable]): Stream[F, A] = {
-    val fn = fromResource(res)
-
-    fn.flatMap { writeFn =>
-      input.chunks
-        .evalMap(chunk => writeFn(chunk.toList).as(chunk))
-        .flatMap(Stream.chunk(_))
-    }
-  }
+  ): Stream[F, A] =
+    Stream
+      .resource(res)
+      .flatMap { writeFn =>
+        input.chunks
+          .evalMap(chunk => writeFn(chunk.toList).as(chunk))
+          .flatMap(Stream.chunk(_))
+      }
 
   /**
     * Like write stream, but returns an empty stream that only represents the effect
@@ -57,13 +48,15 @@ object Fs2Tools {
       stream: Stream[F, A],
       res: Resource[F, Iterator[A] => F[Unit]],
       chunkSize: Int = 1024
-  )(implicit b: Bracket[F, Throwable]): Stream[F, fs2.INothing] = {
-    val fn = fromResource(res)
-
-    fn.flatMap { writeFn =>
-      stream.chunkMin(chunkSize).evalMap(chunk => writeFn(chunk.iterator)).drain
-    }
-  }
+  ): Stream[F, fs2.INothing] =
+    Stream
+      .resource(res)
+      .flatMap { writeFn =>
+        stream
+          .chunkMin(chunkSize)
+          .evalMap(chunk => writeFn(chunk.iterator))
+          .drain
+      }
 
   def sortMerge[F[_], A: Ordering](
       streams: List[Stream[F, A]]
