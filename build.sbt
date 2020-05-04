@@ -34,6 +34,7 @@ lazy val commonSettings =
       case PathList("META-INF", "MANIFEST.MF") => MergeStrategy.discard
       case _ => MergeStrategy.first
     },
+    addCompilerPlugin("org.typelevel" %% "kind-projector" % "0.11.0" cross CrossVersion.full)
   )
 
 lazy val core = (project in file("core"))

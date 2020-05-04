@@ -1,8 +1,10 @@
 package dev.posco.hiona
 
+import cats.arrow.FunctionK
 import cats.data.{Validated, ValidatedNel}
 import cats.effect.{Blocker, ContextShift, ExitCode, IO, IOApp, Resource}
 import com.monovore.decline.{Argument, Command, Opts}
+import fs2.{Pipe, Pull, Stream}
 import java.nio.file.Path
 
 import cats.implicits._
@@ -99,10 +101,10 @@ abstract class GenApp { self =>
       blocker: Blocker
   )(implicit ctx: ContextShift[IO]): Engine.InputFactory[IO]
 
-  def pipe[A](implicit ctx: ContextShift[IO]): fs2.Pipe[IO, A, A] = { strm =>
+  def pipe[A](implicit ctx: ContextShift[IO]): Pipe[IO, A, A] = { strm =>
     strm
       .chunkMin(1024)
-      .flatMap(fs2.Stream.chunk(_))
+      .flatMap(Stream.chunk(_))
       .prefetchN(10)
   }
 
@@ -110,7 +112,9 @@ abstract class GenApp { self =>
       args: Args,
       inputs: List[(String, Ref)],
       output: Ref,
-      blocker: Blocker
+      blocker: Blocker,
+      onInput: Pipe[IO, Point, Point],
+      onOutput: FunctionK[Stream[IO, *], Stream[IO, *]]
   )(
       implicit ctx: ContextShift[IO]
   ): IO[Unit] = {
@@ -119,15 +123,17 @@ abstract class GenApp { self =>
       case Args.EventArgs(r, event) =>
         val input: Engine.InputFactory[IO] =
           inputFactory(inputs, event, blocker)
-        (r, Engine.run(input.through(pipe), event))
+        (r, Engine.run(input.through(pipe).through(onInput), event))
       case Args.LabeledArgs(r, le) =>
         val input: Engine.InputFactory[IO] =
           inputFactory(inputs, le, blocker)
-        (r, Engine.run(input.through(pipe), le))
+        (r, Engine.run(input.through(pipe).through(onInput), le))
     }
+
     val writerRes = writer(output, row)
 
-    Fs2Tools.sinkStream(stream.through(pipe), writerRes).compile.drain
+    val result = onOutput(stream.through(pipe))
+    Fs2Tools.sinkStream(result, writerRes).compile.drain
   }
 
   implicit def named[A: Argument]: Argument[(String, A)] =
@@ -154,19 +160,119 @@ abstract class GenApp { self =>
     ): IO[ExitCode]
   }
 
-  case class RunCmd(inputs: List[(String, Ref)], output: Ref) extends Cmd {
+  case class RunCmd(
+      inputs: List[(String, Ref)],
+      output: Ref,
+      logDelta: Option[Duration],
+      limit: Option[Int]
+  ) extends Cmd {
     def run(args: Args, blocker: Blocker)(
         implicit ctx: ContextShift[IO]
-    ): IO[ExitCode] =
-      self.run(args, inputs, output, blocker).map(_ => ExitCode.Success)
+    ): IO[ExitCode] = {
+
+      val loggerFn: Pipe[IO, Point, Point] =
+        logDelta match {
+          case None => identity
+          case Some(dur) =>
+            def loop(
+                ts: Timestamp,
+                count: Long,
+                points: Stream[IO, Point]
+            ): Pull[IO, Point, Unit] =
+              points.pull.uncons
+                .flatMap {
+                  case Some((points, next)) =>
+                    val ordTs = Ordering[Timestamp]
+                    var counter = count
+                    val (nextTs, revPoints): (Timestamp, List[(Long, Point)]) =
+                      points.foldLeft((ts, List.empty[(Long, Point)])) {
+                        case (prev @ (ts, stack), point) =>
+                          counter += 1L
+                          val thisTs = point.ts
+                          // only log real input events for now, not the shifted values
+                          // (since it is hard to account for them
+                          if ((point.offset eq Duration.Zero) && ordTs.lteq(
+                                ts + dur,
+                                thisTs
+                              )) {
+                            (thisTs, (counter, point) :: stack)
+                          } else prev
+                      }
+
+                    val logMessage: IO[Unit] =
+                      if (revPoints.isEmpty) IO.unit
+                      else {
+                        val pointsToLog = revPoints.reverse
+                        IO {
+                          pointsToLog.foreach {
+                            case (count, point @ Point.Sourced(_, v, _, _)) =>
+                              val vstr0 = v.toString
+                              val vstr =
+                                if (vstr0.length > 50)
+                                  vstr0.take(50) + s"... (${vstr0.length - 50} more chars)"
+                                else vstr0
+
+                              println(
+                                s"input event ($count) ts: ${point.ts.epochMillis}, from source: ${point.name}, value: $vstr"
+                              )
+                          }
+                        }
+                      }
+                    val prints: Pull[IO, Point, Unit] = Pull.eval(logMessage)
+                    prints *> Pull.output(points) *> loop(nextTs, counter, next)
+                  case None => Pull.done
+                }
+
+            { points: Stream[IO, Point] =>
+              loop(Timestamp.MinValue, -1L, points).stream
+            }
+        }
+
+      val result = limit match {
+        case Some(i) =>
+          new FunctionK[Stream[IO, *], Stream[IO, *]] {
+            def apply[A](s: Stream[IO, A]) = s.take(i)
+          }
+        case None =>
+          FunctionK.id[Stream[IO, *]]
+      }
+
+      self
+        .run(args, inputs, output, blocker, loggerFn, result)
+        .map(_ => ExitCode.Success)
+    }
   }
+
+  implicit val argDuration: Argument[Duration] =
+    new Argument[Duration] {
+      def defaultMetavar = "duration"
+      def read(s: String): ValidatedNel[String, Duration] =
+        try Validated.valid(
+          Duration(scala.concurrent.duration.Duration(s).toMillis)
+        )
+        catch {
+          case (_: NumberFormatException) =>
+            Validated.invalidNel(
+              s"string $s could not be converted to a duration, try 1millis or 2hours or 3days"
+            )
+        }
+    }
 
   private val runCmd: Command[RunCmd] =
     Command("run", "run an event and write all results to a csv file") {
       (
         Opts.options[(String, Ref)]("input", "named path to CSV").orEmpty,
-        Opts.option[Ref]("output", "path to write")
-      ).mapN(RunCmd(_, _))
+        Opts.option[Ref]("output", "path to write"),
+        Opts
+          .option[Duration](
+            "logevery",
+            "interval of events between which to log"
+          )
+          .orNone,
+        Opts
+          .option[Int]("limit", "maximum number of events to write out")
+          .orNone
+      ).mapN(RunCmd(_, _, _, _))
     }
 
   case object ShowCmd extends Cmd {

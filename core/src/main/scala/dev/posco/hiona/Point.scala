@@ -20,7 +20,9 @@ object Point {
       val name: String,
       val offset: Duration,
       override val hashCode: Int
-  )
+  ) {
+    override def toString = s"Key($name, $offset)"
+  }
 
   object Key {
     private var nextHashCode: Int = 1
