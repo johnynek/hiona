@@ -13,11 +13,14 @@ import scala.concurrent.ExecutionContext
 import scala.util.control.NonFatal
 
 import dev.posco.hiona._
+import cats.effect.ExitCode
 
 abstract class LambdaApp(appArgs: Args) extends RequestStreamHandler {
 
+  protected def buildS3App(): S3App = new S3App
+
   // allocating this initializes s3clients
-  private[this] lazy val s3App = new S3App
+  private[this] lazy val s3App = buildS3App()
 
   def parseArgs(input: ast.JValue): Either[String, List[String]] = {
     val body = input.get("body")
@@ -51,6 +54,8 @@ abstract class LambdaApp(appArgs: Args) extends RequestStreamHandler {
     val logger = context.getLogger()
 
     try {
+      implicit val ctx = s3App.contextShift
+
       val inChannel = Channels.newChannel(inputStream)
       val jinput: ast.JValue = ast.JParser.parseFromChannel(inChannel).get
 
@@ -60,9 +65,6 @@ abstract class LambdaApp(appArgs: Args) extends RequestStreamHandler {
 
           s3App.command.parse(stringArgs) match {
             case Right(cmd) =>
-              implicit val ctx =
-                IO.contextShift(scala.concurrent.ExecutionContext.global)
-
               logger.log(s"INFO: about to run")
               cmd.run(appArgs, s3App.blocker).unsafeRunSync()
               logger.log(s"INFO: finished run")
@@ -112,6 +114,8 @@ class S3App extends GenApp {
         }
       )
     )
+  val contextShift: ContextShift[IO] =
+    IO.contextShift(scala.concurrent.ExecutionContext.global)
 
   implicit def argumentForRef: Argument[S3Addr] =
     new Argument[S3Addr] {
@@ -158,4 +162,53 @@ class S3App extends GenApp {
   ): Resource[IO, Iterator[A] => IO[Unit]] =
     //awsIO.tempWriter(output, row)
     awsIO.multiPartOutput(output, row)
+}
+
+abstract class DBS3App extends S3App {
+
+  /**
+    * this will be something like:
+    * RDSTransactor.build(...).unsafeRunSync()(someDb)
+    *
+    * to cache the secret look up, make this a lazy val
+    */
+  def transactor: doobie.Transactor[IO]
+
+  /**
+    * This is what binds the the Event.Source to particular
+    * sql queries
+    * DBSupport.factoryFor(src, "some sqlString here")
+    */
+  def dbSupportFactory: db.DBSupport.Factory
+
+  lazy val dbInputFactory: Engine.InputFactory[IO] =
+    dbSupportFactory.build(transactor)
+
+  override def inputFactory[E[_]: Engine.Emittable, A](
+      inputs: Iterable[(String, S3Addr)],
+      e: E[A],
+      blocker: Blocker
+  )(implicit ctx: ContextShift[IO]): Engine.InputFactory[IO] =
+    dbInputFactory.combine(super.inputFactory(inputs, e, blocker))
+}
+
+abstract class DBS3CliApp extends DBS3App {
+  def eventArgs: Args
+
+  def runIO(args: List[String]): IO[ExitCode] =
+    IO.suspend {
+      command.parse(args) match {
+        case Right(cmd) =>
+          implicit val ictx = contextShift
+          cmd.run(eventArgs, blocker)
+        case Left(err) =>
+          IO {
+            System.err.println(err)
+            ExitCode.Error
+          }
+      }
+    }
+
+  final def main(args: Array[String]): Unit =
+    System.exit(runIO(args.toList).unsafeRunSync().code)
 }

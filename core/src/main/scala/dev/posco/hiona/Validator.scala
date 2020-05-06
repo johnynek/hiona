@@ -27,6 +27,19 @@ object Validator {
       def validate(a: A) = Right(fn(a))
     }
 
+  def fromEpochSecondsStr[A](get: A => String): Validator[A] =
+    new Validator[A] {
+      def validate(a: A) = {
+        val ts = get(a)
+        try {
+          Right(Timestamp(ts.toLong * 1000))
+        } catch {
+          case _: NumberFormatException =>
+            Left(Validator.TimestampParseFailure(a, ts))
+        }
+      }
+    }
+
   def parseAndShift[A](
       parseString: String,
       tz: TimeZone,

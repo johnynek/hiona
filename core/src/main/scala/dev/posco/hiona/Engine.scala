@@ -282,6 +282,9 @@ object Engine {
             offset: Duration
         ): List[Stream[F, Point]] = self.apply(src, offset).map(fn)
       }
+
+    def combine(that: InputFactory[F]): InputFactory[F] =
+      InputFactory.merge(List(this, that))
   }
 
   object InputFactory {

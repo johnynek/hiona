@@ -11,6 +11,7 @@ object Dependencies {
   }
 
   lazy val awsLambdaCore1 = "com.amazonaws" % "aws-lambda-java-core" % "1.2.0"
+  lazy val awsSecretsManager = "com.amazonaws" % "aws-java-sdk-secretsmanager" % "1.11.774"
   lazy val awsS3v1 = aws1 % "aws-java-sdk-s3" % "1.11.766"
   lazy val cats = typelevel %% "cats-core" % "2.1.1"
   lazy val catsCollections = typelevel %% "cats-collections-core" % "0.9.0"
@@ -24,6 +25,7 @@ object Dependencies {
   lazy val munitScalaCheck = "org.scalameta" %% "munit-scalacheck" % V.munit
   lazy val jawnParser = typelevel %% "jawn-parser" % V.jawn
   lazy val jawnAst = typelevel %% "jawn-ast" % V.jawn
+  lazy val postgresJdbc = "org.postgresql" % "postgresql" % "42.2.12"
   lazy val scalaCheck = "org.scalacheck" %% "scalacheck" % "1.14.3"
   lazy val scalaTest = "org.scalatest" %% "scalatest" % "3.0.8"
   lazy val shapeless = "com.chuusai" %% "shapeless" % "2.3.3"
