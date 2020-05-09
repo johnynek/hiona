@@ -5,15 +5,13 @@ import fs2.Stream
 
 import cats.implicits._
 
-import Engine.InputFactory
-
 class EmitterTests extends munit.FunSuite {
 
   implicit val ec = scala.concurrent.ExecutionContext.global
 
   implicit val ctx: ContextShift[IO] = IO.contextShift(ec)
 
-  def result[E[_]: Engine.Emittable, A](
+  def result[E[_]: Emittable, A](
       in: InputFactory[IO],
       ev: E[A]
   ): IO[List[A]] =

@@ -2,7 +2,6 @@ package dev.posco.hiona.db
 
 import cats.{MonadError, Monoid}
 import dev.posco.hiona._
-import dev.posco.hiona.Engine.InputFactory
 import doobie._
 import doobie.implicits._
 

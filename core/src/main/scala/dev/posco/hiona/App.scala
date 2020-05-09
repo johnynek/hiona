@@ -46,12 +46,12 @@ object App extends GenApp {
   implicit def argumentForRef: Argument[Path] =
     Argument.readPath
 
-  def inputFactory[E[_]: Engine.Emittable, A](
+  def inputFactory[E[_]: Emittable, A](
       inputs: Iterable[(String, Ref)],
       e: E[A],
       blocker: Blocker
-  )(implicit ctx: ContextShift[IO]): Engine.InputFactory[IO] =
-    Engine.InputFactory.fromPaths(inputs, e, blocker)
+  )(implicit ctx: ContextShift[IO]): InputFactory[IO] =
+    InputFactory.fromPaths(inputs, e, blocker)
 
   def writer[A](
       output: Path,
@@ -95,11 +95,11 @@ abstract class GenApp { self =>
 
   def writer[A](output: Ref, row: Row[A]): Resource[IO, Iterator[A] => IO[Unit]]
 
-  def inputFactory[E[_]: Engine.Emittable, A](
+  def inputFactory[E[_]: Emittable, A](
       inputs: Iterable[(String, Ref)],
       e: E[A],
       blocker: Blocker
-  )(implicit ctx: ContextShift[IO]): Engine.InputFactory[IO]
+  )(implicit ctx: ContextShift[IO]): InputFactory[IO]
 
   def pipe[A](implicit ctx: ContextShift[IO]): Pipe[IO, A, A] = { strm =>
     strm
@@ -121,11 +121,11 @@ abstract class GenApp { self =>
 
     val (row, stream) = args match {
       case Args.EventArgs(r, event) =>
-        val input: Engine.InputFactory[IO] =
+        val input: InputFactory[IO] =
           inputFactory(inputs, event, blocker)
         (r, Engine.run(input.through(pipe).through(onInput), event))
       case Args.LabeledArgs(r, le) =>
-        val input: Engine.InputFactory[IO] =
+        val input: InputFactory[IO] =
           inputFactory(inputs, le, blocker)
         (r, Engine.run(input.through(pipe).through(onInput), le))
     }

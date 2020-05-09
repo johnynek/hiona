@@ -140,17 +140,17 @@ class S3App extends GenApp {
         }
     }
 
-  def inputFactory[E[_]: Engine.Emittable, A](
+  def inputFactory[E[_]: Emittable, A](
       inputs: Iterable[(String, S3Addr)],
       e: E[A],
       blocker: Blocker
-  )(implicit ctx: ContextShift[IO]): Engine.InputFactory[IO] =
-    Engine.InputFactory.fromMany(inputs, e) { (src, s3path) =>
+  )(implicit ctx: ContextShift[IO]): InputFactory[IO] =
+    InputFactory.fromMany(inputs, e) { (src, s3path) =>
       def go[T](src: Event.Source[T]) = {
         val is = awsIO.readStream[IO](s3path, 1 << 16, blocker)
         val toT = fs2.text.utf8Decode
           .andThen(Row.decodeFromCSV[IO, T](src.row, skipHeader = true))
-        Engine.InputFactory.fromStream(src, toT(is))
+        InputFactory.fromStream(src, toT(is))
       }
 
       go(src)
@@ -181,14 +181,14 @@ abstract class DBS3App extends S3App {
     */
   def dbSupportFactory: db.DBSupport.Factory
 
-  lazy val dbInputFactory: Engine.InputFactory[IO] =
+  lazy val dbInputFactory: InputFactory[IO] =
     dbSupportFactory.build(transactor)
 
-  override def inputFactory[E[_]: Engine.Emittable, A](
+  override def inputFactory[E[_]: Emittable, A](
       inputs: Iterable[(String, S3Addr)],
       e: E[A],
       blocker: Blocker
-  )(implicit ctx: ContextShift[IO]): Engine.InputFactory[IO] =
+  )(implicit ctx: ContextShift[IO]): InputFactory[IO] =
     dbInputFactory.combine(super.inputFactory(inputs, e, blocker))
 }
 

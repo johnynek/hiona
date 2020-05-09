@@ -24,7 +24,7 @@ class EngineBenchmars {
       Validator.pure { case (_, ts) => Timestamp(ts.toLong) }
     )
 
-  def result[A](ev: Event[A], inputs: Engine.InputFactory[IO]): IO[Unit] =
+  def result[A](ev: Event[A], inputs: InputFactory[IO]): IO[Unit] =
     Engine.run(inputs, ev).compile.drain
 
   @Setup
@@ -42,7 +42,7 @@ class EngineBenchmars {
     val ev = strsSrc.map(_._1).map(_.toInt).filter(_ % 2 == 0)
     //val ev = strsSrc.map(_._1.toInt).filter(_ % 2 == 0)
 
-    val inputs = Engine.InputFactory
+    val inputs = InputFactory
       .fromStream(strsSrc, fs2.Stream(strs: _*).covary[IO])
       .through(pipe)
 
