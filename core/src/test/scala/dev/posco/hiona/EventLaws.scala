@@ -1,8 +1,16 @@
 package dev.posco.hiona
 
-import org.scalacheck.Prop
+import cats.Monoid
+import org.scalacheck.{Gen, Prop}
 
 class EventLaws extends munit.ScalaCheckSuite {
+  //override val scalaCheckInitialSeed = "8kBVxnoHroJcUD_o3PtlArVORcUgZeOPifCkgtI_mNN="
+  override def scalaCheckTestParameters =
+    super.scalaCheckTestParameters
+      .withMinSuccessfulTests(
+        50
+      ) // a bit slow, but locally, this passes with 1000
+
   property("Event.triggersOf has the same sources") {
     Prop.forAll(GenEventFeature.genEventTW) { tw =>
       val ev: Event[tw.Type] = tw.evidence
@@ -17,4 +25,382 @@ class EventLaws extends munit.ScalaCheckSuite {
       Prop(s1 == s2)
     }
   }
+
+  property("Event.map Simulator works") {
+    val genFn
+        : Gen[(Simulator.Inputs, TypeWith[Lambda[x => (Event[x], x => Int)]])] =
+      GenEventFeature
+        .genSrcsSizedAndEvent(Gen.const(100))
+        .flatMap {
+          case (inputs, twresev) =>
+            val fnGen: Gen[twresev.Type => Int] =
+              Gen.function1(Gen.choose(-100, 100))(
+                twresev.evidence.result.cogen
+              )
+
+            fnGen.map { fn =>
+              (
+                inputs,
+                TypeWith[Lambda[x => (Event[x], x => Int)], twresev.Type](
+                  (twresev.evidence.event, fn)
+                )
+              )
+            }
+        }
+
+    Prop.forAllNoShrink(genFn) {
+      case (inputs, twev) =>
+        val ev: Event[twev.Type] = twev.evidence._1
+        val fn: twev.Type => Int = twev.evidence._2
+
+        val mapped =
+          Simulator.eventToLazyList(ev.map(fn), inputs)
+
+        val unmapped =
+          Simulator
+            .eventToLazyList(ev, inputs)
+            .map { case (p, x) => (p, fn(x)) }
+
+        assertEquals(mapped, unmapped)
+    }
+  }
+
+  property("Event.concatMap Simulator works") {
+    val genFn: Gen[
+      (Simulator.Inputs, TypeWith[Lambda[x => (Event[x], x => List[Int])]])
+    ] =
+      GenEventFeature
+        .genSrcsSizedAndEvent(Gen.const(100))
+        .flatMap {
+          case (inputs, twresev) =>
+            val fnGen: Gen[twresev.Type => List[Int]] =
+              GenEventFeature.genConcatMapFn(
+                twresev.evidence.result.cogen,
+                Gen.choose(-100, 100)
+              )
+
+            fnGen.map { fn =>
+              (
+                inputs,
+                TypeWith[Lambda[x => (Event[x], x => List[Int])], twresev.Type](
+                  (twresev.evidence.event, fn)
+                )
+              )
+            }
+        }
+
+    Prop.forAllNoShrink(genFn) {
+      case (inputs, twev) =>
+        val ev: Event[twev.Type] = twev.evidence._1
+        val fn: twev.Type => List[Int] = twev.evidence._2
+
+        val mapped =
+          Simulator.eventToLazyList(ev.concatMap(fn), inputs)
+
+        val unmapped =
+          Simulator
+            .eventToLazyList(ev, inputs)
+            .flatMap { case (p, xs) => fn(xs).map((p, _)) }
+
+        assertEquals(mapped, unmapped)
+    }
+  }
+
+  property("Event.filter Simulator works") {
+    val genFn: Gen[
+      (Simulator.Inputs, TypeWith[Lambda[x => (Event[x], x => Boolean)]])
+    ] =
+      GenEventFeature
+        .genSrcsSizedAndEvent(Gen.const(100))
+        .flatMap {
+          case (inputs, twresev) =>
+            val fnGen: Gen[twresev.Type => Boolean] =
+              Gen.function1(Gen.oneOf(false, true))(
+                twresev.evidence.result.cogen
+              )
+
+            fnGen.map { fn =>
+              (
+                inputs,
+                TypeWith[Lambda[x => (Event[x], x => Boolean)], twresev.Type](
+                  (twresev.evidence.event, fn)
+                )
+              )
+            }
+        }
+
+    Prop.forAllNoShrink(genFn) {
+      case (inputs, twev) =>
+        val ev: Event[twev.Type] = twev.evidence._1
+        val fn: twev.Type => Boolean = twev.evidence._2
+
+        val unmapped =
+          Simulator
+            .eventToLazyList(ev, inputs)
+            .filter { case (_, x) => fn(x) }
+            .toList
+
+        val mapped =
+          Simulator.eventToLazyList(ev.filter(fn), inputs).toList
+
+        assertEquals(mapped, unmapped)
+
+        Prop(mapped == unmapped)
+    }
+  }
+
+  property("Event.withTime Simulator works") {
+
+    val genFn: Gen[(Simulator.Inputs, TypeWith[Event])] =
+      GenEventFeature
+        .genSrcsSizedAndEvent(Gen.const(100))
+        .map {
+          case (i, twev) => (i, twev.mapK(GenEventFeature.ResultEv.toEvent))
+        }
+
+    Prop.forAllNoShrink(genFn) {
+      case (inputs, twev) =>
+        val ev: Event[twev.Type] = twev.evidence
+
+        val unmapped =
+          Simulator
+            .eventToLazyList(ev, inputs)
+            .map { case (p, x) => (p, (x, p.ts)) }
+
+        val mapped =
+          Simulator.eventToLazyList(ev.withTime, inputs)
+
+        assertEquals(mapped, unmapped)
+
+        Prop(mapped == unmapped)
+    }
+  }
+
+  property("(x ++ x) == x.concatMap { y => List(y, y) } for Simulator") {
+
+    val genFn: Gen[(Simulator.Inputs, TypeWith[Event])] =
+      GenEventFeature
+        .genSrcsSizedAndEvent(Gen.const(100))
+        .map {
+          case (i, twev) => (i, twev.mapK(GenEventFeature.ResultEv.toEvent))
+        }
+
+    Prop.forAllNoShrink(genFn) {
+      case (inputs, twev) =>
+        val ev: Event[twev.Type] = twev.evidence
+
+        val unmapped =
+          Simulator.eventToLazyList(ev ++ ev, inputs)
+
+        val mapped =
+          Simulator.eventToLazyList(ev.concatMap(y => List(y, y)), inputs)
+
+        assertEquals(mapped, unmapped)
+
+        Prop(mapped == unmapped)
+    }
+  }
+
+  property("(x ++ y) is the same as Simulator(x) merge Simulator(y)") {
+    type Pair[T] = (Event[T], Event[T])
+    import GenEventFeature.{genMonad, Result}
+
+    val genFn: Gen[(Simulator.Inputs, TypeWith[Pair])] =
+      GenEventFeature
+        .genWithSizedSrc(
+          Gen.const(100),
+          for {
+            tpe: TypeWith[Result] <- GenEventFeature.lift(
+              GenEventFeature.genType
+            )
+            pair <- GenEventFeature.genPair(tpe)
+            tw: TypeWith[Pair] = TypeWith[Pair, tpe.Type](pair)
+          } yield tw
+        )
+
+    Prop.forAllNoShrink(genFn) {
+      case (inputs, twpair) =>
+        val e1: Event[twpair.Type] = twpair.evidence._1
+        val e2: Event[twpair.Type] = twpair.evidence._2
+
+        val v1 =
+          Simulator.eventToLazyList(e1 ++ e2, inputs)
+
+        val v2a = Simulator.eventToLazyList(e1, inputs)
+        val v2b = Simulator.eventToLazyList(e2, inputs)
+
+        val v2 = Simulator.merge(v2a, v2b)(Ordering[Point].on(_._1))
+        assertEquals(v1, v2)
+
+        Prop(v1 == v2)
+    }
+
+  }
+
+  property("we are sorted by timestamp at the end") {
+    val genFn: Gen[(Simulator.Inputs, TypeWith[Event])] =
+      GenEventFeature
+        .genSrcsSizedAndEvent(Gen.const(100))
+        .map {
+          case (i, twev) => (i, twev.mapK(GenEventFeature.ResultEv.toEvent))
+        }
+
+    Prop.forAllNoShrink(genFn) {
+      case (inputs, twev) =>
+        val ev: Event[twev.Type] = twev.evidence
+
+        val res = Simulator.eventToLazyList(ev, inputs).map(_._1.ts).toList
+        val sortRes = res.sorted
+        assertEquals(res, sortRes)
+
+        Prop(res == sortRes)
+    }
+  }
+
+  property("kvs.postLookup(kvs.latest)... should be identity Simulator") {
+
+    import GenEventFeature.{genEvent2, genMonad, genType, genWithSizedSrc, lift}
+
+    val genFn: Gen[(Simulator.Inputs, TypeWith2[Event.Keyed])] =
+      genWithSizedSrc(Gen.const(100), for {
+        k <- lift(genType)
+        v <- lift(genType)
+        ev <- genEvent2(k, v)
+        tw: TypeWith2[Event.Keyed] = TypeWith2[Event.Keyed, k.Type, v.Type](ev)
+      } yield tw)
+
+    Prop.forAllNoShrink(genFn) {
+      case (inputs, twev) =>
+        val ev: Event[(twev.Type1, twev.Type2)] = twev.evidence
+
+        val ev1 = ev
+          .postLookup(ev.latest(Duration.Infinite))
+          .map {
+            case (k, (v, None)) =>
+              sys.error(s"expected after to find a value: $k $v")
+            case (k, (v, Some(w))) =>
+              assertEquals(w, v)
+              (k, v)
+          }
+
+        val kres =
+          Simulator.eventToLazyList(ev, inputs).toList
+
+        val kres1 =
+          Simulator.eventToLazyList(ev1, inputs).toList
+
+        assertEquals(kres1, kres)
+        Prop(kres == kres1)
+    }
+  }
+
+  property("kvs.postLookup(kvs.sum)... should be an in order sum Simulator") {
+
+    import GenEventFeature.{
+      genEvent2,
+      genMonad,
+      genMonoidType,
+      genType,
+      genWithSizedSrc,
+      lift,
+      Result
+    }
+
+    type KV[K, V] = (Event[(K, V)], Monoid[V])
+
+    val genFn: Gen[(Simulator.Inputs, TypeWith2[KV])] =
+      genWithSizedSrc(
+        Gen.const(100),
+        for {
+          k <- lift(genType)
+          vrm <- lift(genMonoidType)
+          v = TypeWith[Result, vrm.Type](vrm.evidence.first)
+          ev <- genEvent2(k, v)
+          tw: TypeWith2[KV] = TypeWith2[KV, k.Type, v.Type](
+            (ev, vrm.evidence.second)
+          )
+        } yield tw
+      )
+
+    Prop.forAllNoShrink(genFn) {
+      case (inputs, twev) =>
+        val (ev, monoid): (Event[(twev.Type1, twev.Type2)], Monoid[twev.Type2]) =
+          twev.evidence
+
+        val ev1 = ev
+          .postLookup(ev.sum(monoid))
+          .mapValues(_._2)
+
+        def summed[T, K, V](
+            kvs: LazyList[(T, (K, V))],
+            acc: Map[K, V],
+            monoid: Monoid[V]
+        ): LazyList[(T, (K, V))] =
+          kvs match {
+            case (t, (k, v)) #:: tail =>
+              val vsum = acc.get(k) match {
+                case Some(v0) => monoid.combine(v0, v)
+                case None     => v
+              }
+              val acc1 = acc.updated(k, vsum)
+              (t, (k, vsum)) #:: summed(tail, acc1, monoid)
+            case LazyList() => LazyList()
+          }
+
+        val list0 = Simulator.eventToLazyList(ev, inputs)
+        val list1 = Simulator.eventToLazyList(ev1, inputs)
+
+        val summed0 = summed(list0, Map.empty, monoid)
+
+        assertEquals(list1, summed0)
+        Prop(list1 == summed0)
+    }
+  }
+
+  /* This is not yet passing...
+   * this law puts very serious constraints on preLookup... but it
+   * does make clear that the semantics of prelookup are unclear.
+   */
+  property(
+    "x.asKeys.preLookup(x.asKeys.latest) can be used to dedup for Simulator"
+  ) {
+
+    val genFn: Gen[(Simulator.Inputs, TypeWith[Event])] =
+      GenEventFeature
+        .genSrcsSizedAndEvent(Gen.const(100))
+        .map {
+          case (i, twev) => (i, twev.mapK(GenEventFeature.ResultEv.toEvent))
+        }
+
+    Prop.forAllNoShrink(genFn) {
+      case (inputs, twev) =>
+        val ev: Event[twev.Type] = twev.evidence
+
+        val keys = ev.asKeys
+
+        val dedup = keys
+          .preLookup(keys.latest(Duration.Infinite))
+          .concatMap {
+            case (k, (_, None))    => k :: Nil
+            case (_, (_, Some(_))) => Nil
+          }
+
+        val ddres =
+          Simulator
+            .eventToLazyList(dedup, inputs)
+            .map(_._2)
+            .toList
+
+        val dedupedList =
+          Simulator
+            .eventToLazyList(ev, inputs)
+            .map(_._2)
+            .toList
+            .distinct
+
+        assertEquals(ddres, dedupedList)
+        Prop(ddres == dedupedList)
+    }
+  }
+
 }

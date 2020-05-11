@@ -30,9 +30,14 @@ sealed abstract class Event[+A] {
     */
   final def ++[A1 >: A](that: Event[A1]): Event[A1] =
     Event.Concat(this, that)
+
+  final def asKeys: Event[(A, Unit)] =
+    map(Event.ToKey())
 }
 
 object Event {
+  type Keyed[A, B] = Event[(A, B)]
+
   sealed trait NonSource[+A] extends Event[A] {
     type Prior
     def previous: Event[Prior]
@@ -117,6 +122,16 @@ object Event {
   case object Empty extends Event[Nothing]
   case class Source[A](name: String, row: Row[A], validator: Validator[A])
       extends Event[A]
+
+  object Source {
+    def equiv[A, B](srcA: Source[A], srcB: Source[B]): Option[A =:= B] =
+      if (srcA == srcB) {
+        // since Source is invariant, and depends on invariant typeclass
+        // we assume this implies the types are equal
+        Some(implicitly[A =:= A].asInstanceOf[A =:= B])
+      } else None
+  }
+
   case class Concat[A](left: Event[A], right: Event[A]) extends Event[A]
 
   /**
@@ -219,12 +234,18 @@ object Event {
     }
   }
 
+  case class ToKey[A]() extends Function[A, (A, Unit)] {
+    def apply(a: A): (A, Unit) = (a, ())
+  }
+
 }
 
 /**
   * A type to prevent "boolean blindness" to specify before or after ordering
   */
-sealed abstract class LookupOrder(val isBefore: Boolean)
+sealed abstract class LookupOrder(val isBefore: Boolean) {
+  def isAfter: Boolean = !isBefore
+}
 object LookupOrder {
   case object Before extends LookupOrder(true)
   case object After extends LookupOrder(false)

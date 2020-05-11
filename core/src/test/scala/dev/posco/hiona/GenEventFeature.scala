@@ -1,8 +1,8 @@
 package dev.posco.hiona
 
-import cats.{Defer, Monad, Semigroupal}
+import cats.{Defer, Monad, Monoid, Semigroupal}
 import cats.arrow.FunctionK
-import cats.data.{NonEmptyList, StateT}
+import cats.data.{NonEmptyList, StateT, Tuple2K}
 import org.scalacheck.{Arbitrary, Cogen, Gen}
 
 import cats.implicits._
@@ -18,12 +18,62 @@ object GenEventFeature {
         Gen.tailRecM(a)(fn)
     }
 
+  implicit def semigroupalTuple2K[F[_]: Semigroupal, G[_]: Semigroupal]
+      : Semigroupal[Tuple2K[F, G, *]] =
+    new Semigroupal[Tuple2K[F, G, *]] {
+      def product[A, B](
+          left: Tuple2K[F, G, A],
+          right: Tuple2K[F, G, B]
+      ): Tuple2K[F, G, (A, B)] =
+        Tuple2K(
+          Semigroupal[F].product(left.first, right.first),
+          Semigroupal[G].product(left.second, right.second)
+        )
+    }
+
+  implicit def implicitTuple2K[F[_], G[_], A](
+      implicit fa: F[A],
+      ga: G[A]
+  ): Tuple2K[F, G, A] =
+    Tuple2K(fa, ga)
+
   val genTimestamp: Gen[Timestamp] =
     // just before 1970 until just after 2030
     Gen.choose(-1000L, 1900000000000L).map(Timestamp(_))
 
   implicit val cogenTimestamp: Cogen[Timestamp] =
     Cogen[Long].contramap { ts: Timestamp => ts.epochMillis }
+
+  /**
+    * This is a concat-map that emits <= the
+    * same number that it takes in on average
+    */
+  def genConcatMapFn[A, B](cogen: Cogen[A], gen: Gen[B]): Gen[A => List[B]] = {
+    // 1/2 -> 0
+    // 1/4 -> 1
+    // 1/8 -> 2
+    // ...
+    // 1/2(0 + 1/2 + .. n/2^n + ...)
+    // x = (0 + e^a/2 + ... (e^(an)/2^n) = 1/(1 - e^(a)/2)
+    // d/da (x)(a = 0) = 2y
+    // 2y = (1/2)/(1 - (1/2))^2 = 4/2 = 2
+    // y = 1
+    val expSize: Gen[Int] =
+      Defer[Gen]
+        .fix[Int] { rec =>
+          Gen
+            .oneOf(false, true)
+            .flatMap {
+              case false => 0
+              case true  => rec.map(_ + 1)
+            }
+        }
+
+    val bList: Gen[List[B]] =
+      expSize.flatMap(Gen.listOfN(_, gen))
+
+    Gen.function1(bList)(cogen)
+  }
 
   case class Result[A](cogen: Cogen[A], gen: Gen[A]) {
     def zip[B](that: Result[B]): Result[(A, B)] =
@@ -40,23 +90,23 @@ object GenEventFeature {
       }
   }
 
-  case class SrcResult[A](row: Row[A], result: Result[A]) {
-    def zip[B](that: SrcResult[B]): SrcResult[(A, B)] =
-      SrcResult(Row.tuple2Row(row, that.row), result.zip(that.result))
+  case class RowResult[A](row: Row[A], result: Result[A]) {
+    def zip[B](that: RowResult[B]): RowResult[(A, B)] =
+      RowResult(Row.tuple2Row(row, that.row), result.zip(that.result))
   }
 
-  object SrcResult {
-    implicit def implicitSrcResult[A: Row: Result]: SrcResult[A] =
-      SrcResult(implicitly[Row[A]], implicitly[Result[A]])
+  object RowResult {
+    implicit def implicitRowResult[A: Row: Result]: RowResult[A] =
+      RowResult(implicitly[Row[A]], implicitly[Result[A]])
 
-    implicit def semigroupAlSrcResult: Semigroupal[SrcResult] =
-      new Semigroupal[SrcResult] {
-        def product[A, B](fa: SrcResult[A], fb: SrcResult[B]) = fa.zip(fb)
+    implicit def semigroupAlRowResult: Semigroupal[RowResult] =
+      new Semigroupal[RowResult] {
+        def product[A, B](fa: RowResult[A], fb: RowResult[B]) = fa.zip(fb)
       }
 
-    val toResult: FunctionK[SrcResult, Result] =
-      new FunctionK[SrcResult, Result] {
-        def apply[A](src: SrcResult[A]): Result[A] = src.result
+    val toResult: FunctionK[RowResult, Result] =
+      new FunctionK[RowResult, Result] {
+        def apply[A](src: RowResult[A]): Result[A] = src.result
       }
   }
 
@@ -74,21 +124,83 @@ object GenEventFeature {
       }
   }
 
+  import Simulator.InputData
+
+  private def distinctBy[A, B](as: List[A])(fn: A => B): List[A] =
+    as.foldLeft((Set.empty[B], List.empty[A])) {
+        case (acc @ (bs, rev), a) =>
+          val b = fn(a)
+          if (bs(b)) acc
+          else (bs + b, a :: rev)
+      }
+      ._2
+      .reverse
+
+  case class ResultSrc[A](result: Result[A], src: Event.Source[A]) {
+    // generate input timestamps with no collisions
+    // collisions give very unclear semantics with regards
+    // to before and after
+    def genInputData(size: Int): Gen[InputData[A]] = {
+      def genItems(
+          size: Int,
+          tail: List[(A, Timestamp)]
+      ): Gen[List[(A, Timestamp)]] =
+        Gen
+          .listOfN(size, result.gen)
+          .flatMap { as =>
+            val valids = as
+              .map(a => src.validator.validate(a).map((a, _)))
+              .collect { case Right(good) => good }
+
+            val nextTail = valids reverse_::: tail
+            val missing = size - valids.size
+            if (missing == 0) Gen.const(nextTail)
+            else {
+              genItems(missing, nextTail)
+            }
+          }
+
+      genItems(size, Nil)
+        .map { data0 =>
+          val data = distinctBy(data0)(_._2)
+          val sorted = data.sortBy(_._2)
+          InputData(sorted.map(_._1), src)
+        }
+    }
+  }
+
+  case class History(
+      names: Set[String],
+      sources: Set[TypeWith[ResultSrc]],
+      events: Set[TypeWith[ResultEv]]
+  ) {
+
+    def hasName(nm: String): Boolean = names(nm)
+  }
+
+  object History {
+    val empty: History = History(Set.empty, Set.empty, Set.empty)
+  }
+
   /**
     * we use the state to keep a set of previously
     * generated Events and types
     */
-  type GenS[A] = StateT[Gen, Set[TypeWith[ResultEv]], A]
+  type GenS[A] = StateT[Gen, History, A]
 
   /**
     * Pick one of these
     */
   def frequencyS[A](nel: NonEmptyList[(Int, GenS[A])]): GenS[A] = {
     nel.toList.foreach {
-      case (w, _) => require(w > 0, s"weights must be > 0, found $w in $nel")
+      case (w, _) => require(w >= 0, s"weights must be >= 0, found $w in $nel")
     }
 
     val totalWeight = nel.foldMap { case (w, _) => w.toLong }
+    require(
+      totalWeight >= 1L,
+      s"we need a weight of at least 1, got: $totalWeight"
+    )
 
     lift(Gen.choose(0L, totalWeight - 1L))
       .flatMap { idx =>
@@ -97,7 +209,7 @@ object GenEventFeature {
           items match {
             case NonEmptyList((_, last), Nil) => last
             case NonEmptyList((w, h0), head :: tail) =>
-              if (idx <= 0) h0
+              if (idx <= w.toLong) h0
               else loop(idx - w.toLong, NonEmptyList(head, tail))
           }
 
@@ -108,20 +220,18 @@ object GenEventFeature {
   def lift[A](gen: Gen[A]): GenS[A] =
     StateT.liftF(gen)
 
-  def runS[A](gens: GenS[A]): Gen[A] =
-    gens.run(Set.empty).map(_._2)
-
-  val primTypes: List[TypeWith[SrcResult]] =
+  val primTypes: List[TypeWith[RowResult]] =
     List(
-      TypeWith[SrcResult, Byte],
-      TypeWith[SrcResult, Char],
-      TypeWith[SrcResult, Int],
-      TypeWith[SrcResult, Long],
-      TypeWith[SrcResult, String]
+      TypeWith[RowResult, Boolean],
+      TypeWith[RowResult, Byte],
+      TypeWith[RowResult, Char],
+      TypeWith[RowResult, Int],
+      TypeWith[RowResult, Long],
+      TypeWith[RowResult, String]
     )
 
-  val genSrcType: Gen[TypeWith[SrcResult]] =
-    Defer[Gen].fix[TypeWith[SrcResult]] { recur =>
+  val genSrcType: Gen[TypeWith[RowResult]] =
+    Defer[Gen].fix[TypeWith[RowResult]] { recur =>
       Gen.frequency(
         primTypes.size -> Gen.oneOf(primTypes),
         1 -> Gen.zip(recur, recur).map { case (a, b) => a.product(b) }
@@ -131,9 +241,25 @@ object GenEventFeature {
   val genType: Gen[TypeWith[Result]] =
     Defer[Gen].fix[TypeWith[Result]] { recur =>
       Gen.frequency(
-        10 -> genSrcType.map(_.mapK(SrcResult.toResult)),
+        10 -> genSrcType.map(_.mapK(RowResult.toResult)),
         1 -> Gen.zip(recur, recur).map { case (a, b) => a.product(b) }
       )
+    }
+
+  val genMonoidType: Gen[TypeWith[Tuple2K[Result, Monoid, *]]] =
+    Defer[Gen].fix[TypeWith[Tuple2K[Result, Monoid, *]]] { recur =>
+      val prim = List(
+        TypeWith[Tuple2K[Result, Monoid, *], Unit],
+        TypeWith[Tuple2K[Result, Monoid, *], Int],
+        TypeWith[Tuple2K[Result, Monoid, *], Long]
+      )
+
+      val pair = Gen.lzy(for {
+        a <- recur
+        b <- recur
+      } yield a.product(b))
+
+      Gen.frequency(3 -> Gen.oneOf(prim), 1 -> pair)
     }
 
   def genEvent(t: TypeWith[Result]): GenS[Event[t.Type]] = {
@@ -141,7 +267,10 @@ object GenEventFeature {
       for {
         stype <- lift(genSrcType)
         srcEvent <- genSource(Gen.identifier, stype)
-        mapToCorrect <- genMap(stype.mapK(SrcResult.toResult), t)(srcEvent)
+        mapToCorrect: Event[t.Type] <- genMap(
+          stype.mapK(RowResult.toResult),
+          t
+        )(srcEvent)
       } yield mapToCorrect
 
     val map =
@@ -151,17 +280,37 @@ object GenEventFeature {
         ev2 <- genMap(firstT, t)(ev1)
       } yield ev2
 
+    val concatMap =
+      for {
+        firstT <- lift(genType)
+        ev1 <- genEvent(firstT)
+        ev2 <- genConcatMapped(firstT, t)(ev1)
+      } yield ev2
+
     val concat = Defer[GenS].defer(genConcat(t))
 
     frequencyS(
       NonEmptyList.of(
+        1 -> Monad[GenS].pure(Event.Empty),
         10 -> src,
-        4 -> map,
+        3 -> map,
+        1 -> concatMap,
         1 -> Defer[GenS].defer(genFilter(t)),
         1 -> Defer[GenS].defer(genWithTime(t)),
         1 -> concat // this can cause the graphs to get huge, this probability needs to be small
       )
     )
+  }
+
+  def genEvent2(
+      k: TypeWith[Result],
+      v: TypeWith[Result]
+  ): GenS[Event[(k.Type, v.Type)]] = {
+    // it could just be a regular pair
+    val pair = Defer[GenS].defer(genEvent(k.product(v)))
+    // or we could have done a lookup of a feature, and mapped the values...
+    // but we don't have feature generation yet
+    pair
   }
 
   val genSEventTW: GenS[TypeWith[ResultEv]] =
@@ -170,35 +319,75 @@ object GenEventFeature {
       ev <- genEvent(twr)
     } yield TypeWith[ResultEv, twr.Type](ResultEv(twr.evidence, ev))
 
+  val genSrcsAndEventTW: Gen[(Set[TypeWith[ResultSrc]], TypeWith[ResultEv])] =
+    genSEventTW
+      .run(History.empty)
+      .map {
+        case (hist, tw) =>
+          (hist.sources, tw)
+      }
+
+  def genWithSizedSrc[A](
+      gsize: Gen[Int],
+      ga: GenS[A]
+  ): Gen[(List[TypeWith[InputData]], A)] =
+    ga.run(History.empty)
+      .flatMap {
+        case (ressrc, a) =>
+          ressrc.sources.toList
+            .sortBy(_.evidence.src.name)
+            .traverse { twr =>
+              // we need to ascribe the type
+              val res: Gen[TypeWith[InputData]] =
+                twr.mapK2(
+                  new FunctionK[ResultSrc, Lambda[x => Gen[InputData[x]]]] {
+                    def apply[Z](ra: ResultSrc[Z]) =
+                      gsize.flatMap(ra.genInputData(_))
+                  }
+                )
+              res
+            }
+            .map((_, a))
+      }
+
+  def genSrcsSizedAndEvent(
+      gsize: Gen[Int]
+  ): Gen[(List[TypeWith[InputData]], TypeWith[ResultEv])] =
+    genWithSizedSrc(gsize, genSEventTW)
+
   val genEventTW: Gen[TypeWith[Event]] =
-    runS(genSEventTW.map(_.mapK(ResultEv.toEvent)))
+    genSrcsAndEventTW.map(_._2.mapK(ResultEv.toEvent))
 
   def add[A](res: Result[A], ev: Event[A]): GenS[Unit] =
-    StateT.modify(s => s + TypeWith[ResultEv, A](ResultEv(res, ev)))
+    StateT.modify(h =>
+      h.copy(events = h.events + TypeWith[ResultEv, A](ResultEv(res, ev)))
+    )
+
+  def addSource[A](res: Result[A], ev: Event.Source[A]): GenS[Unit] =
+    StateT.modify { history =>
+      History(
+        history.names + ev.name,
+        history.sources + TypeWith(ResultSrc(res, ev)),
+        history.events + TypeWith(ResultEv(res, ev))
+      )
+    }
 
   def genNewName(genName: Gen[String]): GenS[String] = {
     val gensName = lift(genName)
 
     gensName.flatMap { name0 =>
       Monad[GenS].tailRecM(name0) { candidate =>
-        val used: GenS[Set[TypeWith[ResultEv]]] = StateT.get
+        val used: GenS[History] = StateT.get
 
-        used.flatMap { set =>
-          val names = set.iterator
-            .map(_.evidence)
-            .collect {
-              case ResultEv(_, Event.Source(name, _, _)) => name
-            }
-            .toSet
-
-          if (names(candidate)) gensName.map(Left(_))
+        used.flatMap { hist =>
+          if (hist.hasName(candidate)) gensName.map(Left(_))
           else Monad[GenS].pure(Right(candidate))
         }
       }
     }
   }
 
-  def validatorFor(t: TypeWith[SrcResult]): Gen[Validator[t.Type]] = {
+  def validatorFor(t: TypeWith[RowResult]): Gen[Validator[t.Type]] = {
     val gfn: Gen[t.Type => Option[Timestamp]] =
       Gen.function1(Gen.option(genTimestamp))(t.evidence.result.cogen)
 
@@ -215,7 +404,7 @@ object GenEventFeature {
 
   def genSource(
       genName: Gen[String],
-      t1: TypeWith[SrcResult]
+      t1: TypeWith[RowResult]
   ): GenS[Event.Source[t1.Type]] =
     for {
       name <- genNewName(genName)
@@ -223,15 +412,28 @@ object GenEventFeature {
       src: Event.Source[t1.Type] = Event.source[t1.Type](name, validator)(
         t1.evidence.row
       )
-      _ <- add[t1.Type](t1.evidence.result, src)
+      _ <- addSource[t1.Type](t1.evidence.result, src)
     } yield src
 
   def genMap(t0: TypeWith[Result], t1: TypeWith[Result])(
       ev0: Event[t0.Type]
   ): GenS[Event[t1.Type]] =
     for {
-      fn <- lift(Gen.function1(t1.evidence.gen)(t0.evidence.cogen))
-      ev1 = ev0.map(fn)
+      fn: (t0.Type => t1.Type) <- lift(
+        Gen.function1(t1.evidence.gen)(t0.evidence.cogen)
+      )
+      ev1: Event[t1.Type] = ev0.map(fn)
+      _ <- add(t1.evidence, ev1)
+    } yield ev1
+
+  def genConcatMapped(t0: TypeWith[Result], t1: TypeWith[Result])(
+      ev0: Event[t0.Type]
+  ): GenS[Event[t1.Type]] =
+    for {
+      fn: (t0.Type => List[t1.Type]) <- lift(
+        genConcatMapFn(t0.evidence.cogen, t1.evidence.gen)
+      )
+      ev1: Event[t1.Type] = ev0.concatMap(fn)
       _ <- add(t1.evidence, ev1)
     } yield ev1
 
@@ -248,8 +450,10 @@ object GenEventFeature {
       tw: TypeWith[ResultEv] <- genSEventTW
       twr: TypeWith.Aux[Result, tw.Type] = tw.mapK(ResultEv.toResult)
       ev0: Event[tw.Type] = tw.evidence.event
-      ev1 = ev0.withTime
-      result = twr.evidence.zip(Result(Cogen[Timestamp], genTimestamp))
+      ev1: Event[(tw.Type, Timestamp)] = ev0.withTime
+      result: Result[(tw.Type, Timestamp)] = twr.evidence.zip(
+        Result(Cogen[Timestamp], genTimestamp)
+      )
       _ <- add(result, ev1)
       ev2 <- genMap(TypeWith(result), t1)(ev1)
     } yield ev2
@@ -257,10 +461,10 @@ object GenEventFeature {
   // return a previous event mapped onto the current type
   // if there has been no previous event, call genEvent
   def genPrevious(t1: TypeWith[Result]): GenS[Event[t1.Type]] = {
-    val used: GenS[Set[TypeWith[ResultEv]]] = StateT.get
+    val used: GenS[History] = StateT.get
 
-    used.flatMap { prev =>
-      NonEmptyList.fromList(prev.toList) match {
+    used.flatMap { hist =>
+      NonEmptyList.fromList(hist.events.toList) match {
         case None => genEvent(t1)
         case Some(nel) =>
           frequencyS(nel.map(twre => (1, Monad[GenS].pure(twre))))
@@ -271,7 +475,7 @@ object GenEventFeature {
     }
   }
 
-  def genConcat(t1: TypeWith[Result]): GenS[Event[t1.Type]] =
+  def genPair(t1: TypeWith[Result]): GenS[(Event[t1.Type], Event[t1.Type])] =
     for {
       e1 <- genEvent(t1)
       nonTree = Defer[GenS].defer(genPrevious(t1))
@@ -280,6 +484,11 @@ object GenEventFeature {
       e2 <- frequencyS(
         NonEmptyList.of(4 -> treeLike, 1 -> nonTree, 1 -> selfConcat)
       )
+    } yield (e1, e2)
+
+  def genConcat(t1: TypeWith[Result]): GenS[Event[t1.Type]] =
+    for {
+      (e1, e2) <- genPair(t1)
       e3 = e1 ++ e2
       _ <- add(t1.evidence, e3)
     } yield e3
