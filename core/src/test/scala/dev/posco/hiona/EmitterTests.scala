@@ -2,10 +2,17 @@ package dev.posco.hiona
 
 import cats.effect.{ContextShift, IO}
 import fs2.Stream
+import org.scalacheck.Prop
 
 import cats.implicits._
 
-class EmitterTests extends munit.FunSuite {
+class EmitterTests extends munit.ScalaCheckSuite {
+
+  override def scalaCheckTestParameters =
+    super.scalaCheckTestParameters
+      .withMinSuccessfulTests(
+        100
+      ) // a bit slow, but locally, this passes with 10000
 
   implicit val ec = scala.concurrent.ExecutionContext.global
 
@@ -147,5 +154,29 @@ class EmitterTests extends munit.FunSuite {
         }
       }
       .unsafeToFuture()
+  }
+
+  def toFactory(si: Simulator.Inputs): InputFactory[IO] =
+    InputFactory.merge(si.map {
+      case twinput =>
+        val stream: Stream[IO, twinput.Type] =
+          Stream.emits(twinput.evidence.inputs)
+        InputFactory.fromStream(twinput.evidence.source, stream)
+    })
+
+  property("we match the simulator events (when timestamps are distinct)") {
+    Prop.forAllNoShrink(GenEventFeature.genDefault(1000)) {
+      case (inputs, twe) =>
+        val event: Event[twe.Type] = twe.evidence
+
+        val ifac: InputFactory[IO] = toFactory(inputs)
+        val results: List[twe.Type] =
+          Engine.run(ifac, event).compile.toList.unsafeRunSync()
+
+        val simres: List[twe.Type] =
+          Simulator.eventToLazyList(event, inputs).map(_._2).toList
+
+        assertEquals(results, simres)
+    }
   }
 }

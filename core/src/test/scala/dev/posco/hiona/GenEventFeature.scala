@@ -1,6 +1,6 @@
 package dev.posco.hiona
 
-import cats.{Defer, Monad, Monoid, Semigroupal}
+import cats.{Defer, Monad, Monoid, Semigroup, Semigroupal}
 import cats.arrow.FunctionK
 import cats.data.{NonEmptyList, StateT, Tuple2K}
 import org.scalacheck.{Arbitrary, Cogen, Gen}
@@ -43,6 +43,35 @@ object GenEventFeature {
 
   implicit val cogenTimestamp: Cogen[Timestamp] =
     Cogen[Long].contramap { ts: Timestamp => ts.epochMillis }
+
+  val genDuration: Gen[Duration] = {
+    import Duration._
+
+    for {
+      base <- Gen.oneOf(
+        List(millisecond, second, minute, hour, day, week, month, quarter, year)
+      )
+      m <- Gen.choose(0, 10)
+    } yield base * m
+  }
+
+  // this is a non-commutative monoid, useful for testing
+  case class FirstLast[A](first: A, last: A)
+  object FirstLast {
+    implicit def semigroupFirstLast[A]: Semigroup[FirstLast[A]] =
+      new Semigroup[FirstLast[A]] {
+        def combine(left: FirstLast[A], right: FirstLast[A]) =
+          FirstLast(left.first, right.last)
+      }
+
+    implicit def cogenFirstLast[A](implicit cg: Cogen[A]): Cogen[FirstLast[A]] =
+      Cogen.tuple2(cg, cg).contramap[FirstLast[A]] {
+        case FirstLast(a, b) => (a, b)
+      }
+
+    def genFirstLast[A](gen: Gen[A]): Gen[FirstLast[A]] =
+      Gen.zip(gen, gen).map { case (a, b) => FirstLast(a, b) }
+  }
 
   /**
     * This is a concat-map that emits <= the
@@ -262,12 +291,26 @@ object GenEventFeature {
         TypeWith[Tuple2K[Result, Monoid, *], Long]
       )
 
+      // this is a non-commutative monoid
+      val fl =
+        for {
+          res <- genType
+          resFL: Result[Option[FirstLast[res.Type]]] = Result(
+            Cogen.cogenOption(FirstLast.cogenFirstLast(res.evidence.cogen)),
+            Gen.option(FirstLast.genFirstLast(res.evidence.gen))
+          )
+          mon: Monoid[Option[FirstLast[res.Type]]] = Monoid[Option[
+            FirstLast[res.Type]
+          ]]
+          tup = Tuple2K(resFL, mon)
+        } yield TypeWith(tup): TypeWith[Tuple2K[Result, Monoid, *]]
+
       val pair = Gen.lzy(for {
         a <- recur
         b <- recur
       } yield a.product(b))
 
-      Gen.frequency(10 -> Gen.oneOf(prim), 1 -> pair)
+      Gen.frequency(5 -> Gen.oneOf(prim), 1 -> fl, 1 -> pair)
     }
 
   def genEvent(t: TypeWith[Result]): GenS[Event[t.Type]] = {
@@ -297,6 +340,14 @@ object GenEventFeature {
 
     val concat = Defer[GenS].defer(genConcat(t))
 
+    val kv =
+      for {
+        k <- lift(genType)
+        v <- lift(genType)
+        ev <- genEvent2(k, v)
+        evt <- genMap(k.product(v), t)(ev)
+      } yield evt
+
     frequencyS(
       NonEmptyList.of(
         1 -> Monad[GenS].pure(Event.Empty),
@@ -304,8 +355,57 @@ object GenEventFeature {
         3 -> map,
         3 -> Defer[GenS].defer(genFilter(t)),
         3 -> Defer[GenS].defer(genWithTime(t)),
+        1 -> kv,
         1 -> concatMap,
         1 -> concat // this can cause the graphs to get huge, this probability needs to be small
+      )
+    )
+  }
+
+  def genFeature(
+      k: TypeWith[Result],
+      v: TypeWith[Result]
+  ): GenS[Feature[k.Type, v.Type]] = {
+    val genSum: GenS[Feature[k.Type, v.Type]] =
+      for {
+        v0 <- lift(genMonoidType)
+        monV0: Monoid[v0.Type] = v0.evidence.second
+        resV0: Result[v0.Type] = v0.evidence.first
+        ev <- genEvent2(k, TypeWith(resV0))
+        fn: Function1[v0.Type, v.Type] <- lift(
+          Gen.function1(v.evidence.gen)(resV0.cogen)
+        )
+      } yield ev.sum(monV0).map(fn)
+
+    def cogenOpt[A](implicit cg: Cogen[A]): Cogen[Option[A]] =
+      implicitly
+
+    val genLatest: GenS[Feature[k.Type, v.Type]] =
+      for {
+        v0 <- lift(genType)
+        dur <- lift(genDuration)
+        ev <- genEvent2(k, v0)
+        fn: Function1[Option[v0.Type], v.Type] <- lift(
+          Gen.function1(v.evidence.gen)(cogenOpt(v0.evidence.cogen))
+        )
+      } yield ev.latest(dur).map(fn)
+
+    val genZip: GenS[Feature[k.Type, v.Type]] =
+      for {
+        v0 <- lift(genType)
+        v1 <- lift(genType)
+        f1 <- genFeature(k, v0)
+        f2 <- genFeature(k, v1)
+        fn: Function1[(v0.Type, v1.Type), v.Type] <- lift(
+          Gen.function1(v.evidence.gen)(v0.product(v1).evidence.cogen)
+        )
+      } yield f1.zip(f2).map(fn)
+
+    frequencyS(
+      NonEmptyList.of(
+        5 -> genSum,
+        5 -> genLatest,
+        1 -> genZip
       )
     )
   }
@@ -316,9 +416,41 @@ object GenEventFeature {
   ): GenS[Event[(k.Type, v.Type)]] = {
     // it could just be a regular pair
     val pair = Defer[GenS].defer(genEvent(k.product(v)))
-    // or we could have done a lookup of a feature, and mapped the values...
-    // but we don't have feature generation yet
-    pair
+
+    val genLookup =
+      for {
+        v0 <- lift(genType)
+        v1 <- lift(genType)
+        ev <- genEvent2(k, v0)
+        feat <- genFeature(k, v1)
+        pre = ev.preLookup(feat)
+        post = ev.postLookup(feat)
+        ev1 <- lift(Gen.oneOf(pre, post))
+        fn: Function1[(v0.Type, v1.Type), v.Type] <- lift(
+          Gen.function1(v.evidence.gen)(v0.product(v1).evidence.cogen)
+        )
+        ev2 = ev1.mapValues(fn)
+        _ <- add(k.product(v).evidence, ev2)
+      } yield ev2
+
+    val mapValues =
+      for {
+        v0 <- lift(genType)
+        ev <- genEvent2(k, v0)
+        fn: Function1[v0.Type, v.Type] <- lift(
+          Gen.function1(v.evidence.gen)(v0.evidence.cogen)
+        )
+        ev2 = ev.mapValues(fn)
+        _ <- add(k.product(v).evidence, ev2)
+      } yield ev2
+
+    frequencyS(
+      NonEmptyList.of(
+        4 -> pair,
+        3 -> genLookup,
+        1 -> mapValues
+      )
+    )
   }
 
   val genSEventTW: GenS[TypeWith[ResultEv]] =
@@ -365,6 +497,13 @@ object GenEventFeature {
 
   val genEventTW: Gen[TypeWith[Event]] =
     genSrcsAndEventTW.map(_._2.mapK(ResultEv.toEvent))
+
+  def genDefault(targetSize: Int): Gen[(Simulator.Inputs, TypeWith[Event])] =
+    GenEventFeature
+      .genSrcsSizedAndEvent(Gen.const(targetSize))
+      .map {
+        case (i, twev) => (i, twev.mapK(GenEventFeature.ResultEv.toEvent))
+      }
 
   def add[A](res: Result[A], ev: Event[A]): GenS[Unit] =
     StateT.modify(h =>

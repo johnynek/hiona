@@ -11,6 +11,8 @@ class EventLaws extends munit.ScalaCheckSuite {
         100
       ) // a bit slow, but locally, this passes with 10000
 
+  val gen100 = GenEventFeature.genDefault(100)
+
   property("Simulator.merge is correct") {
     Prop.forAll { (l1: List[Int], l2: List[Int]) =>
       val l3 = (l1 reverse_::: l2).sorted
@@ -163,15 +165,7 @@ class EventLaws extends munit.ScalaCheckSuite {
   }
 
   property("Event.withTime Simulator works") {
-
-    val genFn: Gen[(Simulator.Inputs, TypeWith[Event])] =
-      GenEventFeature
-        .genSrcsSizedAndEvent(Gen.const(100))
-        .map {
-          case (i, twev) => (i, twev.mapK(GenEventFeature.ResultEv.toEvent))
-        }
-
-    Prop.forAllNoShrink(genFn) {
+    Prop.forAllNoShrink(gen100) {
       case (inputs, twev) =>
         val ev: Event[twev.Type] = twev.evidence
 
@@ -258,14 +252,7 @@ class EventLaws extends munit.ScalaCheckSuite {
   }
 
   property("we are sorted by timestamp at the end") {
-    val genFn: Gen[(Simulator.Inputs, TypeWith[Event])] =
-      GenEventFeature
-        .genSrcsSizedAndEvent(Gen.const(100))
-        .map {
-          case (i, twev) => (i, twev.mapK(GenEventFeature.ResultEv.toEvent))
-        }
-
-    Prop.forAllNoShrink(genFn) {
+    Prop.forAllNoShrink(gen100) {
       case (inputs, twev) =>
         val ev: Event[twev.Type] = twev.evidence
 
@@ -412,14 +399,7 @@ class EventLaws extends munit.ScalaCheckSuite {
     "x.asKeys.preLookup(x.asKeys.latest) can be used to dedup for Simulator"
   ) {
 
-    val genFn: Gen[(Simulator.Inputs, TypeWith[Event])] =
-      GenEventFeature
-        .genSrcsSizedAndEvent(Gen.const(100))
-        .map {
-          case (i, twev) => (i, twev.mapK(GenEventFeature.ResultEv.toEvent))
-        }
-
-    Prop.forAllNoShrink(genFn) {
+    Prop.forAllNoShrink(gen100) {
       case (inputs, twev) =>
         val ev: Event[twev.Type] = twev.evidence
         val atMostOne = Event.amplificationOf(ev).atMostOne
