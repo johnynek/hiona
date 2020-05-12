@@ -186,17 +186,25 @@ object Simulator {
         { (p, k) => cast((llu(p, k), rlu(p, k))) }
     }
 
+  def mergeIterators[A](left: Iterator[A], right: Iterator[A])(
+      implicit ord: Ordering[A]
+  ): Iterator[A] =
+    new Iterator[A] {
+      val lb = left.buffered
+      val rb = right.buffered
+      def hasNext: Boolean = lb.hasNext || rb.hasNext
+
+      def next(): A =
+        if (lb.hasNext) {
+          if (rb.hasNext) {
+            if (ord.lteq(lb.head, rb.head)) lb.next
+            else rb.next
+          } else lb.next
+        } else rb.next
+    }
+
   def merge[A](left: LazyList[A], right: LazyList[A])(
       implicit ord: Ordering[A]
   ): LazyList[A] =
-    left match {
-      case lh #:: lt =>
-        right match {
-          case rh #:: rt =>
-            if (ord.lteq(lh, rh)) lh #:: merge(lt, right)
-            else rh #:: merge(left, rt)
-          case LazyList() => left
-        }
-      case LazyList() => right
-    }
+    mergeIterators(left.iterator, right.iterator).to(LazyList)
 }

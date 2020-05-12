@@ -5,7 +5,7 @@ object Dependencies {
   val aws1 = "com.amazonaws"
 
   object V {
-    val munit = "0.7.5"
+    val munit = "0.7.6"
     val jawn = "1.0.0"
     val fs2 = "2.3.0"
   }

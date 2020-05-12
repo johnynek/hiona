@@ -184,6 +184,22 @@ object Event {
     loop(ev).distinct.reduceOption(_ ++ _).getOrElse(Empty)
   }
 
+  def amplificationOf[A](ev: Event[A]): Amplification =
+    ev match {
+      case Empty           => Amplification.Zero
+      case Source(_, _, _) => Amplification.One
+      case Concat(left, right) =>
+        amplificationOf(left) + amplificationOf(right)
+      case Lookup(ev, _, _) => amplificationOf(ev)
+      case ConcatMapped(ev, _) =>
+        amplificationOf(ev) * Amplification.ZeroOrMore
+      case Filtered(ev, _, _) =>
+        amplificationOf(ev) * Amplification.ZeroOrOne
+      case ns: NonSource[_] =>
+        // otherwise it is 1 in 1 out
+        amplificationOf(ns.previous)
+    }
+
   case class Mapped[A, B](init: Event[A], fn: A => B) extends NonSource[B] {
     type Prior = A
     def previous = init

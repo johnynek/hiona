@@ -4,12 +4,25 @@ import cats.Monoid
 import org.scalacheck.{Gen, Prop}
 
 class EventLaws extends munit.ScalaCheckSuite {
-  //override val scalaCheckInitialSeed = "8kBVxnoHroJcUD_o3PtlArVORcUgZeOPifCkgtI_mNN="
+  //override val scalaCheckInitialSeed = "A3thV6W0_1wDjBOi4dHhs9mmpZf9VCYS6xol9HUXbDM="
   override def scalaCheckTestParameters =
     super.scalaCheckTestParameters
       .withMinSuccessfulTests(
-        50
-      ) // a bit slow, but locally, this passes with 1000
+        100
+      ) // a bit slow, but locally, this passes with 10000
+
+  property("Simulator.merge is correct") {
+    Prop.forAll { (l1: List[Int], l2: List[Int]) =>
+      val l3 = (l1 reverse_::: l2).sorted
+      val l3m =
+        Simulator.mergeIterators(l1.sorted.iterator, l2.sorted.iterator).toList
+      val l3ll =
+        Simulator.merge(l1.sorted.to(LazyList), l2.sorted.to(LazyList)).toList
+
+      assertEquals(l3m, l3)
+      assertEquals(l3ll, l3)
+    }
+  }
 
   property("Event.triggersOf has the same sources") {
     Prop.forAll(GenEventFeature.genEventTW) { tw =>
@@ -176,6 +189,15 @@ class EventLaws extends munit.ScalaCheckSuite {
     }
   }
 
+  def assertUnorderedEq[A](left: List[A], right: List[A]): Prop = {
+    val leftMap = left.groupBy(identity).map { case (k, v)   => (k, v.size) }
+    val rightMap = right.groupBy(identity).map { case (k, v) => (k, v.size) }
+
+    assertEquals(leftMap, rightMap)
+
+    Prop(leftMap == rightMap)
+  }
+
   property("(x ++ x) == x.concatMap { y => List(y, y) } for Simulator") {
 
     val genFn: Gen[(Simulator.Inputs, TypeWith[Event])] =
@@ -195,9 +217,7 @@ class EventLaws extends munit.ScalaCheckSuite {
         val mapped =
           Simulator.eventToLazyList(ev.concatMap(y => List(y, y)), inputs)
 
-        assertEquals(mapped, unmapped)
-
-        Prop(mapped == unmapped)
+        assertUnorderedEq(mapped.toList, unmapped.toList)
     }
   }
 
@@ -257,6 +277,30 @@ class EventLaws extends munit.ScalaCheckSuite {
     }
   }
 
+  property("amplification is accurate") {
+    val genFn: Gen[(Simulator.Inputs, TypeWith[Event])] =
+      GenEventFeature
+        .genSrcsSizedAndEvent(Gen.const(1)) // put a single event
+        .map {
+          case (i, twev) => (i, twev.mapK(GenEventFeature.ResultEv.toEvent))
+        }
+
+    Prop.forAllNoShrink(genFn) {
+      case (inputs, twev) =>
+        if ((inputs.size == 1) && (inputs.head.evidence.inputs.nonEmpty)) {
+          // only one source
+          val ev: Event[twev.Type] = twev.evidence
+          val amp = Event.amplificationOf(ev)
+
+          val res = Simulator.eventToLazyList(ev, inputs).size
+
+          assert(amp(res), s"$amp: $res")
+          Prop(amp(res))
+
+        } else Prop(true)
+    }
+  }
+
   property("kvs.postLookup(kvs.latest)... should be identity Simulator") {
 
     import GenEventFeature.{genEvent2, genMonad, genType, genWithSizedSrc, lift}
@@ -272,25 +316,28 @@ class EventLaws extends munit.ScalaCheckSuite {
     Prop.forAllNoShrink(genFn) {
       case (inputs, twev) =>
         val ev: Event[(twev.Type1, twev.Type2)] = twev.evidence
+        val amp = Event.amplificationOf(ev)
 
-        val ev1 = ev
-          .postLookup(ev.latest(Duration.Infinite))
-          .map {
-            case (k, (v, None)) =>
-              sys.error(s"expected after to find a value: $k $v")
-            case (k, (v, Some(w))) =>
-              assertEquals(w, v)
-              (k, v)
-          }
+        if (amp.atMostOne) {
+          val ev1 = ev
+            .postLookup(ev.latest(Duration.Infinite))
+            .map {
+              case (k, (v, None)) =>
+                sys.error(s"expected after to find a value: $k $v")
+              case (k, (v, Some(w))) =>
+                assertEquals(w, v)
+                (k, v)
+            }
 
-        val kres =
-          Simulator.eventToLazyList(ev, inputs).toList
+          val kres =
+            Simulator.eventToLazyList(ev, inputs).toList
 
-        val kres1 =
-          Simulator.eventToLazyList(ev1, inputs).toList
+          val kres1 =
+            Simulator.eventToLazyList(ev1, inputs).toList
 
-        assertEquals(kres1, kres)
-        Prop(kres == kres1)
+          assertEquals(kres1, kres)
+          Prop(kres == kres1)
+        } else Prop(true)
     }
   }
 
@@ -327,40 +374,40 @@ class EventLaws extends munit.ScalaCheckSuite {
         val (ev, monoid): (Event[(twev.Type1, twev.Type2)], Monoid[twev.Type2]) =
           twev.evidence
 
-        val ev1 = ev
-          .postLookup(ev.sum(monoid))
-          .mapValues(_._2)
+        val atMostOne = Event.amplificationOf(ev).atMostOne
 
-        def summed[T, K, V](
-            kvs: LazyList[(T, (K, V))],
-            acc: Map[K, V],
-            monoid: Monoid[V]
-        ): LazyList[(T, (K, V))] =
-          kvs match {
-            case (t, (k, v)) #:: tail =>
-              val vsum = acc.get(k) match {
-                case Some(v0) => monoid.combine(v0, v)
-                case None     => v
-              }
-              val acc1 = acc.updated(k, vsum)
-              (t, (k, vsum)) #:: summed(tail, acc1, monoid)
-            case LazyList() => LazyList()
-          }
+        if (atMostOne) {
+          val ev1 = ev
+            .postLookup(ev.sum(monoid))
+            .mapValues(_._2)
 
-        val list0 = Simulator.eventToLazyList(ev, inputs)
-        val list1 = Simulator.eventToLazyList(ev1, inputs)
+          def summed[T, K, V](
+              kvs: LazyList[(T, (K, V))],
+              acc: Map[K, V],
+              monoid: Monoid[V]
+          ): LazyList[(T, (K, V))] =
+            kvs match {
+              case (t, (k, v)) #:: tail =>
+                val vsum = acc.get(k) match {
+                  case Some(v0) => monoid.combine(v0, v)
+                  case None     => v
+                }
+                val acc1 = acc.updated(k, vsum)
+                (t, (k, vsum)) #:: summed(tail, acc1, monoid)
+              case LazyList() => LazyList()
+            }
 
-        val summed0 = summed(list0, Map.empty, monoid)
+          val list0 = Simulator.eventToLazyList(ev, inputs)
+          val list1 = Simulator.eventToLazyList(ev1, inputs)
 
-        assertEquals(list1, summed0)
-        Prop(list1 == summed0)
+          val summed0 = summed(list0, Map.empty, monoid)
+
+          assertEquals(list1, summed0)
+          Prop(list1 == summed0)
+        } else Prop(true)
     }
   }
 
-  /* This is not yet passing...
-   * this law puts very serious constraints on preLookup... but it
-   * does make clear that the semantics of prelookup are unclear.
-   */
   property(
     "x.asKeys.preLookup(x.asKeys.latest) can be used to dedup for Simulator"
   ) {
@@ -375,32 +422,37 @@ class EventLaws extends munit.ScalaCheckSuite {
     Prop.forAllNoShrink(genFn) {
       case (inputs, twev) =>
         val ev: Event[twev.Type] = twev.evidence
+        val atMostOne = Event.amplificationOf(ev).atMostOne
 
-        val keys = ev.asKeys
+        if (atMostOne) {
+          val keys = ev.asKeys
 
-        val dedup = keys
-          .preLookup(keys.latest(Duration.Infinite))
-          .concatMap {
-            case (k, (_, None))    => k :: Nil
-            case (_, (_, Some(_))) => Nil
-          }
+          val dedup = keys
+            .preLookup(keys.latest(Duration.Infinite))
+            .concatMap {
+              case (k, (_, None))    => k :: Nil
+              case (_, (_, Some(_))) => Nil
+            }
 
-        val ddres =
-          Simulator
-            .eventToLazyList(dedup, inputs)
-            .map(_._2)
-            .toList
+          val ddres =
+            Simulator
+              .eventToLazyList(dedup, inputs)
+              .map(_._2)
+              .toList
 
-        val dedupedList =
-          Simulator
-            .eventToLazyList(ev, inputs)
-            .map(_._2)
-            .toList
-            .distinct
+          val dedupedList =
+            Simulator
+              .eventToLazyList(ev, inputs)
+              .map(_._2)
+              .toList
+              .distinct
 
-        assertEquals(ddres, dedupedList)
-        Prop(ddres == dedupedList)
+          assertEquals(ddres, dedupedList)
+          Prop(ddres == dedupedList)
+        } else {
+          // with concatMap which can amplify outputs, we might not have exact deduplication
+          Prop(true)
+        }
     }
   }
-
 }

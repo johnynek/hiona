@@ -59,15 +59,14 @@ object GenEventFeature {
     // 2y = (1/2)/(1 - (1/2))^2 = 4/2 = 2
     // y = 1
     val expSize: Gen[Int] =
-      Defer[Gen]
-        .fix[Int] { rec =>
-          Gen
-            .oneOf(false, true)
-            .flatMap {
-              case false => 0
-              case true  => rec.map(_ + 1)
-            }
-        }
+      Gen.tailRecM(0) { size =>
+        Gen
+          .oneOf(false, true)
+          .map {
+            case false => Right(size)
+            case true  => Left(size + 1)
+          }
+      }
 
     val bList: Gen[List[B]] =
       expSize.flatMap(Gen.listOfN(_, gen))
@@ -143,24 +142,30 @@ object GenEventFeature {
     def genInputData(size: Int): Gen[InputData[A]] = {
       def genItems(
           size: Int,
-          tail: List[(A, Timestamp)]
+          maxTrials: Int
       ): Gen[List[(A, Timestamp)]] =
-        Gen
-          .listOfN(size, result.gen)
-          .flatMap { as =>
-            val valids = as
-              .map(a => src.validator.validate(a).map((a, _)))
-              .collect { case Right(good) => good }
-
-            val nextTail = valids reverse_::: tail
-            val missing = size - valids.size
-            if (missing == 0) Gen.const(nextTail)
+        Gen.tailRecM((size, maxTrials, List.empty[(A, Timestamp)])) {
+          case (size, maxTrials, tail) =>
+            if (maxTrials <= 0) Gen.const(Right(tail))
             else {
-              genItems(missing, nextTail)
-            }
-          }
+              Gen
+                .listOfN(size, result.gen)
+                .map { as =>
+                  val valids = as
+                    .map(a => src.validator.validate(a).map((a, _)))
+                    .collect { case Right(good) => good }
 
-      genItems(size, Nil)
+                  val nextTail = valids reverse_::: tail
+                  val missing = size - valids.size
+                  if (missing == 0) Right(nextTail)
+                  else {
+                    Left((missing, maxTrials - 1, nextTail))
+                  }
+                }
+            }
+        }
+
+      genItems(size, size)
         .map { data0 =>
           val data = distinctBy(data0)(_._2)
           val sorted = data.sortBy(_._2)
@@ -233,12 +238,15 @@ object GenEventFeature {
   val genSrcType: Gen[TypeWith[RowResult]] =
     Defer[Gen].fix[TypeWith[RowResult]] { recur =>
       Gen.frequency(
-        primTypes.size -> Gen.oneOf(primTypes),
+        2 * primTypes.size -> Gen.oneOf(primTypes),
         1 -> Gen.zip(recur, recur).map { case (a, b) => a.product(b) }
       )
     }
 
   val genType: Gen[TypeWith[Result]] =
+    // size = (1-p) * s0 + p * 2 * size
+    // size = (1-p) * s0 / (1 - 2*p)
+    // so we need p << 1/2 to avoid diverging
     Defer[Gen].fix[TypeWith[Result]] { recur =>
       Gen.frequency(
         10 -> genSrcType.map(_.mapK(RowResult.toResult)),
@@ -259,7 +267,7 @@ object GenEventFeature {
         b <- recur
       } yield a.product(b))
 
-      Gen.frequency(3 -> Gen.oneOf(prim), 1 -> pair)
+      Gen.frequency(10 -> Gen.oneOf(prim), 1 -> pair)
     }
 
   def genEvent(t: TypeWith[Result]): GenS[Event[t.Type]] = {
@@ -294,9 +302,9 @@ object GenEventFeature {
         1 -> Monad[GenS].pure(Event.Empty),
         10 -> src,
         3 -> map,
+        3 -> Defer[GenS].defer(genFilter(t)),
+        3 -> Defer[GenS].defer(genWithTime(t)),
         1 -> concatMap,
-        1 -> Defer[GenS].defer(genFilter(t)),
-        1 -> Defer[GenS].defer(genWithTime(t)),
         1 -> concat // this can cause the graphs to get huge, this probability needs to be small
       )
     )
