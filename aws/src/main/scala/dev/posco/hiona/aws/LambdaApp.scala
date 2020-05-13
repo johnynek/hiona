@@ -140,18 +140,22 @@ class S3App extends GenApp {
         }
     }
 
+  def read[A](input: S3Addr, row: Row[A], blocker: Blocker)(
+      implicit ctx: ContextShift[IO]
+  ): fs2.Stream[IO, A] =
+    awsIO
+      .readStream[IO](input, 1 << 16, blocker)
+      .through(fs2.text.utf8Decode)
+      .through(Row.decodeFromCSV[IO, A](row, skipHeader = true))
+
   def inputFactory[E[_]: Emittable, A](
       inputs: Iterable[(String, S3Addr)],
       e: E[A],
       blocker: Blocker
   )(implicit ctx: ContextShift[IO]): InputFactory[IO] =
     InputFactory.fromMany(inputs, e) { (src, s3path) =>
-      def go[T](src: Event.Source[T]) = {
-        val is = awsIO.readStream[IO](s3path, 1 << 16, blocker)
-        val toT = fs2.text.utf8Decode
-          .andThen(Row.decodeFromCSV[IO, T](src.row, skipHeader = true))
-        InputFactory.fromStream(src, toT(is))
-      }
+      def go[T](src: Event.Source[T]) =
+        InputFactory.fromStream[IO, T](src, read(s3path, src.row, blocker))
 
       go(src)
     }

@@ -1,6 +1,6 @@
 package dev.posco.hiona
 
-import cats.effect.{IO, Resource}
+import cats.effect.{Blocker, ContextShift, IO, Resource, Sync}
 import fs2.{Chunk, Pipe, Pull, RaiseThrowable, Stream}
 import java.io.{
   BufferedWriter,
@@ -475,6 +475,16 @@ object Row extends Priority0Rows {
 
     { strings => loop(dp, strings).stream }
   }
+
+  def csvToStream[F[_]: Sync: ContextShift, A: Row](
+      path: Path,
+      skipHeader: Boolean,
+      blocker: Blocker
+  ): Stream[F, A] =
+    Fs2Tools
+      .fromPath[F](path, 1 << 16, blocker)
+      .through(fs2.text.utf8Decode)
+      .through(decodeFromCSV[F, A](implicitly[Row[A]], skipHeader))
 
   case class Coproduct1Row[A](rowA: Row[A]) extends Row[A :+: CNil] {
     val columns = rowA.columns

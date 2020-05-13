@@ -51,6 +51,7 @@ lazy val core = (project in file("core"))
       delimited,
       decline,
       doobie,
+      diffx,
       fs2,
       fs2io,
       shapeless,

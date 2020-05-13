@@ -5,7 +5,7 @@ object Dependencies {
   val aws1 = "com.amazonaws"
 
   object V {
-    val munit = "0.7.6"
+    val munit = "0.7.7"
     val jawn = "1.0.0"
     val fs2 = "2.3.0"
   }
@@ -18,6 +18,7 @@ object Dependencies {
   lazy val catsEffect = typelevel %% "cats-effect" % "2.1.2"
   lazy val decline = "com.monovore" %% "decline" % "1.0.0"
   lazy val delimited = "net.tixxit" %% "delimited-core" % "0.10.0"
+  lazy val diffx = "com.softwaremill.diffx" %% "diffx-core" % "0.3.28"
   lazy val doobie = "org.tpolecat" %% "doobie-core" % "0.9.0"
   lazy val fs2 = "co.fs2" %% "fs2-core" % V.fs2
   lazy val fs2io = "co.fs2" %% "fs2-io" % V.fs2

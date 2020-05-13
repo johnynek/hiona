@@ -53,6 +53,13 @@ object App extends GenApp {
   )(implicit ctx: ContextShift[IO]): InputFactory[IO] =
     InputFactory.fromPaths(inputs, e, blocker)
 
+  def read[A](input: Ref, row: Row[A], blocker: Blocker)(
+      implicit ctx: ContextShift[IO]
+  ): Stream[IO, A] = {
+    implicit val ir = row
+    Row.csvToStream[IO, A](input, skipHeader = true, blocker)
+  }
+
   def writer[A](
       output: Path,
       row: Row[A]
@@ -62,6 +69,8 @@ object App extends GenApp {
 
 sealed abstract class Args {
   def sources: Map[String, Set[Event.Source[_]]]
+
+  def typeWithRow: TypeWith[Row]
 }
 
 object Args {
@@ -76,6 +85,8 @@ object Args {
 
     def sources: Map[String, Set[Event.Source[_]]] =
       Event.sourcesOf(event)
+
+    def typeWithRow: TypeWith[Row] = TypeWith(row)
   }
 
   final case class LabeledArgs[A](
@@ -86,6 +97,8 @@ object Args {
       row.columnNames(0)
     def sources: Map[String, Set[Event.Source[_]]] =
       LabeledEvent.sourcesOf(labeled)
+
+    def typeWithRow: TypeWith[Row] = TypeWith(row)
   }
 }
 
@@ -94,6 +107,10 @@ abstract class GenApp { self =>
   implicit def argumentForRef: Argument[Ref]
 
   def writer[A](output: Ref, row: Row[A]): Resource[IO, Iterator[A] => IO[Unit]]
+
+  def read[A](input: Ref, row: Row[A], blocker: Blocker)(
+      implicit ctx: ContextShift[IO]
+  ): Stream[IO, A]
 
   def inputFactory[E[_]: Emittable, A](
       inputs: Iterable[(String, Ref)],
@@ -424,6 +441,7 @@ abstract class GenApp { self =>
       } yield ExitCode.Success
     }
   }
+
   private val sortCmd: Command[SortCmd] =
     Command(
       "sort",
@@ -439,9 +457,96 @@ abstract class GenApp { self =>
       ).mapN(SortCmd(_, _))
     }
 
+  case class DiffCmd(
+      input1: Ref,
+      input2: Ref,
+      output: Option[Ref],
+      limitIn: Option[Int],
+      limit: Option[Int]
+  ) extends Cmd {
+    def run(args: Args, blocker: Blocker)(
+        implicit ctx: ContextShift[IO]
+    ): IO[ExitCode] = {
+      val twRow = args.typeWithRow
+
+      val s1: Stream[IO, twRow.Type] = read(input1, twRow.evidence, blocker)
+      val s2: Stream[IO, twRow.Type] = read(input2, twRow.evidence, blocker)
+
+      def toList[A](a: A, row: Row[A]): List[String] = {
+        val ary = new Array[String](row.columns)
+        row.writeToStrings(a, 0, ary)
+        ary.toList
+      }
+
+      val both = s1.zip(s2)
+      val bothLimit = limitIn.fold(both)(both.take(_)).zipWithIndex
+      val diffs = bothLimit.filter { case ((a, b), _) => a != b }
+      val diffLimit = limit.fold(diffs)(diffs.take(_))
+
+      import com.softwaremill.diffx.{ConsoleColorConfig => CCC}
+      implicit val cc = output match {
+        case Some(_) =>
+          // don't colorize
+          CCC(identity, identity, identity, identity)
+        case None =>
+          CCC.default
+      }
+
+      val diffStrings = diffLimit.zipWithIndex.map {
+        case (((a, b), idx), diffidx) =>
+          import com.softwaremill.diffx._
+          val aList = toList(a, twRow.evidence)
+          val bList = toList(b, twRow.evidence)
+
+          case class Col(column: Int, value: String)
+          val diffIdx = aList
+            .zip(bList)
+            .zipWithIndex
+            .collect { case ((a, b), col) if a != b => col }
+            .toSet
+
+          def toCol(ls: List[String]): List[Col] =
+            ls.zipWithIndex
+              .filter { case (_, idx) => diffIdx(idx) }
+              .map { case (s, idx) => Col(idx, s) }
+
+          val diffAB =
+            compare(toCol(aList), toCol(bList)).show
+
+          s"diff $diffidx from line $idx\n$diffAB\n"
+      }
+
+      val wres = output match {
+        case Some(path) => writer(path, implicitly[Row[String]])
+        case None =>
+          Resource.liftF(IO { (strs: Iterator[String]) =>
+            IO(strs.foreach(println))
+          })
+      }
+
+      Fs2Tools.sinkStream(diffStrings, wres).compile.drain.as(ExitCode.Success)
+    }
+  }
+
+  private val diffCmd: Command[DiffCmd] =
+    Command("diff", "compare two csv files and print any differences") {
+      (
+        Opts.argument[Ref]("input1"),
+        Opts.argument[Ref]("input2"),
+        Opts.option[Ref]("output", "path to write").orNone,
+        Opts
+          .option[Int]("limit_in", "maximum number of input rows to consider")
+          .orNone,
+        Opts
+          .option[Int]("limit", "maximum number of events to write out")
+          .orNone
+      ).mapN(DiffCmd(_, _, _, _, _))
+    }
+
   val command: Command[Cmd] =
     Command("hiona", "feature engineering system") {
       Opts.subcommands(
+        diffCmd,
         runCmd,
         showCmd,
         sortCmd

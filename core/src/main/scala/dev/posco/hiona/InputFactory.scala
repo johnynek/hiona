@@ -146,16 +146,8 @@ object InputFactory {
       blocker: Blocker,
       skipHeader: Boolean = true
   ): InputFactory[F] = {
-    val decoded: Stream[F, T] = {
-      val bytes = Fs2Tools.fromPath[F](path, 1 << 16, blocker)
-      val toT =
-        fs2.text.utf8Decode
-          .andThen(Row.decodeFromCSV[F, T](ev.row, skipHeader))
-
-      toT(bytes)
-    }
-
-    fromStream(ev, decoded)
+    implicit val ir = ev.row
+    fromStream(ev, Row.csvToStream[F, T](path, skipHeader, blocker))
   }
 
   def fromStream[F[_], T](ev: Event.Source[T], stream: Stream[F, T])(
