@@ -105,7 +105,7 @@ abstract class GenApp { self =>
     strm
       .chunkMin(1024)
       .flatMap(Stream.chunk(_))
-      .prefetchN(10)
+      .prefetchN(1)
   }
 
   def run(

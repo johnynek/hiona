@@ -31,12 +31,31 @@ sealed abstract class Event[+A] {
   final def ++[A1 >: A](that: Event[A1]): Event[A1] =
     Event.Concat(this, that)
 
+  /**
+    * convert this event value to a tuple with the current value
+    * as the key. Useful for doing pre/postLookup
+    */
   final def asKeys: Event[(A, Unit)] =
     map(Event.ToKey())
+
+  /**
+    * convenience function for applying resuable transformations
+    * to inputs:
+    *
+    * pipe
+    *   .through(dedup)
+    *   .through(attachCounts)
+    *
+    * where dedup and attachCounts can be some library functions
+    * you keep to apply to many different inputs.
+    */
+  final def through[B](fn: Event.Pipe[A, B]): Event[B] =
+    fn(this)
 }
 
 object Event {
   type Keyed[A, B] = Event[(A, B)]
+  type Pipe[-A, +B] = Function1[Event[A], Event[B]]
 
   sealed trait NonSource[+A] extends Event[A] {
     type Prior
