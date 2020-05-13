@@ -1,11 +1,7 @@
 package dev.posco.hiona
 
-import cats.effect.IO
-
-import Engine.Emitter
-
 sealed trait Emittable[F[_]] {
-  def from[A](f: F[A]): IO[Emitter[A]]
+  def toEither[A](f: F[A]): Either[LabeledEvent[A], Event[A]]
   def sourcesAndOffsetsOf[A](
       f: F[A]
   ): Map[String, (Set[Event.Source[_]], Set[Duration])]
@@ -16,7 +12,8 @@ object Emittable {
 
   implicit val eventIsEmittable: Emittable[Event] =
     new Emittable[Event] {
-      def from[A](ev: Event[A]) = Emitter.fromEvent(ev)
+      def toEither[A](f: Event[A]): Either[LabeledEvent[A], Event[A]] =
+        Right(f)
       def sourcesAndOffsetsOf[A](
           f: Event[A]
       ): Map[String, (Set[Event.Source[_]], Set[Duration])] = {
@@ -27,7 +24,8 @@ object Emittable {
 
   implicit val labeledEventIsEmittable: Emittable[LabeledEvent] =
     new Emittable[LabeledEvent] {
-      def from[A](ev: LabeledEvent[A]) = Emitter.fromLabeledEvent(ev)
+      def toEither[A](f: LabeledEvent[A]): Either[LabeledEvent[A], Event[A]] =
+        Left(f)
       def sourcesAndOffsetsOf[A](
           f: LabeledEvent[A]
       ): Map[String, (Set[Event.Source[_]], Set[Duration])] =

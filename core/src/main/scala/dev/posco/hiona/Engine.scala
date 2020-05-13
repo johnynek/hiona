@@ -20,7 +20,7 @@ object Engine {
   ): Stream[F, A] = {
     val inputs = inputFactory.allInputs(ev)
 
-    val ioEmit = Emittable[E].from(ev)
+    val ioEmit = Emitter.from(ev)
     Stream
       .eval(LiftIO[F].liftIO(ioEmit))
       .flatMap(emit => runStream[F, A](inputs, emit))
@@ -86,6 +86,12 @@ object Engine {
   }
 
   object Emitter {
+
+    def from[F[_], A](ev: F[A])(implicit em: Emittable[F]): IO[Emitter[A]] =
+      em.toEither(ev) match {
+        case Right(ev) => fromEvent(ev)
+        case Left(lev) => fromLabeledEvent(lev)
+      }
 
     def fromEvent[A](ev: Event[A]): IO[Emitter[A]] =
       Impl
