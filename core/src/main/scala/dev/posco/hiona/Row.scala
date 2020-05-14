@@ -211,17 +211,13 @@ object Row extends Priority0Rows {
 
   implicit case object FloatRow extends NumberRow[Float]("Float") {
     def fromString(s: String) = s.toFloat
+    override def toString(a: Float): String = ryu.RyuFloat.floatToString(a)
   }
 
   implicit case object DoubleRow extends NumberRow[Double]("Double") {
-    private val zeroStr = 0.0.toString
-    private val oneStr = 1.0.toString
-
     def fromString(s: String) = s.toDouble
     override def toString(a: Double): String =
-      if (a == 0.0) zeroStr
-      else if (a == 1.0) oneStr
-      else a.toString
+      ryu.RyuDouble.doubleToString(a)
   }
 
   implicit case object BigIntRow extends NumberRow[BigInt]("BigInt") {
