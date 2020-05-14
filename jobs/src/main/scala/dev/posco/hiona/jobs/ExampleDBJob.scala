@@ -60,4 +60,27 @@ object Databases {
         blocker = blocker,
         hostPort = Some(aws.RDSTransactor.HostPort("127.0.0.1", 54320))
       )
+
+  def rdsPostgres[F[_]: Async](blocker: Blocker)(
+      implicit ctx: ContextShift[F]
+  ): F[aws.RDSTransactor.DatabaseName => doobie.Transactor[F]] =
+    aws.RDSTransactor
+      .build[F](
+        region = "us-west-2",
+        secretName =
+          "rds-db-credentials/cluster-7HHDRW3DZNKNJWJQLJ5QRARUMY/postgres",
+        blocker = blocker,
+      )
+}
+
+class ExampleDBLambdaJob extends aws.LambdaApp(ExampleDBJob.eventArgs) {
+  protected override def buildS3App() = new aws.DBS3App {
+    def dbSupportFactory = ExampleDBJob.dbSupportFactory
+
+    lazy val transactor =
+      Databases
+        .rdsPostgres(blocker)(Async[IO], contextShift)
+        .unsafeRunSync()
+        .apply(Databases.pmdbProd)
+  }
 }

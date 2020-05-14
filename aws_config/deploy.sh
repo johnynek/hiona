@@ -2,7 +2,7 @@
 
 set -e
 
-APP="FinnhubBars"
+APP="ExampleDBJob"
 BUCKET="predictionmachine-data"
 
 sam package --template-file template.yaml --output-template-file package.yml --s3-bucket $BUCKET

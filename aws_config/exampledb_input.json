@@ -1,0 +1,8 @@
+{
+  "body": {
+    "args":
+      [
+        "run", "--output", "s3://predictionmachine-data/temp/example_db_out_lambda.csv", "--logevery", "1h"
+      ]
+    }
+}

@@ -6,7 +6,7 @@ Resources:
     Type: AWS::Serverless::Function
     Properties:
       CodeUri: ../jobs/target/scala-2.13/hiona-jobs-assembly-0.1.0-SNAPSHOT.jar
-      Handler: dev.posco.hiona.jobs.AwsFinnhubBars
+      Handler: dev.posco.hiona.jobs.ExampleDBLambdaJob
       Runtime: java8
       Description: Java function
       MemorySize: 3008
@@ -15,7 +15,9 @@ Resources:
       Policies:
         - AWSLambdaBasicExecutionRole
         - AWSLambdaReadOnlyAccess
-        - AWSXrayWriteOnlyAccess
         - AWSLambdaVPCAccessExecutionRole
+        - AWSXrayWriteOnlyAccess
+        - AmazonRDSFullAccess
         - AmazonS3FullAccess
+        - SecretsManagerReadWrite
       Tracing: Active
