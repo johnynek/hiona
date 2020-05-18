@@ -8,12 +8,27 @@ import com.monovore.decline.Argument
 import java.io.{InputStream, OutputStream}
 import java.nio.channels.Channels
 import java.util.concurrent.Executors
-import org.typelevel.jawn.ast
+import io.circe.{Decoder, HCursor, Json}
 import scala.concurrent.ExecutionContext
 import scala.util.control.NonFatal
 
 import dev.posco.hiona._
 import cats.effect.ExitCode
+
+object LambdaApp {
+  case class BodyArgs(args: List[String])
+
+  object BodyArgs {
+    implicit val bodyArgsDecoder: Decoder[BodyArgs] =
+      new Decoder[BodyArgs] {
+        def apply(c: HCursor): Decoder.Result[BodyArgs] =
+          c.downField("body")
+            .downField("args")
+            .as[List[String]]
+            .map(BodyArgs(_))
+      }
+  }
+}
 
 abstract class LambdaApp(appArgs: Args) extends RequestStreamHandler {
 
@@ -22,29 +37,12 @@ abstract class LambdaApp(appArgs: Args) extends RequestStreamHandler {
   // allocating this initializes s3clients
   private[this] lazy val s3App = buildS3App()
 
-  def parseArgs(input: ast.JValue): Either[String, List[String]] = {
-    val body = input.get("body")
-    val args = body.get("args")
-    args match {
-      case ast.JArray(items) =>
-        var idx = items.length
-        var res: List[String] = Nil
-        while (idx > 0) {
-          idx = idx - 1
-          items(idx) match {
-            case ast.JString(s) =>
-              res = s :: res
-            case _ =>
-              return Left(
-                s"index position: $idx in ${items.toList} expected to be string"
-              )
-          }
-        }
-        Right(res)
-      case other =>
-        Left(s"expected JArray, found: $other")
+  def parseArgs(input: Json): Either[String, List[String]] =
+    input.as[LambdaApp.BodyArgs] match {
+      case Right(LambdaApp.BodyArgs(items)) => Right(items)
+      case Left(err) =>
+        Left(s"body.args to be JArray in top-level $input, got: $err")
     }
-  }
 
   def handleRequest(
       inputStream: InputStream,
@@ -57,7 +55,8 @@ abstract class LambdaApp(appArgs: Args) extends RequestStreamHandler {
       implicit val ctx = s3App.contextShift
 
       val inChannel = Channels.newChannel(inputStream)
-      val jinput: ast.JValue = ast.JParser.parseFromChannel(inChannel).get
+      val jinput: Json =
+        io.circe.jawn.CirceSupportParser.parseFromChannel(inChannel).get
 
       parseArgs(jinput) match {
         case Right(stringArgs) =>
@@ -69,15 +68,15 @@ abstract class LambdaApp(appArgs: Args) extends RequestStreamHandler {
               cmd.run(appArgs, s3App.blocker).unsafeRunSync()
               logger.log(s"INFO: finished run")
               ()
-              val result = ast.JString("done")
-              outputStream.write(result.render().getBytes("US-ASCII"))
+              val result = Json.fromString("done")
+              outputStream.write(result.spaces2.getBytes("UTF-8"))
               ()
             case Left(err) =>
               logger.log(s"ERROR: failed to parse command: $err")
           }
         case Left(msg) =>
           logger.log(
-            s"ERROR: failed to parse input. $msg from: ${jinput.render()}"
+            s"ERROR: failed to parse input. $msg from: ${jinput.spaces2}"
           )
       }
     } catch {

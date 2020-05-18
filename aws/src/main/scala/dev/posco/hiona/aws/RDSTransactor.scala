@@ -7,6 +7,19 @@ import cats.implicits._
 
 object RDSTransactor {
   case class HostPort(host: String, port: Int)
+  object HostPort {
+    import io.circe._, io.circe.generic.semiauto._
+
+    implicit val hostPortDecoder: Decoder[HostPort] = deriveDecoder[HostPort]
+  }
+
+  case class AuthInfo(username: String, password: String)
+  object AuthInfo {
+    import io.circe._, io.circe.generic.semiauto._
+
+    implicit val authInfoDecoder: Decoder[AuthInfo] = deriveDecoder[AuthInfo]
+  }
+
   case class DatabaseName(asString: String)
 
   def build[F[_]: Async](
@@ -22,13 +35,12 @@ object RDSTransactor {
         Async[F].delay {
           val HostPort(h, p) = hostPort match {
             case None =>
-              HostPort(jvalue.get("host").asString, jvalue.get("port").asInt)
+              jvalue.as[HostPort].fold(throw _, identity)
             case Some(hp) => hp
           }
 
-          val uname = jvalue.get("username").asString
-          val password = jvalue.get("password").asString
-
+          val AuthInfo(uname, password) =
+            jvalue.as[AuthInfo].fold(throw _, identity)
           (h, p, uname, password)
         }
       }

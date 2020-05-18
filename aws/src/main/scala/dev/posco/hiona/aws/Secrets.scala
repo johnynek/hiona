@@ -7,7 +7,8 @@ import com.amazonaws.services.secretsmanager.{
 import com.amazonaws.services.secretsmanager.model.GetSecretValueRequest
 import cats.effect.{Resource, Sync}
 import java.nio.ByteBuffer
-import org.typelevel.jawn.{ast => jawn}
+import io.circe.Json
+import io.circe.jawn.CirceSupportParser
 
 import cats.implicits._
 
@@ -46,10 +47,12 @@ object Secrets {
   def getJsonSecret[F[_]: Sync](
       client: AWSSecretsManager,
       secretName: String
-  ): F[jawn.JValue] =
+  ): F[Json] =
     getSecret(client, secretName)
       .flatMap {
-        case Right(str) => Sync[F].fromTry(jawn.JParser.parseFromString(str))
-        case Left(bb)   => Sync[F].fromTry(jawn.JParser.parseFromByteBuffer(bb))
+        case Right(str) =>
+          Sync[F].fromTry(CirceSupportParser.parseFromString(str))
+        case Left(bb) =>
+          Sync[F].fromTry(CirceSupportParser.parseFromByteBuffer(bb))
       }
 }

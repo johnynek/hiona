@@ -69,7 +69,7 @@ object Databases {
         region = "us-west-2",
         secretName =
           "rds-db-credentials/cluster-7HHDRW3DZNKNJWJQLJ5QRARUMY/postgres",
-        blocker = blocker,
+        blocker = blocker
       )
 }
 
