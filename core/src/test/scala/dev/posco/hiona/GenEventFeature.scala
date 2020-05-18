@@ -351,12 +351,12 @@ object GenEventFeature {
     frequencyS(
       NonEmptyList.of(
         1 -> Monad[GenS].pure(Event.Empty),
-        10 -> src,
-        3 -> map,
-        3 -> Defer[GenS].defer(genFilter(t)),
-        3 -> Defer[GenS].defer(genWithTime(t)),
+        11 -> src,
+        4 -> map,
+        4 -> Defer[GenS].defer(genFilter(t)),
+        4 -> Defer[GenS].defer(genWithTime(t)),
+        2 -> concatMap,
         1 -> kv,
-        1 -> concatMap,
         1 -> concat // this can cause the graphs to get huge, this probability needs to be small
       )
     )
