@@ -469,8 +469,8 @@ abstract class GenApp { self =>
     ): IO[ExitCode] = {
       val twRow = args.typeWithRow
 
-      val s1: Stream[IO, twRow.Type] = read(input1, twRow.evidence, blocker)
-      val s2: Stream[IO, twRow.Type] = read(input2, twRow.evidence, blocker)
+      val s1: Stream[IO, twRow.Type] = read(input1, twRow.evidence, blocker).through(pipe)
+      val s2: Stream[IO, twRow.Type] = read(input2, twRow.evidence, blocker).through(pipe)
 
       def toList[A](a: A, row: Row[A]): List[String] = {
         val ary = new Array[String](row.columns)
