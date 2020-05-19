@@ -39,28 +39,42 @@ class LambdaDeploy(
 
   case class Coord(jarPath: Path, methodName: MethodName)
 
-  sealed trait LambdaFn[-A, +B] extends Function1[A, IO[B]] {
-    def apply(a: A): IO[B]
+  case class FunctionName(asString: String)
 
-    def delete: IO[Unit]
+  private def checkCode(code: Int)(msg: => String): IO[Unit] =
+    if ((200 <= code) && (code <= 299)) IO.unit
+    else IO.raiseError(new Exception(msg))
+
+  def makeLambda(name: FunctionName): Json => IO[Json] = { payload: Json =>
+    val ir = new InvokeRequest()
+      .withFunctionName(name.asString)
+      .withPayload(payload.noSpaces)
+
+    block(awsLambda.invoke(ir))
+      .flatMap { resp =>
+        val executed = resp.getExecutedVersion()
+        val code = resp.getStatusCode()
+        checkCode(code) {
+          s"error code: $code, on: $executed\n\n${resp.getFunctionError()}"
+        } >>
+          IO.fromTry(
+            CirceSupportParser.parseFromByteBuffer(resp.getPayload)
+          )
+      }
   }
 
   private def block[A](a: => A): IO[A] =
     blocker.blockOn(IO(a))
 
-  def createLambda(
+  def lambdaResource(
       coord: Coord,
       casRoot: S3Addr,
       role: String
-  ): IO[LambdaFn[Json, Json]] = {
+  ): Resource[IO, FunctionName] = {
     val s3AddrIO =
       ContentStore.put[IO](awsS3, casRoot, coord.jarPath, blocker)
 
-    (unique.next, s3AddrIO).mapN { (name, s3addr) =>
-      def checkCode(code: Int)(msg: => String): IO[Unit] =
-        if ((200 <= code) && (code <= 299)) IO.unit
-        else IO.raiseError(new Exception(msg))
-
+    val ioRes = (unique.next, s3AddrIO).mapN { (name, s3addr) =>
       val req = new CreateFunctionRequest()
         .withHandler(coord.methodName.asString)
         .withFunctionName(name)
@@ -75,48 +89,27 @@ class LambdaDeploy(
         .withRuntime(model.Runtime.Java11)
         .withRole(role)
 
-      val ir = new InvokeRequest()
-        .withFunctionName(name)
+      val create = block(awsLambda.createFunction(req))
 
       val dr = new DeleteFunctionRequest()
         .withFunctionName(name)
 
-      block(awsLambda.createFunction(req))
-        .as {
-          new LambdaFn[Json, Json] {
-
-            def apply(payload: Json) =
-              block(awsLambda.invoke(ir.withPayload(payload.noSpaces)))
-                .flatMap { resp =>
-                  val executed = resp.getExecutedVersion()
-                  val code = resp.getStatusCode()
-                  checkCode(code) {
-                    s"error code: $code, on: $executed\n\n${resp.getFunctionError()}"
-                  } >>
-                    IO.fromTry(
-                      CirceSupportParser.parseFromByteBuffer(resp.getPayload)
-                    )
-                }
-
-            def delete =
-              block(awsLambda.deleteFunction(dr))
-                .flatMap { resp =>
-                  val code = resp.getSdkHttpMetadata().getHttpStatusCode()
-                  checkCode(code) {
-                    s"error code: $code, trying to delete: $name"
-                  }
-                }
+      val delete: IO[Unit] =
+        block(awsLambda.deleteFunction(dr))
+          .flatMap { resp =>
+            val code = resp.getSdkHttpMetadata().getHttpStatusCode()
+            checkCode(code) {
+              s"error code: $code, trying to delete: $name"
+            }
           }
-        }
-    }.flatten
-  }
 
-  def lambdaResource(
-      coord: Coord,
-      casRoot: S3Addr,
-      role: String
-  ): Resource[IO, Json => IO[Json]] =
-    Resource.make(createLambda(coord, casRoot, role))(_.delete)
+      Resource
+        .make(create)(_ => delete)
+        .as(FunctionName(name))
+    }
+
+    Resource.liftF(ioRes).flatten
+  }
 
   def invokeRemote(
       coord: Coord,
@@ -124,7 +117,8 @@ class LambdaDeploy(
       role: String,
       in: Json
   ): IO[Json] =
-    lambdaResource(coord, casRoot, role).use(_(in))
+    lambdaResource(coord, casRoot, role)
+      .use(name => makeLambda(name)(in))
 
   sealed trait Payload {
     def toJson: IO[Json]
