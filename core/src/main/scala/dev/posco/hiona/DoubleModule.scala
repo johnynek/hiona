@@ -49,8 +49,8 @@ object DoubleModule extends Priority1DoubleModule {
       def scale(s: Double, v: Unit) = ()
     }
 
-  def genericModule[A, B](
-      implicit gen: Generic.Aux[A, B],
+  def genericModule[A, B](implicit
+      gen: Generic.Aux[A, B],
       modB: => DoubleModule[B]
   ): DoubleModule[A] =
     new DoubleModule[A] {
@@ -84,8 +84,8 @@ sealed trait Priority1DoubleModule {
       def scale(s: Double, v: HNil) = HNil
     }
 
-  implicit def hconsModule[A, B <: HList](
-      implicit modA: DoubleModule[A],
+  implicit def hconsModule[A, B <: HList](implicit
+      modA: DoubleModule[A],
       lazyModB: => DoubleModule[B]
   ): DoubleModule[A :: B] =
     new DoubleModule[A :: B] {

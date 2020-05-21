@@ -39,11 +39,10 @@ object Duration {
         case Finite(m1) =>
           val res = millis + m1
           if (res >= millis) Finite(res)
-          else {
+          else
             // overflow. Could throw here, or return Infinite.
             // for now, let's say infinite
             Infinite
-          }
       }
 
     def *(that: Long): Duration = {

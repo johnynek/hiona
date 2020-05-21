@@ -128,9 +128,10 @@ class LambdaDeploy(
       def toJson = IO.fromEither(decode[Json](str))
     }
     case class FromPath(path: Path) extends Payload {
-      def toJson = IO.suspend {
-        IO.fromTry(CirceSupportParser.parseFromFile(path.toFile))
-      }
+      def toJson =
+        IO.suspend {
+          IO.fromTry(CirceSupportParser.parseFromFile(path.toFile))
+        }
     }
 
     val optPayload =

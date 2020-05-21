@@ -156,12 +156,10 @@ class TimeWindowLaws extends munit.ScalaCheckSuite {
         if (Ordering[Timestamp].gteq(ts, w.maximum._1)) {
           assert(w1.maximum._1 == ts)
           assert(w1 != w)
-        } else {
-          if (w1 == w) {
-            // then we must be out of range:
-            assert(Ordering[Timestamp].lt(ts + Duration.year, w.maximum._1))
-          } else assert(true)
-        }
+        } else if (w1 == w)
+          // then we must be out of range:
+          assert(Ordering[Timestamp].lt(ts + Duration.year, w.maximum._1))
+        else assert(true)
     }
   }
 
@@ -183,13 +181,12 @@ class TimeWindowLaws extends munit.ScalaCheckSuite {
         val ord = Ordering[Timestamp]
         import ord.lt
 
-        if (lt(t1, t2)) {
+        if (lt(t1, t2))
           assert(lt(t2, t1 + Duration.year))
-        } else if (lt(t2, t1)) {
+        else if (lt(t2, t1))
           assert(lt(t1, t2 + Duration.year))
-        } else {
+        else
           assertEquals(t1, t2)
-        }
     }
   }
 

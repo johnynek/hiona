@@ -38,9 +38,9 @@ object Example {
       val c = Calendar.getInstance()
       c.setTimeZone(utc)
       c.setTimeInMillis(ts.epochMillis)
-      if (c.get(Calendar.HOUR_OF_DAY) == 1) {
+      if (c.get(Calendar.HOUR_OF_DAY) == 1)
         ts + thirtyMin
-      } else ts + Duration.hour
+      else ts + Duration.hour
     }
   }
 

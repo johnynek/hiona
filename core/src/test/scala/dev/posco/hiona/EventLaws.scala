@@ -184,7 +184,7 @@ class EventLaws extends munit.ScalaCheckSuite {
   }
 
   def assertUnorderedEq[A](left: List[A], right: List[A]): Prop = {
-    val leftMap = left.groupBy(identity).map { case (k, v)   => (k, v.size) }
+    val leftMap = left.groupBy(identity).map { case (k, v) => (k, v.size) }
     val rightMap = right.groupBy(identity).map { case (k, v) => (k, v.size) }
 
     assertEquals(leftMap, rightMap)
@@ -293,12 +293,16 @@ class EventLaws extends munit.ScalaCheckSuite {
     import GenEventFeature.{genEvent2, genMonad, genType, genWithSizedSrc, lift}
 
     val genFn: Gen[(Simulator.Inputs, TypeWith2[Event.Keyed])] =
-      genWithSizedSrc(Gen.const(100), for {
-        k <- lift(genType)
-        v <- lift(genType)
-        ev <- genEvent2(k, v)
-        tw: TypeWith2[Event.Keyed] = TypeWith2[Event.Keyed, k.Type, v.Type](ev)
-      } yield tw)
+      genWithSizedSrc(
+        Gen.const(100),
+        for {
+          k <- lift(genType)
+          v <- lift(genType)
+          ev <- genEvent2(k, v)
+          tw: TypeWith2[Event.Keyed] =
+            TypeWith2[Event.Keyed, k.Type, v.Type](ev)
+        } yield tw
+      )
 
     Prop.forAllNoShrink(genFn) {
       case (inputs, twev) =>
@@ -358,7 +362,10 @@ class EventLaws extends munit.ScalaCheckSuite {
 
     Prop.forAllNoShrink(genFn) {
       case (inputs, twev) =>
-        val (ev, monoid): (Event[(twev.Type1, twev.Type2)], Monoid[twev.Type2]) =
+        val (ev, monoid): (
+            Event[(twev.Type1, twev.Type2)],
+            Monoid[twev.Type2]
+        ) =
           twev.evidence
 
         val atMostOne = Event.amplificationOf(ev).atMostOne
@@ -429,10 +436,9 @@ class EventLaws extends munit.ScalaCheckSuite {
 
           assertEquals(ddres, dedupedList)
           Prop(ddres == dedupedList)
-        } else {
+        } else
           // with concatMap which can amplify outputs, we might not have exact deduplication
           Prop(true)
-        }
     }
   }
 }

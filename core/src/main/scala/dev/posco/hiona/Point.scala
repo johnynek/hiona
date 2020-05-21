@@ -82,8 +82,8 @@ object Point {
   /**
     * convert validated A values to Points
     */
-  def toPoints[F[_], A](src: Event.Source[A], offset: Duration)(
-      implicit ae: cats.ApplicativeError[F, Throwable]
+  def toPoints[F[_], A](src: Event.Source[A], offset: Duration)(implicit
+      ae: cats.ApplicativeError[F, Throwable]
   ): fs2.Pipe[F, A, Point] = {
     // allocate the key once, this is important since they are cached
     val key = Key(src.name, offset)

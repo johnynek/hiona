@@ -69,16 +69,15 @@ object Fs2Tools {
             left: Stream.StepLeg[F, A],
             right: Stream.StepLeg[F, A]
         ): Int =
-          if (left.head.isEmpty) {
+          if (left.head.isEmpty)
             // prefer to step so we don't skip items
             if (right.head.isEmpty) 0 else -1
-          } else if (right.head.isEmpty) {
+          else if (right.head.isEmpty)
             // we need to step so we don't misorder items
             1
-          } else {
+          else
             // neither are empty just compare the head
             ordA.compare(left.head(0), right.head(0))
-          }
       }
 
     def finish(finalLeg: Stream.StepLeg[F, A]): Pull[F, A, Unit] =
@@ -91,7 +90,7 @@ object Fs2Tools {
     def go(heap: Heap[Stream.StepLeg[F, A]]): Pull[F, A, Unit] =
       heap.pop match {
         case Some((sl, rest)) =>
-          if (sl.head.nonEmpty) {
+          if (sl.head.nonEmpty)
             for {
               _ <- Pull.output1(sl.head(0))
               nextSl = sl.setHead(sl.head.drop(1))
@@ -99,7 +98,7 @@ object Fs2Tools {
               // note: nextHeap.size == heap.size
               _ <- go(nextHeap)
             } yield ()
-          } else {
+          else
             // this chunk is done
             sl.stepLeg
               .flatMap {
@@ -109,18 +108,15 @@ object Fs2Tools {
                   go(nextHeap)
                 case None =>
                   // this leg is exhausted
-                  if (rest.size == 1) {
+                  if (rest.size == 1)
                     // if there is only one stream left, just
                     // emit everything from this stream without
                     // pulling one at a time
-
                     finish(rest.minimumOption.get)
-                  } else {
+                  else
                     // rest has size heap.size - 1 but > 1
                     go(rest)
-                  }
               }
-          }
 
         case None =>
           sys.error("invariant violation, expected at least 2 on each call")
@@ -183,8 +179,8 @@ object Fs2Tools {
     Sync[F].delay {
       val fis = new FileInputStream(path.toFile)
       val bis = new BufferedInputStream(fis)
-      if (path.toString.endsWith(".gz")) {
+      if (path.toString.endsWith(".gz"))
         new GZIPInputStream(bis)
-      } else bis
+      else bis
     }
 }

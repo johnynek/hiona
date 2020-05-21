@@ -8,8 +8,8 @@ import doobie.implicits._
 object DBSupport {
 
   sealed abstract class Factory {
-    def build[F[_]](xa: Transactor[F])(
-        implicit me: MonadError[F, Throwable]
+    def build[F[_]](xa: Transactor[F])(implicit
+        me: MonadError[F, Throwable]
     ): InputFactory[F]
 
     def combine(that: Factory): Factory =

@@ -49,8 +49,8 @@ object ExampleDBJob extends aws.DBS3CliApp {
 object Databases {
   val pmdbProd = aws.RDSTransactor.DatabaseName("pmdb_prod")
 
-  def rdsPostgresLocalTunner[F[_]: Async](blocker: Blocker)(
-      implicit ctx: ContextShift[F]
+  def rdsPostgresLocalTunner[F[_]: Async](blocker: Blocker)(implicit
+      ctx: ContextShift[F]
   ): F[aws.RDSTransactor.DatabaseName => doobie.Transactor[F]] =
     aws.RDSTransactor
       .build[F](
@@ -61,8 +61,8 @@ object Databases {
         hostPort = Some(aws.RDSTransactor.HostPort("127.0.0.1", 54320))
       )
 
-  def rdsPostgres[F[_]: Async](blocker: Blocker)(
-      implicit ctx: ContextShift[F]
+  def rdsPostgres[F[_]: Async](blocker: Blocker)(implicit
+      ctx: ContextShift[F]
   ): F[aws.RDSTransactor.DatabaseName => doobie.Transactor[F]] =
     aws.RDSTransactor
       .build[F](
@@ -74,13 +74,14 @@ object Databases {
 }
 
 class ExampleDBLambdaJob extends aws.LambdaApp(ExampleDBJob.eventArgs) {
-  protected override def buildS3App() = new aws.DBS3App {
-    def dbSupportFactory = ExampleDBJob.dbSupportFactory
+  override protected def buildS3App() =
+    new aws.DBS3App {
+      def dbSupportFactory = ExampleDBJob.dbSupportFactory
 
-    lazy val transactor =
-      Databases
-        .rdsPostgres(blocker)(Async[IO], contextShift)
-        .unsafeRunSync()
-        .apply(Databases.pmdbProd)
-  }
+      lazy val transactor =
+        Databases
+          .rdsPostgres(blocker)(Async[IO], contextShift)
+          .unsafeRunSync()
+          .apply(Databases.pmdbProd)
+    }
 }

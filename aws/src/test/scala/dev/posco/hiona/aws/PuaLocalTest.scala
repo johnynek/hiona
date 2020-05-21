@@ -103,7 +103,8 @@ class PuaLocalTest extends munit.ScalaCheckSuite {
           val dir: PuaLocal.Directory =
             PuaLocal.emptyDirectory
               .addFn(
-                "mapper", { m: Map[String, Int] =>
+                "mapper",
+                { m: Map[String, Int] =>
                   IO.suspend {
                     val task = m("mapper")
                     val lines = inputs(task)
@@ -129,7 +130,8 @@ class PuaLocalTest extends munit.ScalaCheckSuite {
                 }
               )
               .addFn(
-                "reducer", { m: Map[String, Int] =>
+                "reducer",
+                { m: Map[String, Int] =>
                   IO.suspend {
                     val task = m("reducer")
                     val allLocations: List[(Int, Int)] =
@@ -142,11 +144,12 @@ class PuaLocalTest extends munit.ScalaCheckSuite {
 
                     for {
                       ll <- allInputs
-                      summed = ll.flatten
-                        .groupBy(_._1)
-                        .view
-                        .mapValues(_.map(_._2).sum)
-                        .toList
+                      summed =
+                        ll.flatten
+                          .groupBy(_._1)
+                          .view
+                          .mapValues(_.map(_._2).sum)
+                          .toList
                       _ <- out.update(_ ++ summed)
                     } yield ()
                   }

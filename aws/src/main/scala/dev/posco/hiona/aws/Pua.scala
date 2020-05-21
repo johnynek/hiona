@@ -172,9 +172,9 @@ abstract class SlotEnv {
       case Const(toJson) =>
         // we have to wait on a slot since functions
         // are effectful
-        allocSlot.map(res => {s: SlotId => toConst(toJson, s, res).as(res)})
+        allocSlot.map { res => s: SlotId => toConst(toJson, s, res).as(res) }
       case Call(nm) =>
-        allocSlot.map(out => {arg: SlotId => toFnLater(nm, arg, out).as(out)})
+        allocSlot.map { out => arg: SlotId => toFnLater(nm, arg, out).as(out) }
       case Compose(f, s) =>
         (start(f), start(s)).mapN { (fstart, sstart) => arg: SlotId =>
           for {

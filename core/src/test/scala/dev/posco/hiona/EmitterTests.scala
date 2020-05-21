@@ -25,9 +25,12 @@ class EmitterTests extends munit.ScalaCheckSuite {
     Engine.run(in, ev).compile.toList
 
   test("basic map/event processing") {
-    val src = Event.source[(Long, Int)]("numsrc", new Validator[(Long, Int)] {
-      def validate(v: (Long, Int)) = Right(Timestamp(v._1))
-    })
+    val src = Event.source[(Long, Int)](
+      "numsrc",
+      new Validator[(Long, Int)] {
+        def validate(v: (Long, Int)) = Right(Timestamp(v._1))
+      }
+    )
 
     val data = List((0L, 42), (1L, 43), (2L, 44))
     val ins = InputFactory.fromStream[IO, (Long, Int)](src, Stream(data: _*))
@@ -44,9 +47,12 @@ class EmitterTests extends munit.ScalaCheckSuite {
   }
 
   test("preLookup test") {
-    val src = Event.source[(Long, Int)]("numsrc", new Validator[(Long, Int)] {
-      def validate(v: (Long, Int)) = Right(Timestamp(v._1))
-    })
+    val src = Event.source[(Long, Int)](
+      "numsrc",
+      new Validator[(Long, Int)] {
+        def validate(v: (Long, Int)) = Right(Timestamp(v._1))
+      }
+    )
     val data = List((0L, 42), (1L, 43), (2L, 44), (3L, 45))
     val ins = InputFactory.fromStream[IO, (Long, Int)](src, Stream(data: _*))
 
@@ -67,9 +73,12 @@ class EmitterTests extends munit.ScalaCheckSuite {
   }
 
   test("postLookup test") {
-    val src = Event.source[(Long, Int)]("numsrc", new Validator[(Long, Int)] {
-      def validate(v: (Long, Int)) = Right(Timestamp(v._1))
-    })
+    val src = Event.source[(Long, Int)](
+      "numsrc",
+      new Validator[(Long, Int)] {
+        def validate(v: (Long, Int)) = Right(Timestamp(v._1))
+      }
+    )
     val data = List((0L, 42), (1L, 43), (2L, 44), (3L, 45))
     val ins = InputFactory.fromStream[IO, (Long, Int)](src, Stream(data: _*))
 
@@ -90,9 +99,12 @@ class EmitterTests extends munit.ScalaCheckSuite {
   }
 
   test("simple LabeledEvent test") {
-    val src = Event.source[(Long, Int)]("numsrc", new Validator[(Long, Int)] {
-      def validate(v: (Long, Int)) = Right(Timestamp(v._1))
-    })
+    val src = Event.source[(Long, Int)](
+      "numsrc",
+      new Validator[(Long, Int)] {
+        def validate(v: (Long, Int)) = Right(Timestamp(v._1))
+      }
+    )
     val data = List((0L, 1), (1L, 2), (2L, 3), (3L, 4), (4L, 5), (5L, 6))
     val ins = InputFactory.fromStream[IO, (Long, Int)](src, Stream(data: _*))
 
@@ -121,9 +133,12 @@ class EmitterTests extends munit.ScalaCheckSuite {
   }
 
   test("simple zipped LabeledEvent test") {
-    val src = Event.source[(Long, Int)]("numsrc", new Validator[(Long, Int)] {
-      def validate(v: (Long, Int)) = Right(Timestamp(v._1))
-    })
+    val src = Event.source[(Long, Int)](
+      "numsrc",
+      new Validator[(Long, Int)] {
+        def validate(v: (Long, Int)) = Right(Timestamp(v._1))
+      }
+    )
     val data = List((0L, 1), (1L, 2), (2L, 3), (3L, 4), (4L, 5), (5L, 6))
     val ins = InputFactory.fromStream[IO, (Long, Int)](src, Stream(data: _*))
 

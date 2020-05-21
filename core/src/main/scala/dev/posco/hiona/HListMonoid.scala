@@ -10,8 +10,8 @@ object ShapelessMonoid {
       def combine(a: HNil, b: HNil) = HNil
     }
 
-  implicit def hconsMonoid[A, B <: HList](
-      implicit ma: Monoid[A],
+  implicit def hconsMonoid[A, B <: HList](implicit
+      ma: Monoid[A],
       mb: => Monoid[B]
   ): Monoid[A :: B] =
     new Monoid[A :: B] {
@@ -25,8 +25,8 @@ object ShapelessMonoid {
 
   // This isn't safe as a default (implicit) because wrapper types would be removed
   // and could change semantics
-  def genericMonoid[A, B](
-      implicit gen: Generic.Aux[A, B],
+  def genericMonoid[A, B](implicit
+      gen: Generic.Aux[A, B],
       mon: => Monoid[B]
   ): Monoid[A] =
     new Monoid[A] {
@@ -41,8 +41,8 @@ object ShapelessEq {
       def eqv(l: HNil, r: HNil) = true
     }
 
-  implicit def hconsEq[A, B <: HList](
-      implicit ma: Eq[A],
+  implicit def hconsEq[A, B <: HList](implicit
+      ma: Eq[A],
       mb: => Eq[B]
   ): Eq[A :: B] =
     new Eq[A :: B] {

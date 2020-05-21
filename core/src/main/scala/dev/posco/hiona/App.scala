@@ -53,8 +53,8 @@ object App extends GenApp {
   )(implicit ctx: ContextShift[IO]): InputFactory[IO] =
     InputFactory.fromPaths(inputs, e, blocker)
 
-  def read[A](input: Ref, row: Row[A], blocker: Blocker)(
-      implicit ctx: ContextShift[IO]
+  def read[A](input: Ref, row: Row[A], blocker: Blocker)(implicit
+      ctx: ContextShift[IO]
   ): Stream[IO, A] = {
     implicit val ir = row
     Row.csvToStream[IO, A](input, skipHeader = true, blocker)
@@ -108,8 +108,8 @@ abstract class GenApp { self =>
 
   def writer[A](output: Ref, row: Row[A]): Resource[IO, Iterator[A] => IO[Unit]]
 
-  def read[A](input: Ref, row: Row[A], blocker: Blocker)(
-      implicit ctx: ContextShift[IO]
+  def read[A](input: Ref, row: Row[A], blocker: Blocker)(implicit
+      ctx: ContextShift[IO]
   ): Stream[IO, A]
 
   def inputFactory[E[_]: Emittable, A](
@@ -132,8 +132,8 @@ abstract class GenApp { self =>
       blocker: Blocker,
       onInput: Pipe[IO, Point, Point],
       onOutput: FunctionK[Stream[IO, *], Stream[IO, *]]
-  )(
-      implicit ctx: ContextShift[IO]
+  )(implicit
+      ctx: ContextShift[IO]
   ): IO[Unit] = {
 
     val (row, stream) = args match {
@@ -172,8 +172,8 @@ abstract class GenApp { self =>
     }
 
   sealed abstract class Cmd {
-    def run(args: Args, blocker: Blocker)(
-        implicit ctx: ContextShift[IO]
+    def run(args: Args, blocker: Blocker)(implicit
+        ctx: ContextShift[IO]
     ): IO[ExitCode]
   }
 
@@ -183,8 +183,8 @@ abstract class GenApp { self =>
       logDelta: Option[Duration],
       limit: Option[Int]
   ) extends Cmd {
-    def run(args: Args, blocker: Blocker)(
-        implicit ctx: ContextShift[IO]
+    def run(args: Args, blocker: Blocker)(implicit
+        ctx: ContextShift[IO]
     ): IO[ExitCode] = {
 
       val loggerFn: Pipe[IO, Point, Point] =
@@ -208,12 +208,14 @@ abstract class GenApp { self =>
                           val thisTs = point.ts
                           // only log real input events for now, not the shifted values
                           // (since it is hard to account for them
-                          if ((point.offset eq Duration.Zero) && ordTs.lteq(
-                                ts + dur,
-                                thisTs
-                              )) {
+                          if (
+                            (point.offset eq Duration.Zero) && ordTs.lteq(
+                              ts + dur,
+                              thisTs
+                            )
+                          )
                             (thisTs, (counter, point) :: stack)
-                          } else prev
+                          else prev
                       }
 
                     val logMessage: IO[Unit] =
@@ -226,7 +228,9 @@ abstract class GenApp { self =>
                               val vstr0 = v.toString
                               val vstr =
                                 if (vstr0.length > 50)
-                                  vstr0.take(50) + s"... (${vstr0.length - 50} more chars)"
+                                  vstr0.take(
+                                    50
+                                  ) + s"... (${vstr0.length - 50} more chars)"
                                 else vstr0
 
                               println(
@@ -293,8 +297,8 @@ abstract class GenApp { self =>
     }
 
   case object ShowCmd extends Cmd {
-    def run(args: Args, blocker: Blocker)(
-        implicit ctx: ContextShift[IO]
+    def run(args: Args, blocker: Blocker)(implicit
+        ctx: ContextShift[IO]
     ): IO[ExitCode] = {
       val (cols, srcs, lookups) =
         args match {
@@ -348,12 +352,11 @@ abstract class GenApp { self =>
       if (m1.keySet == m2.keySet) Right(m1.map {
         case (k, v1) => (k, (v1, m2(k)))
       })
-      else {
+      else
         Left((m1.keySet -- m2.keySet, m2.keySet -- m1.keySet))
-      }
 
-    def run(arg: Args, blocker: Blocker)(
-        implicit ctx: ContextShift[IO]
+    def run(arg: Args, blocker: Blocker)(implicit
+        ctx: ContextShift[IO]
     ): IO[ExitCode] = {
       val data: IO[List[(String, ((Ref, Ref), Event.Source[_]))]] = {
         def pathMap[V](
@@ -385,9 +388,12 @@ abstract class GenApp { self =>
         for {
           inMap <- pathMap("inputs", inputs)
           outMap <- pathMap("output", outputs)
-          srcMap <- pathMap("event sources", arg.sources.toList.flatMap {
-            case (k, vs) => vs.map((k, _))
-          })
+          srcMap <- pathMap(
+            "event sources",
+            arg.sources.toList.flatMap {
+              case (k, vs) => vs.map((k, _))
+            }
+          )
           table0 <- tab("inputs", "outputs", inMap, outMap)
           table <- table0.toList.traverse {
             case (k, pair) =>
@@ -464,8 +470,8 @@ abstract class GenApp { self =>
       limitIn: Option[Int],
       limit: Option[Int]
   ) extends Cmd {
-    def run(args: Args, blocker: Blocker)(
-        implicit ctx: ContextShift[IO]
+    def run(args: Args, blocker: Blocker)(implicit
+        ctx: ContextShift[IO]
     ): IO[ExitCode] = {
       val twRow = args.typeWithRow
 

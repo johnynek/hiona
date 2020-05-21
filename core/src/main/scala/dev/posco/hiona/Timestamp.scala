@@ -79,13 +79,13 @@ object Timestamp {
       rightD: Duration
   ): Int =
     if (leftD == rightD) Timestamp.orderingForTimestamp.compare(leftT, rightT)
-    else if (leftD.isInfinite) {
+    else if (leftD.isInfinite)
       // right can't be infinite, or they would be the same, left is first
       -1
-    } else if (rightD.isInfinite) {
+    else if (rightD.isInfinite)
       // left can't be infinite, or they would be the same, right is first
       1
-    } else {
+    else {
       // they are both different, but not infinite, be careful with underflow
       val leftOff = leftD.millis
       val rightOff = rightD.millis
@@ -96,25 +96,22 @@ object Timestamp {
       val left1 = left0 - leftOff
       val right1 = right0 - rightOff
 
-      if (left1 <= left0) {
+      if (left1 <= left0)
         // left didn't underflow
-        if (right1 <= right0) {
+        if (right1 <= right0)
           // neither underflowed
           java.lang.Long.compare(left1, right1)
-        } else {
+        else
           // right underflowed, so it must be smaller
           1
-        }
-      } else {
-        // left underflowed
-        if (right1 <= right0) {
-          // right not underflowed, so it must be larger
-          -1
-        } else {
-          // both underflowed, so we can just compare them directly
-          java.lang.Long.compare(left1, right1)
-        }
-      }
+      else
+      // left underflowed
+      if (right1 <= right0)
+        // right not underflowed, so it must be larger
+        -1
+      else
+        // both underflowed, so we can just compare them directly
+        java.lang.Long.compare(left1, right1)
     }
 
   // order by timestamp - duration

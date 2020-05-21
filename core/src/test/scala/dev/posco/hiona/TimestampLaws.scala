@@ -97,9 +97,9 @@ class TimestampLaws extends munit.ScalaCheckSuite {
   property("(t + d1) + d2 == t + (d1 + d2)") {
     forAll(genTimestampFull, genDuration, genDuration) { (t, d1, d2) =>
       val d3 = d1 + d2
-      if (!d3.isInfinite) {
+      if (!d3.isInfinite)
         assertEquals((t + d1) + d2, t + d3)
-      } else {
+      else {
         val t2 = (t + d1) + d2
         assert(Ordering[Timestamp].lteq(t, t2))
       }
@@ -108,22 +108,20 @@ class TimestampLaws extends munit.ScalaCheckSuite {
   property("(t + d) - d == t == (t - d) + d") {
     forAll(genTimestampFull, genDuration) { (t, d) =>
       val t1 = t + d
-      if ((t1 - d) == t) {
+      if ((t1 - d) == t)
         // this is good
         assert(true)
-      } else {
+      else
         // t + d could have been clipped
         assertEquals(t + d, Timestamp.MaxValue)
-      }
 
       val t2 = t - d
-      if ((t2 + d) == t) {
+      if ((t2 + d) == t)
         // this is good
         assert(true)
-      } else {
+      else
         // t - d could have been clipped
         assertEquals(t - d, Timestamp.MinValue)
-      }
     }
   }
 

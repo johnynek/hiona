@@ -31,8 +31,8 @@ object GenEventFeature {
         )
     }
 
-  implicit def implicitTuple2K[F[_], G[_], A](
-      implicit fa: F[A],
+  implicit def implicitTuple2K[F[_], G[_], A](implicit
+      fa: F[A],
       ga: G[A]
   ): Tuple2K[F, G, A] =
     Tuple2K(fa, ga)
@@ -176,7 +176,7 @@ object GenEventFeature {
         Gen.tailRecM((size, maxTrials, List.empty[(A, Timestamp)])) {
           case (size, maxTrials, tail) =>
             if (maxTrials <= 0) Gen.const(Right(tail))
-            else {
+            else
               Gen
                 .listOfN(size, result.gen)
                 .map { as =>
@@ -187,11 +187,9 @@ object GenEventFeature {
                   val nextTail = valids reverse_::: tail
                   val missing = size - valids.size
                   if (missing == 0) Right(nextTail)
-                  else {
+                  else
                     Left((missing, maxTrials - 1, nextTail))
-                  }
                 }
-            }
         }
 
       genItems(size, size)
@@ -299,9 +297,10 @@ object GenEventFeature {
             Cogen.cogenOption(FirstLast.cogenFirstLast(res.evidence.cogen)),
             Gen.option(FirstLast.genFirstLast(res.evidence.gen))
           )
-          mon: Monoid[Option[FirstLast[res.Type]]] = Monoid[Option[
-            FirstLast[res.Type]
-          ]]
+          mon: Monoid[Option[FirstLast[res.Type]]] =
+            Monoid[Option[
+              FirstLast[res.Type]
+            ]]
           tup = Tuple2K(resFL, mon)
         } yield TypeWith(tup): TypeWith[Tuple2K[Result, Monoid, *]]
 

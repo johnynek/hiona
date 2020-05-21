@@ -63,9 +63,8 @@ object TimeWindow {
 
       // inclusive minimimum time
       val newMinTime = newMax._1 - v.value
-      while (Order[Timestamp].lt(resHeap.minimumOption.get._1, newMinTime)) {
+      while (Order[Timestamp].lt(resHeap.minimumOption.get._1, newMinTime))
         resHeap = resHeap.remove
-      }
 
       Items(resHeap, newMax)
     }
@@ -103,8 +102,8 @@ object TimeWindow {
         Some(Items(heap, maxV))
     }
 
-  implicit def semigroupForTimeWindow[W <: Duration, A](
-      implicit v: ValueOf[W],
+  implicit def semigroupForTimeWindow[W <: Duration, A](implicit
+      v: ValueOf[W],
       ord: Order[A]
   ): CommutativeSemigroup[TimeWindow[W, A]] =
     new CommutativeSemigroup[TimeWindow[W, A]] {

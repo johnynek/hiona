@@ -49,14 +49,14 @@ object UniqueName {
              */
 
             @inline final def writeLong(l: Long): Unit = {
-              buf(0) = ((l >> 56) & 0xFFL).toByte
-              buf(1) = ((l >> 48) & 0xFFL).toByte
-              buf(2) = ((l >> 40) & 0xFFL).toByte
-              buf(3) = ((l >> 32) & 0xFFL).toByte
-              buf(4) = ((l >> 24) & 0xFFL).toByte
-              buf(5) = ((l >> 16) & 0xFFL).toByte
-              buf(6) = ((l >> 8) & 0xFFL).toByte
-              buf(7) = (l & 0xFFL).toByte
+              buf(0) = ((l >> 56) & 0xffL).toByte
+              buf(1) = ((l >> 48) & 0xffL).toByte
+              buf(2) = ((l >> 40) & 0xffL).toByte
+              buf(3) = ((l >> 32) & 0xffL).toByte
+              buf(4) = ((l >> 24) & 0xffL).toByte
+              buf(5) = ((l >> 16) & 0xffL).toByte
+              buf(6) = ((l >> 8) & 0xffL).toByte
+              buf(7) = (l & 0xffL).toByte
               buf(8) = rngBytes(0)
               buf(9) = rngBytes(1)
               buf(10) = rngBytes(2)
@@ -69,9 +69,9 @@ object UniqueName {
 
             val next: F[String] =
               F.delay {
-                val ts = (System.currentTimeMillis << 20)
+                val ts = System.currentTimeMillis << 20
                 // 20 bits = 4 + 8 + 8
-                val twentyBits = 0xFFFFF
+                val twentyBits = 0xfffff
                 val cnt = (counter.incrementAndGet() & twentyBits).toLong
                 rngBytes.synchronized {
                   secRand.nextBytes(rngBytes)

@@ -150,8 +150,8 @@ object InputFactory {
     fromStream(ev, Row.csvToStream[F, T](path, skipHeader, blocker))
   }
 
-  def fromStream[F[_], T](ev: Event.Source[T], stream: Stream[F, T])(
-      implicit ae: ApplicativeError[F, Throwable]
+  def fromStream[F[_], T](ev: Event.Source[T], stream: Stream[F, T])(implicit
+      ae: ApplicativeError[F, Throwable]
   ): InputFactory[F] = {
     val cr = implicitly[fs2.RaiseThrowable[F]]
     new InputFactory[F] {

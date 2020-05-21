@@ -32,9 +32,9 @@ case class Decay[H <: Duration, V](scaledTime: Double, value: V) {
       if (scaleFactor == 0.0) that
       else {
         val v1 =
-          if (scaleFactor != 1.0) {
+          if (scaleFactor != 1.0)
             dmod.monoid.combine(dmod.scale(scaleFactor, value), that.value)
-          } else dmod.monoid.combine(value, that.value)
+          else dmod.monoid.combine(value, that.value)
         Decay[H, V](that.scaledTime, v1)
       }
     }

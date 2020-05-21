@@ -120,18 +120,18 @@ class S3App extends GenApp {
     new Argument[S3Addr] {
       val defaultMetavar = "s3uri"
       def read(s: String): ValidatedNel[String, S3Addr] =
-        if (!s.startsWith("s3://")) {
+        if (!s.startsWith("s3://"))
           Validated.invalidNel(
             s"string $s expected to start with s3:// character, not found"
           )
-        } else {
+        else {
           val tail = s.substring(5)
           val slash = tail.indexOf('/')
-          if (slash < 0) {
+          if (slash < 0)
             Validated.invalidNel(
               s"string $s expected to have / to separate bucket/key. not found"
             )
-          } else {
+          else {
             val bucket = tail.substring(0, slash)
             val key = tail.substring(slash + 1)
             Validated.valid(S3Addr(bucket, key))
@@ -139,8 +139,8 @@ class S3App extends GenApp {
         }
     }
 
-  def read[A](input: S3Addr, row: Row[A], blocker: Blocker)(
-      implicit ctx: ContextShift[IO]
+  def read[A](input: S3Addr, row: Row[A], blocker: Blocker)(implicit
+      ctx: ContextShift[IO]
   ): fs2.Stream[IO, A] =
     awsIO
       .readStream[IO](input, 1 << 16, blocker)

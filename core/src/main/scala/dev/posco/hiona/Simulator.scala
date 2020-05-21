@@ -116,12 +116,11 @@ object Simulator {
         if (Ordering[Timestamp].lteq(p0.ts, p.ts)) {
           val newAcc = Some(as)
           getPoint(p, ord, tail, newAcc)
-        } else {
+        } else
           // p.ts < p0.ts
           // we know there is no timestamp where they
           // are the same, so the before case is the same as the after
           Some(as._1)
-        }
       case LazyList() =>
         prev.map(_._2)
     }
@@ -186,8 +185,8 @@ object Simulator {
         { (p, k) => cast((llu(p, k), rlu(p, k))) }
     }
 
-  def mergeIterators[A](left: Iterator[A], right: Iterator[A])(
-      implicit ord: Ordering[A]
+  def mergeIterators[A](left: Iterator[A], right: Iterator[A])(implicit
+      ord: Ordering[A]
   ): Iterator[A] =
     new Iterator[A] {
       val lb = left.buffered
@@ -195,16 +194,16 @@ object Simulator {
       def hasNext: Boolean = lb.hasNext || rb.hasNext
 
       def next(): A =
-        if (lb.hasNext) {
-          if (rb.hasNext) {
+        if (lb.hasNext)
+          if (rb.hasNext)
             if (ord.lteq(lb.head, rb.head)) lb.next
             else rb.next
-          } else lb.next
-        } else rb.next
+          else lb.next
+        else rb.next
     }
 
-  def merge[A](left: LazyList[A], right: LazyList[A])(
-      implicit ord: Ordering[A]
+  def merge[A](left: LazyList[A], right: LazyList[A])(implicit
+      ord: Ordering[A]
   ): LazyList[A] =
     mergeIterators(left.iterator, right.iterator).to(LazyList)
 }

@@ -144,11 +144,11 @@ object Event {
 
   object Source {
     def equiv[A, B](srcA: Source[A], srcB: Source[B]): Option[A =:= B] =
-      if (srcA == srcB) {
+      if (srcA == srcB)
         // since Source is invariant, and depends on invariant typeclass
         // we assume this implies the types are equal
         Some(implicitly[A =:= A].asInstanceOf[A =:= B])
-      } else None
+      else None
   }
 
   case class Concat[A](left: Event[A], right: Event[A]) extends Event[A]

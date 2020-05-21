@@ -31,9 +31,8 @@ object Validator {
     new Validator[A] {
       def validate(a: A) = {
         val ts = get(a)
-        try {
-          Right(Timestamp(ts.toLong * 1000))
-        } catch {
+        try Right(Timestamp(ts.toLong * 1000))
+        catch {
           case _: NumberFormatException =>
             Left(Validator.TimestampParseFailure(a, ts))
         }

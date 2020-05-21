@@ -70,10 +70,14 @@ final class AWSIO(s3client: s3.AmazonS3) {
       if (output.key.endsWith(".gz")) "csv.gz" else "csv"
     for {
       path <- Row.tempPath("output", suffix)
-      fn <- onFail[Unit, Iterator[A]](IO.unit, {
-        case (None, _)    => putPath(output, path)
-        case (Some(_), _) => IO.unit
-      }, _ => Row.writerRes(path)(row))
+      fn <- onFail[Unit, Iterator[A]](
+        IO.unit,
+        {
+          case (None, _)    => putPath(output, path)
+          case (Some(_), _) => IO.unit
+        },
+        _ => Row.writerRes(path)(row)
+      )
     } yield fn
   }
 

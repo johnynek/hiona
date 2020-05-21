@@ -76,10 +76,10 @@ object Engine {
           seq: Long,
           acc: List[O]
       ): IO[(List[O], Long)] =
-        if (idx < batch.size) {
+        if (idx < batch.size)
           feed(batch(idx), seq)
             .flatMap(outs => loop(idx + 1, seq + 1L, outs reverse_::: acc))
-        } else IO.pure((acc.reverse, seq))
+        else IO.pure((acc.reverse, seq))
 
       loop(0, seq, Nil)
     }
@@ -364,10 +364,10 @@ object Engine {
               }
           }
 
-          if (fanOut(Node.ENode(ev, offset)) > 1) {
+          if (fanOut(Node.ENode(ev, offset)) > 1)
             (uncached, Ref.of[IO, (Long, List[A])]((Long.MinValue, Nil)))
               .mapN(CacheEmitter[A](_, _))
-          } else uncached
+          else uncached
         }
 
       def fromFeatureDur[K, V](
@@ -573,14 +573,14 @@ object Engine {
       def feed(point: Point, seq: Long): IO[List[A]] =
         for {
           ((seq0, as), set) <- ref.access
-          res <- if (seq0 == seq) IO.pure(as)
-          else {
-            for {
-              res <- prev.feed(point, seq)
-              success <- set((seq, res))
-              res1 <- if (success) IO.pure(res) else feed(point, seq)
-            } yield res1
-          }
+          res <-
+            if (seq0 == seq) IO.pure(as)
+            else
+              for {
+                res <- prev.feed(point, seq)
+                success <- set((seq, res))
+                res1 <- if (success) IO.pure(res) else feed(point, seq)
+              } yield res1
         } yield res
     }
 
@@ -682,12 +682,11 @@ object Engine {
                           feed(point, seq)
                       }
                   }
-              } else {
+              } else
                 // we have already processed this event
                 IO.pure(
                   (Reader.FromMap(before, empty), Reader.FromMap(after, empty))
                 )
-              }
           }
 
     }
@@ -725,12 +724,11 @@ object Engine {
                           feed(point, seq)
                       }
                   }
-              } else {
+              } else
                 // we have already processed this event
                 IO.pure(
                   (Reader.FromMapOption(before), Reader.FromMapOption(after))
                 )
-              }
           }
     }
 
