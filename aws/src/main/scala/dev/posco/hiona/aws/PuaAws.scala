@@ -132,8 +132,69 @@ object PuaAws {
         waitId: Option[Long]
     ) extends Action
 
-    implicit val actionEncoder: Encoder[Action] = ???
-    implicit val actionDecoder: Decoder[Action] = ???
+    implicit val actionEncoder: Encoder[Action] = {
+      import io.circe.generic.semiauto._
+
+      val toConst: Encoder[ToConst] = deriveEncoder[ToConst]
+      val toCallback: Encoder[ToCallback] = deriveEncoder[ToCallback]
+      val makeList: Encoder[MakeList] = deriveEncoder[MakeList]
+      val unList: Encoder[UnList] = deriveEncoder[UnList]
+
+      new Encoder[Action] {
+        def apply(a: Action) =
+          a match {
+            case tc: ToConst =>
+              Json
+                .obj("kind" -> Json.fromString("constant"))
+                .deepMerge(toConst(tc))
+            case tc: ToCallback =>
+              Json
+                .obj("kind" -> Json.fromString("callback"))
+                .deepMerge(toCallback(tc))
+            case ml: MakeList =>
+              Json
+                .obj("kind" -> Json.fromString("makelist"))
+                .deepMerge(makeList(ml))
+            case ul: UnList =>
+              Json
+                .obj("kind" -> Json.fromString("unlist"))
+                .deepMerge(unList(ul))
+          }
+      }
+    }
+
+    implicit val actionDecoder: Decoder[Action] = {
+      import io.circe.{DecodingFailure, HCursor}
+      import io.circe.generic.semiauto._
+
+      val toConst: Decoder[ToConst] = deriveDecoder[ToConst]
+      val toCallback: Decoder[ToCallback] = deriveDecoder[ToCallback]
+      val makeList: Decoder[MakeList] = deriveDecoder[MakeList]
+      val unList: Decoder[UnList] = deriveDecoder[UnList]
+
+      new Decoder[Action] {
+        def apply(a: HCursor) =
+          a.downField("kind")
+            .as[String]
+            .flatMap {
+              case "constant" =>
+                toConst(a)
+              case "callback" =>
+                toCallback(a)
+              case "makelist" =>
+                makeList(a)
+              case "unlist" =>
+                unList(a)
+              case unknown =>
+                Left(
+                  DecodingFailure(
+                    s"unexpected kind: $unknown in Action decoding",
+                    a.history
+                  )
+                )
+            }
+      }
+    }
   }
 
   final case class Error(code: Int, message: String) extends Exception(message)
