@@ -26,42 +26,7 @@ class LambdaDeploy(
     blocker: Blocker
 )(implicit ctx: ContextShift[IO]) {
 
-  case class MethodName(asString: String)
-  object MethodName {
-    implicit val methodNameArgument: Argument[MethodName] =
-      new Argument[MethodName] {
-        def defaultMetavar = "method_name"
-        def read(s: String): ValidatedNel[String, MethodName] =
-          // TODO: we could check that this parses correctly...
-          Validated.valid(MethodName(s))
-      }
-  }
-
-  case class Coord(jarPath: Path, methodName: MethodName)
-
-  case class FunctionName(asString: String)
-
-  private def checkCode(code: Int)(msg: => String): IO[Unit] =
-    if ((200 <= code) && (code <= 299)) IO.unit
-    else IO.raiseError(new Exception(msg))
-
-  def makeLambda(name: FunctionName): Json => IO[Json] = { payload: Json =>
-    val ir = new InvokeRequest()
-      .withFunctionName(name.asString)
-      .withPayload(payload.noSpaces)
-
-    block(awsLambda.invoke(ir))
-      .flatMap { resp =>
-        val executed = resp.getExecutedVersion()
-        val code = resp.getStatusCode()
-        checkCode(code) {
-          s"error code: $code, on: $executed\n\n${resp.getFunctionError()}"
-        } >>
-          IO.fromTry(
-            CirceSupportParser.parseFromByteBuffer(resp.getPayload)
-          )
-      }
-  }
+  import LambdaDeploy._
 
   private def block[A](a: => A): IO[A] =
     blocker.blockOn(IO(a))
@@ -70,7 +35,7 @@ class LambdaDeploy(
       coord: Coord,
       casRoot: S3Addr,
       role: String
-  ): Resource[IO, FunctionName] = {
+  ): Resource[IO, LambdaFunctionName] = {
     val s3AddrIO =
       ContentStore.put[IO](awsS3, casRoot, coord.jarPath, blocker)
 
@@ -105,7 +70,7 @@ class LambdaDeploy(
 
       Resource
         .make(create)(_ => delete)
-        .as(FunctionName(name))
+        .as(LambdaFunctionName(name))
     }
 
     Resource.liftF(ioRes).flatten
@@ -118,7 +83,75 @@ class LambdaDeploy(
       in: Json
   ): IO[Json] =
     lambdaResource(coord, casRoot, role)
-      .use(name => makeLambda(name)(in))
+      .use(name => awsLambda.makeLambda(name, blocker).apply(in))
+
+  val invokeRemoteCommand: Command[IO[Unit]] =
+    Command("invoke_remote", "deploy, create, invoke, then delete")(
+      (
+        Opts.option[Path]("jar", "the jar containing the code"),
+        Opts.option[MethodName]("method", "the lambda function method"),
+        Opts.option[S3Addr](
+          "cas_root",
+          "s3 uri to root of the content-addressed store"
+        ),
+        Opts.option[String]("role", "the arn of the role to use to invoke"),
+        Payload.optPayload
+      ).mapN { (p, mn, s3root, role, in) =>
+        for {
+          j <- in.toJson
+          jres <- invokeRemote(Coord(p, mn), s3root, role, j)
+          _ <- IO(println(jres.spaces2))
+        } yield ()
+      }
+    )
+
+  val cmd: Command[IO[Unit]] =
+    Command("lambdadeploy", "tool to deploy and invoke lambda functions")(
+      Opts.subcommands(invokeRemoteCommand)
+    )
+}
+
+object LambdaDeploy {
+  case class MethodName(asString: String)
+  object MethodName {
+    implicit val methodNameArgument: Argument[MethodName] =
+      new Argument[MethodName] {
+        def defaultMetavar = "method_name"
+        def read(s: String): ValidatedNel[String, MethodName] =
+          // TODO: we could check that this parses correctly...
+          Validated.valid(MethodName(s))
+      }
+  }
+
+  case class Coord(jarPath: Path, methodName: MethodName)
+
+  def checkCode(code: Int)(msg: => String): IO[Unit] =
+    if ((200 <= code) && (code <= 299)) IO.unit
+    else IO.raiseError(new Exception(msg))
+
+  implicit class LambdaMethods(private val awsLambda: AWSLambda)
+      extends AnyVal {
+    def makeLambda(name: LambdaFunctionName, blocker: Blocker)(implicit
+        ctx: ContextShift[IO]
+    ): Json => IO[Json] = { payload: Json =>
+      val ir = new InvokeRequest()
+        .withFunctionName(name.asString)
+        .withPayload(payload.noSpaces)
+
+      blocker
+        .blockOn(IO(awsLambda.invoke(ir)))
+        .flatMap { resp =>
+          val executed = resp.getExecutedVersion()
+          val code = resp.getStatusCode()
+          checkCode(code) {
+            s"error code: $code, on: $executed\n\n${resp.getFunctionError()}"
+          } >>
+            IO.fromTry(
+              CirceSupportParser.parseFromByteBuffer(resp.getPayload)
+            )
+        }
+    }
+  }
 
   sealed trait Payload {
     def toJson: IO[Json]
@@ -145,30 +178,6 @@ class LambdaDeploy(
         )
 
   }
-  val invokeRemoteCommand: Command[IO[Unit]] =
-    Command("invoke_remote", "deploy, create, invoke, then delete")(
-      (
-        Opts.option[Path]("jar", "the jar containing the code"),
-        Opts.option[MethodName]("method", "the lambda function method"),
-        Opts.option[S3Addr](
-          "cas_root",
-          "s3 uri to root of the content-addressed store"
-        ),
-        Opts.option[String]("role", "the arn of the role to use to invoke"),
-        Payload.optPayload
-      ).mapN { (p, mn, s3root, role, in) =>
-        for {
-          j <- in.toJson
-          jres <- invokeRemote(Coord(p, mn), s3root, role, j)
-          _ <- IO(println(jres.spaces2))
-        } yield ()
-      }
-    )
-
-  val cmd: Command[IO[Unit]] =
-    Command("lambdadeploy", "tool to deploy and invoke lambda functions")(
-      Opts.subcommands(invokeRemoteCommand)
-    )
 }
 
 object LambdaDeployApp extends IOApp {

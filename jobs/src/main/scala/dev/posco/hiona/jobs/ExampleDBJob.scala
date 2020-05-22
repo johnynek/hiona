@@ -74,14 +74,16 @@ object Databases {
 }
 
 class ExampleDBLambdaJob extends aws.LambdaApp(ExampleDBJob.eventArgs) {
-  override protected def buildS3App() =
-    new aws.DBS3App {
-      def dbSupportFactory = ExampleDBJob.dbSupportFactory
+  override def setup =
+    IO {
+      new aws.DBS3App {
+        def dbSupportFactory = ExampleDBJob.dbSupportFactory
 
-      lazy val transactor =
-        Databases
-          .rdsPostgres(blocker)(Async[IO], contextShift)
-          .unsafeRunSync()
-          .apply(Databases.pmdbProd)
+        lazy val transactor =
+          Databases
+            .rdsPostgres(blocker)(Async[IO], contextShift)
+            .unsafeRunSync()
+            .apply(Databases.pmdbProd)
+      }
     }
 }

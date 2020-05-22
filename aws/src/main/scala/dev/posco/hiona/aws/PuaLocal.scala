@@ -1,6 +1,7 @@
 package dev.posco.hiona.aws
 
 import cats.{Applicative, Monad}
+import cats.data.NonEmptyList
 import cats.effect.{ContextShift, IO}
 import cats.effect.concurrent.{Deferred, Ref}
 import io.circe.{Decoder, Encoder, Json}
@@ -9,7 +10,7 @@ import cats.implicits._
 
 final class PuaLocal(
     ref: Ref[IO, (Long, Map[Long, Deferred[IO, Either[Throwable, Json]]])],
-    run: Pua.LambdaName => (Json => IO[Json])
+    run: LambdaFunctionName => (Json => IO[Json])
 )(implicit ctx: ContextShift[IO])
     extends SlotEnv {
   type SlotId = Long
@@ -51,7 +52,7 @@ final class PuaLocal(
   // this is also responsible for updating the state of the db
   // if the arg slot is not yet ready, we update the list of
   // nodes waiting on the arg
-  def toFnLater(ln: Pua.LambdaName, arg: SlotId, out: SlotId): IO[Unit] = {
+  def toFnLater(ln: LambdaFunctionName, arg: SlotId, out: SlotId): IO[Unit] = {
     val fn = run(ln)
 
     val computation =
@@ -98,23 +99,23 @@ final class PuaLocal(
 
   // this is really a special job just waits for all the inputs
   // and finally writes to an output
-  def makeList(inputs: List[SlotId], output: SlotId): IO[Unit] =
+  def makeList(inputs: NonEmptyList[SlotId], output: SlotId): IO[Unit] =
     inputs
       .traverse(readSlot)
       .onError { case t => failSlot(output, t) }
-      .flatMap(js => writeSlot(Json.fromValues(js), output))
+      .flatMap(js => writeSlot(Json.fromValues(js.toList), output))
       .start
       .void // TODO: codesmell, fire/forget
 
   // opposite of makeList, wait on a slot, then unlist it
-  def unList(input: SlotId, outputs: List[SlotId]): IO[Unit] =
+  def unList(input: SlotId, outputs: NonEmptyList[SlotId]): IO[Unit] =
     readSlot(input)
       .onError { case t => outputs.traverse_(failSlot(_, t)) }
       .flatMap { j =>
         j.asArray match {
           case Some(vs) if vs.size == outputs.size =>
             vs.toList
-              .zip(outputs)
+              .zip(outputs.toList)
               .traverse_ { case (j, s) => writeSlot(j, s) }
           case _ =>
             val err = new IllegalStateException(
@@ -158,7 +159,7 @@ final class PuaLocal(
 
 object PuaLocal {
   def build(
-      runFn: Pua.LambdaName => (Json => IO[Json])
+      runFn: LambdaFunctionName => (Json => IO[Json])
   )(implicit ctx: ContextShift[IO]): IO[PuaLocal] =
     Ref
       .of[IO, (Long, Map[Long, Deferred[IO, Either[Throwable, Json]]])](
@@ -169,15 +170,15 @@ object PuaLocal {
   val emptyDirectory: Directory = Directory(Map.empty)
 
   case class Directory(toMap: Map[String, Json => IO[Json]])
-      extends Function1[Pua.LambdaName, (Json => IO[Json])] {
+      extends Function1[LambdaFunctionName, (Json => IO[Json])] {
 
-    def unknown(n: Pua.LambdaName): Json => IO[Json] = { j: Json =>
+    def unknown(n: LambdaFunctionName): Json => IO[Json] = { j: Json =>
       IO.raiseError(
         new IllegalStateException(s"unknown function: $n called with arg: $j")
       )
     }
 
-    def apply(n: Pua.LambdaName): Json => IO[Json] =
+    def apply(n: LambdaFunctionName): Json => IO[Json] =
       toMap.get(n.asString) match {
         case Some(fn) => fn
         case None     => unknown(n)

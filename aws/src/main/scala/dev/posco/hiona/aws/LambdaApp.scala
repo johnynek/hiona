@@ -2,18 +2,17 @@ package dev.posco.hiona.aws
 
 import cats.data.{Validated, ValidatedNel}
 import cats.effect.{Blocker, ContextShift, IO, Resource}
-import com.amazonaws.services.lambda.runtime.{Context, RequestStreamHandler}
+import com.amazonaws.services.lambda.runtime.Context
 import com.amazonaws.services.s3
 import com.monovore.decline.Argument
-import java.io.{InputStream, OutputStream}
-import java.nio.channels.Channels
 import java.util.concurrent.Executors
 import io.circe.{Decoder, HCursor, Json}
 import scala.concurrent.ExecutionContext
-import scala.util.control.NonFatal
 
 import dev.posco.hiona._
 import cats.effect.ExitCode
+
+import cats.implicits._
 
 object LambdaApp {
   case class BodyArgs(args: List[String])
@@ -30,12 +29,9 @@ object LambdaApp {
   }
 }
 
-abstract class LambdaApp(appArgs: Args) extends RequestStreamHandler {
+abstract class LambdaApp(appArgs: Args) extends PureLambda[S3App, Json, Json] {
 
-  protected def buildS3App(): S3App = new S3App
-
-  // allocating this initializes s3clients
-  private[this] lazy val s3App = buildS3App()
+  def setup = IO(new S3App)
 
   def parseArgs(input: Json): Either[String, List[String]] =
     input.as[LambdaApp.BodyArgs] match {
@@ -44,49 +40,29 @@ abstract class LambdaApp(appArgs: Args) extends RequestStreamHandler {
         Left(s"body.args to be JArray in top-level $input, got: $err")
     }
 
-  def handleRequest(
-      inputStream: InputStream,
-      outputStream: OutputStream,
+  final def run(
+      jinput: IO[Json],
+      s3App: S3App,
       context: Context
-  ): Unit = {
-    val logger = context.getLogger()
+  ): IO[Json] =
+    IO.suspend {
+      val logger = context.getLogger()
 
-    try {
       implicit val ctx = s3App.contextShift
 
-      val inChannel = Channels.newChannel(inputStream)
-      val jinput: Json =
-        io.circe.jawn.CirceSupportParser.parseFromChannel(inChannel).get
-
-      parseArgs(jinput) match {
-        case Right(stringArgs) =>
-          logger.log(s"INFO: parsed input: $stringArgs")
-
-          s3App.command.parse(stringArgs) match {
-            case Right(cmd) =>
-              logger.log(s"INFO: about to run")
-              cmd.run(appArgs, s3App.blocker).unsafeRunSync()
-              logger.log(s"INFO: finished run")
-              ()
-              val result = Json.fromString("done")
-              outputStream.write(result.spaces2.getBytes("UTF-8"))
-              ()
-            case Left(err) =>
-              logger.log(s"ERROR: failed to parse command: $err")
-          }
-        case Left(msg) =>
-          logger.log(
-            s"ERROR: failed to parse input. $msg from: ${jinput.spaces2}"
-          )
-      }
-    } catch {
-      case NonFatal(e) =>
-        logger.log(s"ERROR: $e")
-    } finally {
-      inputStream.close()
-      outputStream.close()
+      for {
+        json <- jinput
+        stringArgs <- IO.fromEither(parseArgs(json).leftMap(new Exception(_)))
+        _ = logger.log(s"INFO: parsed input: $stringArgs")
+        eitherCmd = s3App.command.parse(stringArgs)
+        cmd <- IO.fromEither(eitherCmd.leftMap { msg =>
+          new Exception(s"couldn't parse args\n$msg")
+        })
+        _ = logger.log(s"INFO: about to run")
+        _ <- cmd.run(appArgs, s3App.blocker)
+        _ = logger.log(s"INFO: finished run")
+      } yield Json.fromString("done")
     }
-  }
 }
 
 class S3App extends GenApp {

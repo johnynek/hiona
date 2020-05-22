@@ -60,11 +60,11 @@ class PuaLocalTest extends munit.ScalaCheckSuite {
     val mapReduce =
       Pua
         .const((0 until mapperCount).map(i => Map("mapper" -> i)))
-        .andThen(Pua.parCount(mapperCount, mapper))
+        .andThen(mapper.parCount(mapperCount))
         .andThen(Pua.const((0 until reducerCount).map { i =>
           Map("reducer" -> i)
         }))
-        .andThen(Pua.parCount(reducerCount, reducer))
+        .andThen(reducer.parCount(reducerCount))
         .andThen(Pua.const(()))
 
     val shuffleStorage: IO[Ref[IO, Map[(Int, Int), List[(String, Long)]]]] =

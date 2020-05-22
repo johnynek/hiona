@@ -1,9 +1,7 @@
 package dev.posco.hiona.aws
 
-import cats.{Applicative, Monad}
+import cats.data.NonEmptyList
 import io.circe.{Encoder, Json}
-
-import cats.implicits._
 
 /**
   * A model of composed AWS lambda functions
@@ -15,32 +13,33 @@ import cats.implicits._
   * some a (encoded as json) => IO[b (encoded as json)]
   */
 sealed abstract class Pua {
+  import Pua._
+
   def andThen(p: Pua): Pua =
-    Pua.Compose(this, p)
+    Compose(this, p)
 
   def optimize: Pua =
     Pua.optimize(this)
+
+  // run a number of copies of a Pua in parallel
+  def parCount(count: Int): Pua =
+    NonEmptyList.fromList((0 until count).map(_ => this).toList) match {
+      case None =>
+        throw new IllegalArgumentException(s"count must be > 0, found: $count")
+      case Some(nel) => Parallel(nel)
+    }
 }
 
 object Pua {
 
   def call(name: String): Pua =
-    Call(LambdaName(name))
-
-  case class LambdaName(asString: String)
+    Call(LambdaFunctionName(name))
 
   // an AWS lambda function, it has some JSON input and emits some json output
-  case class Call(name: LambdaName) extends Pua
+  case class Call(name: LambdaFunctionName) extends Pua
 
   def const[A: Encoder](a: A): Pua =
     Const(Encoder[A].apply(a))
-
-  // run a number of copies of a Pua in parallel
-  def parCount(count: Int, p: Pua): Pua = {
-    require(count > 0, s"count must be > 0, found: $count")
-
-    Parallel((0 until count).map(_ => p).toList)
-  }
 
   // a function that always returns a given json value
   // _ => a
@@ -63,11 +62,11 @@ object Pua {
   //
   // def fanout(lams):
   //   return lambda x: [l(x) for l in lams]
-  case class Fanout(lams: List[Pua]) extends Pua
+  case class Fanout(lams: NonEmptyList[Pua]) extends Pua
 
   // [a1 => b1, a2 => b2, .. ]
   // to [a1, a2, a3, ...] => [b1, b2, b3, ...]
-  case class Parallel(lams: List[Pua]) extends Pua
+  case class Parallel(lams: NonEmptyList[Pua]) extends Pua
   /*
    * We could have a loop construct:
    * a => [null, b] | [a, null]
@@ -94,14 +93,14 @@ object Pua {
           (h1, h2) match {
             case (Parallel(p1), Parallel(p2)) if p1.size == p2.size =>
               val newHead = Parallel(
-                p1.zip(p2).map { case (a, b) => optimize(Compose(a, b)) }
+                p1.zipWith(p2) { case (a, b) => optimize(Compose(a, b)) }
               )
               val better = newHead :: rest2
               optList(better).orElse(Some(better))
 
             case (Fanout(p1), Parallel(p2)) if p1.size == p2.size =>
               val newHead = Fanout(
-                p1.zip(p2).map { case (a, b) => optimize(Compose(a, b)) }
+                p1.zipWith(p2) { case (a, b) => optimize(Compose(a, b)) }
               )
               val better = newHead :: rest2
               optList(better).orElse(Some(better))
@@ -125,86 +124,4 @@ object Pua {
       case Some(o) => recompose(o)
     }
   }
-}
-
-abstract class SlotEnv {
-
-  // some ID in a data-base we can use
-  // to find a pointer to result data
-  type SlotId
-
-  /**
-    * This tracks a value A and the set of opened
-    * slots
-    */
-  type Slots[A]
-  implicit def applicativeSlots: Applicative[Slots]
-
-  type Eff[A]
-  implicit def monadEff: Monad[Eff]
-
-  // run the lambda as an event-like function with a given
-  // location to put the result
-  // this is also responsible for updating the state of the db
-  // if the arg slot is not yet ready, we update the list of
-  // nodes waiting on the arg
-  def toFnLater(ln: Pua.LambdaName, arg: SlotId, out: SlotId): Eff[Unit]
-
-  // We have to wait for inputs to be ready for constant
-  // functions because we need to order effects correctl;
-  def toConst(json: Json, arg: SlotId, out: SlotId): Eff[Unit]
-
-  // This creates a new entry in the database for an output location
-  // only one item should ever write to it
-  def allocSlot: Slots[SlotId]
-
-  // this is really a special job just waits for all the inputs
-  // and finally writes to an output
-  def makeList(inputs: List[SlotId], output: SlotId): Eff[Unit]
-
-  // opposite of makeList, wait on a slot, then unlist it
-  def unList(input: SlotId, outputs: List[SlotId]): Eff[Unit]
-
-  def start(p: Pua): Slots[SlotId => Eff[SlotId]] = {
-    import Pua._
-
-    p match {
-      case Const(toJson) =>
-        // we have to wait on a slot since functions
-        // are effectful
-        allocSlot.map { res => s: SlotId => toConst(toJson, s, res).as(res) }
-      case Call(nm) =>
-        allocSlot.map { out => arg: SlotId => toFnLater(nm, arg, out).as(out) }
-      case Compose(f, s) =>
-        (start(f), start(s)).mapN { (fstart, sstart) => arg: SlotId =>
-          for {
-            s1 <- fstart(arg)
-            s2 <- sstart(s1)
-          } yield s2
-        }
-
-      case Fanout(lams) =>
-        (lams.traverse(start), allocSlot).mapN {
-          (innerFns, res) => arg: SlotId =>
-            for {
-              inners <- innerFns.traverse(_(arg))
-              _ <- makeList(inners, res)
-            } yield res
-        }
-      case Identity =>
-        applicativeSlots.pure { s: SlotId => monadEff.pure(s) }
-      case Parallel(pars) =>
-        // [a1 => b1, a2 => b2, .. ]
-        // to [a1, a2, a3, ...] => [b1, b2, b3, ...]
-        (pars.traverse(start), pars.traverse(_ => allocSlot), allocSlot).mapN {
-          (innerFns, inSlots, res) => arg: SlotId =>
-            for {
-              _ <- unList(arg, inSlots)
-              outSlots <- innerFns.zip(inSlots).traverse { case (f, s) => f(s) }
-              _ <- makeList(outSlots, res)
-            } yield res
-        }
-    }
-  }
-
 }
