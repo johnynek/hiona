@@ -22,6 +22,7 @@ sealed abstract class Pua {
     Pua.optimize(this)
 
   // run a number of copies of a Pua in parallel
+  // the result is a json list of the same length as count
   def parCount(count: Int): Pua =
     NonEmptyList.fromList((0 until count).map(_ => this).toList) match {
       case None =>

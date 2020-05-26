@@ -28,6 +28,7 @@ object Dependencies {
   lazy val doobie = "org.tpolecat" %% "doobie-core" % "0.9.0"
   lazy val fs2 = "co.fs2" %% "fs2-core" % V.fs2
   lazy val fs2io = "co.fs2" %% "fs2-io" % V.fs2
+  lazy val h2 = "com.h2database" % "h2" % "1.4.200"
   lazy val munit = "org.scalameta" %% "munit" % V.munit
   lazy val munitScalaCheck = "org.scalameta" %% "munit-scalacheck" % V.munit
   lazy val postgresJdbc = "org.postgresql" % "postgresql" % "42.2.12"

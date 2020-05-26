@@ -67,6 +67,7 @@ lazy val aws = (project in file("aws"))
       munit % Test,
       munitScalaCheck % Test,
       scalaCheck % Test,
+      h2 % Test,
       awsLambdaCore1,
       awsLambdaService,
       awsS3v1,

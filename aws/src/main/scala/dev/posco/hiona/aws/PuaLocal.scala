@@ -10,7 +10,8 @@ import cats.implicits._
 
 final class PuaLocal(
     ref: Ref[IO, (Long, Map[Long, Deferred[IO, Either[Throwable, Json]]])],
-    run: LambdaFunctionName => (Json => IO[Json])
+    run: LambdaFunctionName => (Json => IO[Json]),
+    optimizeStart: Boolean = true
 )(implicit ctx: ContextShift[IO])
     extends SlotEnv {
   type SlotId = Long
@@ -139,7 +140,8 @@ final class PuaLocal(
     } yield ()
 
   def apply[A: Encoder, B: Decoder](p: Pua): A => IO[B] = {
-    val makeFn = start(p.optimize)
+    val opt = if (optimizeStart) p.optimize else p
+    val makeFn = start(opt)
 
     { a: A =>
       for {
@@ -167,10 +169,21 @@ object PuaLocal {
       )
       .map(new PuaLocal(_, runFn))
 
+  def buildUnoptimized(
+      runFn: LambdaFunctionName => (Json => IO[Json])
+  )(implicit ctx: ContextShift[IO]): IO[PuaLocal] =
+    Ref
+      .of[IO, (Long, Map[Long, Deferred[IO, Either[Throwable, Json]]])](
+        (0L, Map.empty)
+      )
+      .map(new PuaLocal(_, runFn, optimizeStart = false))
+
   val emptyDirectory: Directory = Directory(Map.empty)
 
   case class Directory(toMap: Map[String, Json => IO[Json]])
       extends Function1[LambdaFunctionName, (Json => IO[Json])] {
+
+    def contains(n: LambdaFunctionName): Boolean = toMap.contains(n.asString)
 
     def unknown(n: LambdaFunctionName): Json => IO[Json] = { j: Json =>
       IO.raiseError(

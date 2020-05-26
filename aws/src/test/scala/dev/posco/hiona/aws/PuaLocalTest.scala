@@ -3,7 +3,7 @@ package dev.posco.hiona.aws
 import cats.effect.IO
 import cats.effect.concurrent.Ref
 import org.scalacheck.{Arbitrary, Gen, Prop}
-import io.circe.{Decoder, Encoder}
+import io.circe.{Decoder, Encoder, Json}
 
 import cats.implicits._
 
@@ -14,7 +14,7 @@ class PuaLocalTest extends munit.ScalaCheckSuite {
   override def scalaCheckTestParameters =
     super.scalaCheckTestParameters
       .withMinSuccessfulTests(
-        10
+        20
       ) // a bit slow, but locally, this passes with more
 
   def check[A: Encoder: Arbitrary, B: Decoder](
@@ -168,4 +168,57 @@ class PuaLocalTest extends munit.ScalaCheckSuite {
         io.flatten.unsafeRunSync()
     }
   }
+
+  property("pualocal matches what we expect") {
+    Prop.forAllNoShrink(PuaGens.genDirectory) {
+      case (pua, dir, inputs, fn) =>
+        inputs.foldLeft(Prop(true)) { (p, input) =>
+          val expected = fn(input)
+          val computation =
+            PuaLocal.build(dir).flatMap { pl =>
+              val fn = pl[Json, Json](pua)
+              fn(input)
+            }
+
+          p || (computation.attempt, expected.attempt)
+            .mapN {
+              case (Right(a), Right(b)) =>
+                assertEquals(a, b)
+              case (Left(_), Left(_)) =>
+                assert(true)
+              case (left, right) =>
+                // this will fail, but we want to see what we get
+                assertEquals(left, right)
+            }
+            .unsafeRunSync()
+        }
+    }
+  }
+
+  property("pualocal unoptimized matches what we expect") {
+    Prop.forAllNoShrink(PuaGens.genDirectory) {
+      case (pua, dir, inputs, fn) =>
+        inputs.foldLeft(Prop(true)) { (p, input) =>
+          val expected = fn(input)
+          val computation =
+            PuaLocal.buildUnoptimized(dir).flatMap { pl =>
+              val fn = pl[Json, Json](pua)
+              fn(input)
+            }
+
+          p || (computation.attempt, expected.attempt)
+            .mapN {
+              case (Right(a), Right(b)) =>
+                assertEquals(a, b)
+              case (Left(_), Left(_)) =>
+                assert(true)
+              case (left, right) =>
+                // this will fail, but we want to see what we get
+                assertEquals(left, right)
+            }
+            .unsafeRunSync()
+        }
+    }
+  }
+
 }

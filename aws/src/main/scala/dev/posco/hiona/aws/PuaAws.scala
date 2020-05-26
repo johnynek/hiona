@@ -1,12 +1,13 @@
 package dev.posco.hiona.aws
 
 import cats.data.NonEmptyList
-import cats.effect.{Blocker, ContextShift, IO, LiftIO}
-import cats.{Applicative, Monad}
+import cats.effect.{Blocker, ContextShift, IO, LiftIO, Timer}
+import cats.{Applicative, Defer, Monad}
 import com.amazonaws.services.lambda.runtime.Context
-import doobie.{ConnectionIO, HC, Transactor}
-import doobie.enum.TransactionIsolation.TransactionSerializable
+import doobie.ConnectionIO
 import io.circe.{Decoder, Encoder, Json}
+import scala.concurrent.duration.FiniteDuration
+import java.sql.SQLTransientException
 
 import cats.implicits._
 import doobie.implicits._
@@ -66,8 +67,7 @@ class PuaAws(
 
   def pollSlot[A: Decoder](slotId: Long): IO[Option[A]] =
     dbControl
-      .readSlot(slotId)
-      .transact(dbControl.transactor)
+      .run(dbControl.readSlot(slotId))
       .flatMap {
         case Some(Right(json)) => IO.fromEither(json.as[A]).map(Some(_))
         case Some(Left(err))   => IO.raiseError(err)
@@ -81,7 +81,6 @@ class PuaAws(
 
     val buildSlots =
       for {
-        _ <- HC.setTransactionIsolation(TransactionSerializable)
         input <- allocSlot
         fn <- start(popt)
       } yield (fn, input)
@@ -99,28 +98,66 @@ class PuaAws(
         } yield fn(slot)
 
       for {
-        io <- transaction.transact(dbControl.transactor)
+        io <- dbControl.run(transaction)
         res <- io
       } yield res
+    }
+  }
+
+  def toIOFnPoll[A: Encoder, B: Decoder](pua: Pua, poll: FiniteDuration)(
+      implicit timer: Timer[IO]
+  ): A => IO[B] = {
+    val toSlot = toIOFn[A](pua)
+
+    { a: A =>
+      toSlot(a).flatMap { slotId =>
+        Defer[IO].fix[B] { recur =>
+          pollSlot[B](slotId)
+            .flatMap {
+              case Some(b) => IO.pure(b)
+              case None    =>
+                //println(s"$slotId not ready yet")
+                timer.sleep(poll) *> recur
+            }
+        }
+      }
     }
   }
 }
 
 object PuaAws {
-  sealed abstract class Action
+  sealed abstract class Action {
+    def waitId: Option[Long]
+    def withWaitId(wid: Long): Action = {
+      import Action._
+
+      this match {
+        case const: ToConst => const.copy(waitId = Some(wid))
+        case cb: ToCallback => cb.copy(waitId = Some(wid))
+        case ul: UnList     => ul.copy(waitId = Some(wid))
+        case ml: MakeList   => ml.copy(waitId = Some(wid))
+      }
+    }
+    def argSlots: NonEmptyList[Long]
+  }
+
   object Action {
     case class ToConst(
         json: Json,
         argSlot: Long,
         resultSlot: Long,
         waitId: Option[Long]
-    ) extends Action
+    ) extends Action {
+      def argSlots = NonEmptyList(argSlot, Nil)
+    }
     case class ToCallback(
         name: LambdaFunctionName,
         argSlot: Long,
         resultSlot: Long,
         waitId: Option[Long]
-    ) extends Action
+    ) extends Action {
+      def argSlots = NonEmptyList(argSlot, Nil)
+    }
     case class MakeList(
         argSlots: NonEmptyList[Long],
         resultSlot: Long,
@@ -130,7 +167,9 @@ object PuaAws {
         argSlot: Long,
         resultSlots: NonEmptyList[Long],
         waitId: Option[Long]
-    ) extends Action
+    ) extends Action {
+      def argSlots = NonEmptyList(argSlot, Nil)
+    }
 
     implicit val actionEncoder: Encoder[Action] = {
       import io.circe.generic.semiauto._
@@ -211,10 +250,7 @@ object PuaAws {
       makeLambda: LambdaFunctionName => Json => IO[Json],
       blocker: Blocker,
       ctxShift: ContextShift[IO]
-  ) {
-
-    def transactor: Transactor[IO] = dbControl.transactor
-  }
+  )
 
   def buildLambdaState: IO[State] = ???
 }
@@ -240,9 +276,9 @@ object PuaAws {
   */
 abstract class DBControl {
 
-  def transactor: Transactor[IO]
-
   def initializeTables: ConnectionIO[Unit]
+
+  def run[A](c: ConnectionIO[A]): IO[A]
 
   def allocSlot: ConnectionIO[Long]
 
@@ -259,7 +295,7 @@ abstract class DBControl {
       slotId: Long,
       result: Either[PuaAws.Error, Json],
       invoker: LambdaFunctionName => Json => IO[Json]
-  ): ConnectionIO[Unit]
+  ): ConnectionIO[IO[Unit]]
 }
 
 class PuaWorker extends PureLambda[PuaAws.State, PuaAws.Action, Unit] {
@@ -268,7 +304,11 @@ class PuaWorker extends PureLambda[PuaAws.State, PuaAws.Action, Unit] {
 
   def setup = PuaAws.buildLambdaState
 
-  def toConst(tc: ToConst, st: State, context: Context): ConnectionIO[Unit] = {
+  def toConst(
+      tc: ToConst,
+      st: State,
+      context: Context
+  ): ConnectionIO[IO[Unit]] = {
     import st.dbControl
 
     dbControl
@@ -278,15 +318,19 @@ class PuaWorker extends PureLambda[PuaAws.State, PuaAws.Action, Unit] {
           // data or error exists, so, we can write the data
           val thisRes = either.map(_ => tc.json)
           for {
-            _ <- dbControl.completeSlot(tc.resultSlot, thisRes, st.makeLambda)
+            action <-
+              dbControl.completeSlot(tc.resultSlot, thisRes, st.makeLambda)
             _ <- dbControl.removeWaiter(tc)
-          } yield ()
+          } yield action
         case None =>
+          //println(s"$tc could not read")
           // we have to wait and callback.
-          dbControl.addWaiter(
-            tc,
-            LambdaFunctionName(context.getInvokedFunctionArn())
-          )
+          dbControl
+            .addWaiter(
+              tc,
+              LambdaFunctionName(context.getInvokedFunctionArn())
+            )
+            .as(IO.unit)
       }
   }
 
@@ -303,45 +347,44 @@ class PuaWorker extends PureLambda[PuaAws.State, PuaAws.Action, Unit] {
       tc: ToCallback,
       st: State,
       context: Context
-  ): IO[Unit] = {
+  ): ConnectionIO[IO[Unit]] = {
     // do the finishing transaction, including removing the waiter
     def write(json: Either[Throwable, Json]): IO[Unit] = {
       val res = json.leftMap(PuaAws.Error.fromInvocationError(_))
-      (st.dbControl.completeSlot(tc.resultSlot, res, st.makeLambda) *>
-        st.dbControl.removeWaiter(tc)).transact(st.transactor)
+      st.dbControl
+        .run(for {
+          next <- st.dbControl.completeSlot(tc.resultSlot, res, st.makeLambda)
+          _ <- st.dbControl.removeWaiter(tc)
+        } yield next)
+        .flatten
     }
 
-    val toIO: ConnectionIO[IO[Unit]] = st.dbControl
+    st.dbControl
       .readSlot(tc.argSlot)
       .flatMap {
         case Some(Right(json)) =>
           // the slot is complete, we can now fire off an event:
           val fn = st.makeLambda(tc.name)
           Applicative[ConnectionIO].pure(
-            for {
-              jresEither <- fn(json).attempt
-              _ <- write(jresEither)
-            } yield ()
+            fn(json).attempt.flatMap(write)
           )
         case Some(err @ Left(_)) =>
-          st.dbControl.completeSlot(tc.resultSlot, err, st.makeLambda) *>
-            st.dbControl.removeWaiter(tc).as(IO.unit)
+          st.dbControl.completeSlot(tc.resultSlot, err, st.makeLambda) <*
+            st.dbControl.removeWaiter(tc)
         case None =>
+          //println(s"$tc could not read")
           // we have to wait and callback.
           st.dbControl
             .addWaiter(tc, LambdaFunctionName(context.getInvokedFunctionArn()))
             .as(IO.unit)
       }
-
-    // we exit the transaction for the inner action
-    toIO.transact(st.transactor).flatten
   }
 
   def makeList(
       ml: MakeList,
       st: State,
       context: Context
-  ): ConnectionIO[Unit] = {
+  ): ConnectionIO[IO[Unit]] = {
     import st.dbControl
 
     ml.argSlots
@@ -353,20 +396,26 @@ class PuaWorker extends PureLambda[PuaAws.State, PuaAws.Action, Unit] {
             val write = nelJson.sequence.map { noErrors =>
               Json.fromValues(noErrors.toList)
             }
-            dbControl.completeSlot(ml.resultSlot, write, st.makeLambda) *>
+            dbControl.completeSlot(ml.resultSlot, write, st.makeLambda) <*
               dbControl.removeWaiter(ml)
 
           case None =>
             // we are not done, continue to wait
-            dbControl.addWaiter(
-              ml,
-              LambdaFunctionName(context.getInvokedFunctionArn())
-            )
+            dbControl
+              .addWaiter(
+                ml,
+                LambdaFunctionName(context.getInvokedFunctionArn())
+              )
+              .as(IO.unit)
         }
       }
   }
 
-  def unList(ul: UnList, st: State, context: Context): ConnectionIO[Unit] = {
+  def unList(
+      ul: UnList,
+      st: State,
+      context: Context
+  ): ConnectionIO[IO[Unit]] = {
     import st.dbControl
 
     dbControl
@@ -380,47 +429,71 @@ class PuaWorker extends PureLambda[PuaAws.State, PuaAws.Action, Unit] {
                 case Some(v) if v.size == resSize =>
                   ul.resultSlots.toList.toVector
                     .zip(v)
-                    .traverse_ {
+                    .traverse {
                       case (slot, json) =>
                         dbControl.completeSlot(slot, Right(json), st.makeLambda)
                     }
+                    .map(_.sequence_)
                 case _ =>
                   val err = PuaAws.Error(
                     PuaAws.Error.InvalidUnlistLength,
                     s"expected a list of size: $resSize, got: ${success.noSpaces}"
                   )
 
-                  ul.resultSlots.traverse_ { slot =>
-                    dbControl.completeSlot(slot, Left(err), st.makeLambda)
-                  }
+                  ul.resultSlots
+                    .traverse { slot =>
+                      dbControl.completeSlot(slot, Left(err), st.makeLambda)
+                    }
+                    .map(_.sequence_)
               }
             case err @ Left(_) =>
               // set all the downstreams as failures
-              ul.resultSlots.traverse_ { slot =>
-                dbControl.completeSlot(slot, err, st.makeLambda)
-              }
+              ul.resultSlots
+                .traverse { slot =>
+                  dbControl.completeSlot(slot, err, st.makeLambda)
+                }
+                .map(_.sequence_)
           }
 
-          write *> dbControl.removeWaiter(ul)
+          write <* dbControl.removeWaiter(ul)
         case None =>
+          //println(s"$ul could not read")
           // we are not done, continue to wait
-          dbControl.addWaiter(
-            ul,
-            LambdaFunctionName(context.getInvokedFunctionArn())
-          )
+          dbControl
+            .addWaiter(
+              ul,
+              LambdaFunctionName(context.getInvokedFunctionArn())
+            )
+            .as(IO.unit)
       }
   }
 
   def run(input: IO[PuaAws.Action], st: State, context: Context): IO[Unit] = {
-    val dbOp = LiftIO[ConnectionIO].liftIO(input).flatMap {
-      case tc @ ToConst(_, _, _, _) => toConst(tc, st, context)
-      case cb @ ToCallback(_, _, _, _) =>
-        LiftIO[ConnectionIO].liftIO(toCallback(cb, st, context))
-      case ml @ MakeList(_, _, _) => makeList(ml, st, context)
-      case ul @ UnList(_, _, _)   => unList(ul, st, context)
-    }
+    val dbOp: ConnectionIO[IO[Unit]] =
+      LiftIO[ConnectionIO]
+        .liftIO(input)
+        //.map { act => println(act); act }
+        .flatMap {
+          case tc @ ToConst(_, _, _, _)    => toConst(tc, st, context)
+          case cb @ ToCallback(_, _, _, _) => toCallback(cb, st, context)
+          case ml @ MakeList(_, _, _)      => makeList(ml, st, context)
+          case ul @ UnList(_, _, _)        => unList(ul, st, context)
+        }
 
     // we can retry transient operations here:
-    dbOp.transact(st.transactor)
+    st.dbControl
+      .run(dbOp)
+      .flatten // now run the IO after changing the DB
+      .recoverWith {
+        case _: SQLTransientException =>
+          // if we have a transient failure, just retry as long
+          // as the lambda has a budget for
+          run(input, st, context)
+        case err =>
+          input.flatMap { act =>
+            IO { println("=" * 800); println(s"on: $act\nerror: $err") } *> IO
+              .raiseError(err)
+          }
+      }
   }
 }

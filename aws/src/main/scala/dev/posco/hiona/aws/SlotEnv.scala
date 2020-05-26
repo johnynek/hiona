@@ -56,10 +56,7 @@ abstract class SlotEnv {
         allocSlot.map { out => arg: SlotId => toFnLater(nm, arg, out).as(out) }
       case Compose(f, s) =>
         (start(f), start(s)).mapN { (fstart, sstart) => arg: SlotId =>
-          for {
-            s1 <- fstart(arg)
-            s2 <- sstart(s1)
-          } yield s2
+          fstart(arg).flatMap(sstart)
         }
 
       case Fanout(lams) =>
