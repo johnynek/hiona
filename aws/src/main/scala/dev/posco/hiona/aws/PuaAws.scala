@@ -255,28 +255,11 @@ object PuaAws {
   def buildLambdaState: IO[State] = ???
 }
 
-/**
-  * Data structures:
-  * Waiter: FnName, Json argument to send
-  *
- * key: slot: Long, update: Timestamp, result: Option[Json], errNumber: Option[Int], failure: Option[String], waiters: Option[List[Waiter]]
-  case class Slot(
-      slotId: Long,
-      update: SQLTimestamp,
-      result: Option[String],
-      errorCode: Option[Int],
-      errorMessage: Option[String],
-      waiters: List[Long]
-  )
-  case class Waiter(
-      waiterId: Long,
-      update: SQLTimestamp,
-      functionName: String,
-  )
-  */
 abstract class DBControl {
 
   def initializeTables: ConnectionIO[Unit]
+
+  def cleanupTables: ConnectionIO[Unit]
 
   def run[A](c: ConnectionIO[A]): IO[A]
 
