@@ -118,7 +118,7 @@ class PostgresDBControl(transactor: Transactor[IO]) extends DBControl {
   }
 
   def addWaiter(
-      act: PuaAws.Action,
+      act: PuaAws.BlockingAction,
       function: LambdaFunctionName
   ): ConnectionIO[Unit] =
     act.waitId match {
@@ -143,7 +143,7 @@ class PostgresDBControl(transactor: Transactor[IO]) extends DBControl {
         } yield ()
     }
 
-  def removeWaiter(act: PuaAws.Action): ConnectionIO[Unit] =
+  def removeWaiter(act: PuaAws.BlockingAction): ConnectionIO[Unit] =
     act.waitId match {
       case None => Monad[ConnectionIO].unit
       case Some(waitId) =>

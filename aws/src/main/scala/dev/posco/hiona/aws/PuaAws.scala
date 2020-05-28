@@ -126,7 +126,9 @@ class PuaAws(
 }
 
 object PuaAws {
-  sealed abstract class Action {
+  sealed abstract class Action
+
+  sealed abstract class BlockingAction extends Action {
     def waitId: Option[Long]
     def withWaitId(wid: Long): Action = {
       import Action._
@@ -147,7 +149,7 @@ object PuaAws {
         argSlot: Long,
         resultSlot: Long,
         waitId: Option[Long]
-    ) extends Action {
+    ) extends BlockingAction {
       def argSlots = NonEmptyList(argSlot, Nil)
     }
     case class ToCallback(
@@ -155,21 +157,24 @@ object PuaAws {
         argSlot: Long,
         resultSlot: Long,
         waitId: Option[Long]
-    ) extends Action {
+    ) extends BlockingAction {
       def argSlots = NonEmptyList(argSlot, Nil)
     }
     case class MakeList(
         argSlots: NonEmptyList[Long],
         resultSlot: Long,
         waitId: Option[Long]
-    ) extends Action
+    ) extends BlockingAction
     case class UnList(
         argSlot: Long,
         resultSlots: NonEmptyList[Long],
         waitId: Option[Long]
-    ) extends Action {
+    ) extends BlockingAction {
       def argSlots = NonEmptyList(argSlot, Nil)
     }
+
+    // create tables
+    case object InitTables extends Action
 
     implicit val actionEncoder: Encoder[Action] = {
       import io.circe.generic.semiauto._
@@ -198,6 +203,8 @@ object PuaAws {
               Json
                 .obj("kind" -> Json.fromString("unlist"))
                 .deepMerge(unList(ul))
+            case InitTables =>
+              Json.obj("kind" -> Json.fromString("init_tables"))
           }
       }
     }
@@ -224,6 +231,8 @@ object PuaAws {
                 makeList(a)
               case "unlist" =>
                 unList(a)
+              case "init_tables" =>
+                Right(InitTables)
               case unknown =>
                 Left(
                   DecodingFailure(
@@ -268,11 +277,11 @@ abstract class DBControl {
   def readSlot(slotId: Long): ConnectionIO[Option[Either[PuaAws.Error, Json]]]
 
   def addWaiter(
-      act: PuaAws.Action,
+      act: PuaAws.BlockingAction,
       function: LambdaFunctionName
   ): ConnectionIO[Unit]
 
-  def removeWaiter(act: PuaAws.Action): ConnectionIO[Unit]
+  def removeWaiter(act: PuaAws.BlockingAction): ConnectionIO[Unit]
 
   def completeSlot(
       slotId: Long,
@@ -461,6 +470,7 @@ class PuaWorker extends PureLambda[PuaAws.State, PuaAws.Action, Unit] {
           case cb @ ToCallback(_, _, _, _) => toCallback(cb, st, context)
           case ml @ MakeList(_, _, _)      => makeList(ml, st, context)
           case ul @ UnList(_, _, _)        => unList(ul, st, context)
+          case InitTables                  => st.dbControl.initializeTables.as(IO.unit)
         }
 
     // we can retry transient operations here:

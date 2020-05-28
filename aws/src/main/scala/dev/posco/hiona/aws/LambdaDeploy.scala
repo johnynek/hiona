@@ -43,6 +43,7 @@ class LambdaDeploy(
 
   def lambdaResource(
       coord: Coord,
+      lambdaName: Option[LambdaFunctionName],
       casRoot: S3Addr,
       role: String,
       optVpc: Option[LambdaDeploy.Vpc]
@@ -52,7 +53,14 @@ class LambdaDeploy(
     val s3AddrIO =
       ContentStore.put[IO](awsS3, casRoot, coord.jarPath, blocker)
 
-    val ioRes = (unique.next, s3AddrIO).mapN { (name, s3addr) =>
+    val resName: IO[LambdaFunctionName] =
+      lambdaName match {
+        case None     => unique.next.map(LambdaFunctionName(_))
+        case Some(nm) => IO.pure(nm)
+      }
+
+    val ioRes = (resName, s3AddrIO).mapN { (nm, s3addr) =>
+      val name = nm.asString
       val req0 = new CreateFunctionRequest()
         .withHandler(coord.methodName.asString)
         .withFunctionName(name)
@@ -87,7 +95,6 @@ class LambdaDeploy(
         ) *>
           block(awsLambda.createFunction(req))
 
-      val nm = LambdaFunctionName(name)
       val nonPending = awsLambda.waitNonPending(nm, blocker)
 
       Resource
@@ -116,12 +123,13 @@ class LambdaDeploy(
 
   def invokeRemoteAsync(
       coord: Coord,
+      lambdaName: Option[LambdaFunctionName],
       casRoot: S3Addr,
       role: String,
       in: Json,
       optVpc: Option[LambdaDeploy.Vpc]
   ): IO[Unit] =
-    lambdaResource(coord, casRoot, role, optVpc).allocated
+    lambdaResource(coord, lambdaName, casRoot, role, optVpc).allocated
       .flatMap {
         case (name, _) =>
           awsLambda.makeLambdaAsync(name, blocker).apply(in)
@@ -129,16 +137,18 @@ class LambdaDeploy(
 
   def invokeRemoteSync(
       coord: Coord,
+      lambdaName: Option[LambdaFunctionName],
       casRoot: S3Addr,
       role: String,
       in: Json,
       optVpc: Option[LambdaDeploy.Vpc]
   ): IO[Json] =
-    lambdaResource(coord, casRoot, role, optVpc)
+    lambdaResource(coord, lambdaName, casRoot, role, optVpc)
       .use(name => awsLambda.makeLambda(name, blocker).apply(in))
 
   def invokeRemoteKind(
       coord: Coord,
+      lambdaName: Option[LambdaFunctionName],
       casRoot: S3Addr,
       role: String,
       in: Json,
@@ -147,18 +157,22 @@ class LambdaDeploy(
   ): IO[Unit] =
     kind match {
       case LambdaDeploy.InvocationKind.Sync =>
-        invokeRemoteSync(coord, casRoot, role, in, optVpc)
+        invokeRemoteSync(coord, lambdaName, casRoot, role, in, optVpc)
           .flatMap { json =>
             IO(println(json.spaces2))
           }
       case LambdaDeploy.InvocationKind.Async =>
-        invokeRemoteAsync(coord, casRoot, role, in, optVpc)
+        invokeRemoteAsync(coord, lambdaName, casRoot, role, in, optVpc)
     }
   val invokeRemoteCommand: Command[IO[Unit]] =
     Command("invoke_remote", "deploy, create, invoke, then delete")(
       (
         Opts.option[Path]("jar", "the jar containing the code"),
         Opts.option[MethodName]("method", "the lambda function method"),
+        Opts
+          .option[String]("name", "the name to give to the lambda")
+          .map(LambdaFunctionName(_))
+          .orNone,
         Opts.option[S3Addr](
           "cas_root",
           "s3 uri to root of the content-addressed store"
@@ -167,10 +181,18 @@ class LambdaDeploy(
         Payload.optPayload,
         LambdaDeploy.InvocationKind.invocationKindOpts,
         LambdaDeploy.Vpc.vpcOpts
-      ).mapN { (p, mn, s3root, role, in, ik, optVpc) =>
+      ).mapN { (p, mn, lambdaNameOpt, s3root, role, in, ik, optVpc) =>
         for {
           j <- in.toJson
-          _ <- invokeRemoteKind(Coord(p, mn), s3root, role, j, ik, optVpc)
+          _ <- invokeRemoteKind(
+            Coord(p, mn),
+            lambdaNameOpt,
+            s3root,
+            role,
+            j,
+            ik,
+            optVpc
+          )
         } yield ()
       }
     )

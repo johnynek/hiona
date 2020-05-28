@@ -3,7 +3,7 @@ package dev.posco.hiona.aws
 import cats.{Defer, Monad}
 import cats.data.{NonEmptyList, StateT}
 import cats.effect.IO
-import org.scalacheck.{Arbitrary, Cogen, Gen, Prop}
+import org.scalacheck.{Arbitrary, Cogen, Gen}
 import io.circe.Json
 
 import Arbitrary.{arbitrary => arb}
@@ -98,7 +98,7 @@ object PuaGens {
 
   val genShape2: Gen[JsonShape] = shapes(2)
 
-  implicit private val genMonad: Monad[Gen] with Defer[Gen] =
+  implicit val genMonad: Monad[Gen] with Defer[Gen] =
     new Monad[Gen] with Defer[Gen] {
       def defer[A](ga: => Gen[A]): Gen[A] = Gen.lzy(ga)
       def pure[A](a: A): Gen[A] = Gen.const(a)

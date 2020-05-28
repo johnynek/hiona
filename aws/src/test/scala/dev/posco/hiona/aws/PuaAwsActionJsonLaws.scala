@@ -65,7 +65,13 @@ object PuaAwsActionGens {
         case (a, b, c) => Action.UnList(a, b, c)
       }
 
-    Gen.oneOf(genConst, genCb, genMakeList, genUnList)
+    Gen.oneOf(
+      genConst,
+      genCb,
+      genMakeList,
+      genUnList,
+      Gen.const(Action.InitTables)
+    )
   }
 }
 
