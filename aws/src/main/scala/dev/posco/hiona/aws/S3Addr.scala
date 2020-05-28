@@ -7,6 +7,8 @@ final case class S3Addr(bucket: String, key: String) {
   def /(that: String): S3Addr =
     if (key.endsWith("/")) S3Addr(bucket, key + that)
     else S3Addr(bucket, s"$key/$that")
+
+  override def toString = s"s3://$bucket/$key"
 }
 
 object S3Addr {

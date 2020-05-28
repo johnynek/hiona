@@ -22,6 +22,13 @@ abstract class PureLambda[Ctx, A, B](implicit
 
   def run(arg: IO[A], ctx: Ctx, context: Context): IO[B]
 
+  def checkContext(ctx: Ctx, context: Context): IO[Unit] = {
+    // just use the args
+    assert(ctx != null)
+    assert(context != null)
+    IO.unit
+  }
+
   final def handleRequest(
       inputStream: InputStream,
       outputStream: OutputStream,
@@ -38,6 +45,7 @@ abstract class PureLambda[Ctx, A, B](implicit
 
     val ioUnit =
       for {
+        _ <- checkContext(readCtx, context)
         b <- run(input, readCtx, context)
         bjsonBytes = b.asJson.noSpaces.getBytes("UTF-8")
         _ <- IO(outputStream.write(bjsonBytes))
@@ -47,7 +55,9 @@ abstract class PureLambda[Ctx, A, B](implicit
 
     try ioUnit.unsafeRunSync()
     catch {
-      case NonFatal(e) => logger.log(s"ERROR: $e")
+      case NonFatal(e) =>
+        logger.log(s"ERROR: $e")
+        throw e
     } finally {
       inputStream.close()
       outputStream.close()

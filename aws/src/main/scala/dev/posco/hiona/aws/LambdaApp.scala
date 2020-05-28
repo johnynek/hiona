@@ -8,6 +8,7 @@ import com.monovore.decline.Argument
 import java.util.concurrent.Executors
 import io.circe.{Decoder, HCursor, Json}
 import scala.concurrent.ExecutionContext
+import doobie.Transactor
 
 import dev.posco.hiona._
 import cats.effect.ExitCode
@@ -169,6 +170,13 @@ abstract class DBS3App extends S3App {
       blocker: Blocker
   )(implicit ctx: ContextShift[IO]): InputFactory[IO] =
     dbInputFactory.combine(super.inputFactory(inputs, e, blocker))
+
+  def assertUnique(ctx: Context): IO[Unit] =
+    db.AtMostOnce.assertUnique(
+      ctx.getAwsRequestId,
+      getClass.getName,
+      transactor
+    )
 }
 
 abstract class DBS3CliApp extends DBS3App {
@@ -190,4 +198,25 @@ abstract class DBS3CliApp extends DBS3App {
 
   final def main(args: Array[String]): Unit =
     System.exit(runIO(args.toList).unsafeRunSync().code)
+}
+
+abstract class DBLambdaApp(
+    appArgs: Args,
+    dbsf: db.DBSupport.Factory,
+    trans: (Blocker, ContextShift[IO]) => IO[Transactor[IO]]
+) extends LambdaApp(appArgs) {
+  override def setup =
+    IO {
+      new aws.DBS3App {
+        def dbSupportFactory = dbsf
+        lazy val transactor = trans(blocker, contextShift).unsafeRunSync()
+      }
+    }
+
+  override def checkContext(s3App: S3App, ctx: Context): IO[Unit] =
+    s3App match {
+      case db: DBS3App => db.assertUnique(ctx)
+      case notDB =>
+        IO.raiseError(new Exception(s"expected an DBS3App, got: $notDB"))
+    }
 }

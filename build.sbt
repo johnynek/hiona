@@ -55,6 +55,7 @@ lazy val core = (project in file("core"))
       fs2,
       fs2io,
       shapeless,
+      slf4jApi,
     ),
     commonSettings,
   )
@@ -94,6 +95,7 @@ lazy val jobs = (project in file("jobs"))
       munit % Test,
       munitScalaCheck % Test,
       scalaCheck % Test,
+      slf4jSimple
     ),
     commonSettings,
   )
