@@ -20,6 +20,7 @@ object LabeledEvent {
   ): LabeledEvent[(K, (V, W))] =
     WithLabel(event, label, implicitly[(K, (V, W)) =:= (K, (V, W))])
 
+  @scala.annotation.tailrec
   def sourcesAndOffsetsOf[A](
       ev: LabeledEvent[A]
   ): Map[String, (Set[Event.Source[_]], Set[Duration])] =
@@ -43,6 +44,7 @@ object LabeledEvent {
   ): Map[String, Set[Event.Source[_]]] =
     sourcesAndOffsetsOf(ev).iterator.map { case (k, (v, _)) => (k, v) }.toMap
 
+  @scala.annotation.tailrec
   def lookupsOf[A](le: LabeledEvent[A]): Set[Event.Lookup[_, _, _]] =
     le match {
       case WithLabel(ev, label, _) =>

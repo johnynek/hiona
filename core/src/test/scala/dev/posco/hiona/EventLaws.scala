@@ -311,7 +311,7 @@ class EventLaws extends munit.ScalaCheckSuite {
 
         if (amp.atMostOne) {
           val ev1 = ev
-            .postLookup(ev.latest(Duration.Infinite))
+            .postLookup(ev.latest)
             .map {
               case (k, (v, None)) =>
                 sys.error(s"expected after to find a value: $k $v")
@@ -415,7 +415,7 @@ class EventLaws extends munit.ScalaCheckSuite {
           val keys = ev.asKeys
 
           val dedup = keys
-            .preLookup(keys.latest(Duration.Infinite))
+            .preLookup(keys.latest)
             .concatMap {
               case (k, (_, None))    => k :: Nil
               case (_, (_, Some(_))) => Nil

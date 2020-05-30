@@ -387,7 +387,7 @@ object GenEventFeature {
         fn: Function1[Option[v0.Type], v.Type] <- lift(
           Gen.function1(v.evidence.gen)(cogenOpt(v0.evidence.cogen))
         )
-      } yield ev.latest(dur).map(fn)
+      } yield ev.latestWithin(dur).map(fn)
 
     val genZip: GenS[Feature[k.Type, v.Type]] =
       for {

@@ -79,20 +79,20 @@ object Event {
       extends AnyVal {
 
     /**
-      * When the Feature that depends on ev, an event will trigger
-      * a change to the feature. preLookup gives you the feature value
-      * after the current event timestamp has been considered
-      */
-    final def postLookup[W](that: Feature[K, W]): Event[(K, (V, W))] =
-      Event.Lookup(ev, that, LookupOrder.After)
-
-    /**
-      * When the Feature that depends on ev, an event will trigger
-      * a change to the feature. preLookup gives you the feature value
-      * before the current event timestamp has been considered
+      * When Feature `that` depends on Event `ev`, the event will trigger a change to the feature.
+      * preLookup gives you the feature value before the event at timestamp
+      * has been processed
       */
     final def preLookup[W](that: Feature[K, W]): Event[(K, (V, W))] =
       Event.Lookup(ev, that, LookupOrder.Before)
+
+    /**
+      * When Feature `that` depends on Event `ev`, the event will trigger a change to the feature.
+      * postLookup gives you the feature value after the event at timestamp
+      * has been processed
+      */
+    final def postLookup[W](that: Feature[K, W]): Event[(K, (V, W))] =
+      Event.Lookup(ev, that, LookupOrder.After)
 
     final def valueWithTime: Event[(K, (V, Timestamp))] =
       Event.ValueWithTime(
@@ -103,8 +103,13 @@ object Event {
     final def sum(implicit m: Monoid[V]): Feature[K, V] =
       Feature.Summed(ev, m)
 
-    final def latest(within: Duration): Feature[K, Option[V]] =
-      Feature.Latest(ev, within, implicitly[Option[V] =:= Option[V]])
+    final def latest: Feature[K, Option[V]] =
+      Feature.Latest(ev, Duration.Infinite, implicitly[Option[V] =:= Option[V]])
+
+    final def latestWithin(
+        dur: Duration
+    ): Feature[K, Option[V]] =
+      Feature.Latest(ev, dur, implicitly[Option[V] =:= Option[V]])
 
     final def mapValues[W](fn: V => W): Event[(K, W)] =
       ev.map(Event.MapValuesFn(fn, implicitly[(K, V) <:< (K, V)]))
@@ -221,22 +226,22 @@ object Event {
 
   case class Mapped[A, B](init: Event[A], fn: A => B) extends NonSource[B] {
     type Prior = A
-    def previous = init
+    def previous: Event[A] = init
   }
   case class Filtered[A, B](init: Event[A], fn: A => Boolean, cast: A =:= B)
       extends NonSource[B] {
     type Prior = A
-    def previous = init
+    def previous: Event[A] = init
   }
   case class ConcatMapped[A, B](init: Event[A], fn: A => Iterable[B])
       extends NonSource[B] {
     type Prior = A
-    def previous = init
+    def previous: Event[A] = init
   }
   case class WithTime[A, B](init: Event[A], cast: (A, Timestamp) =:= B)
       extends NonSource[B] {
     type Prior = A
-    def previous = init
+    def previous: Event[A] = init
   }
 
   case class Lookup[K, V, W](
@@ -250,20 +255,20 @@ object Event {
       cast: (K, (V, Timestamp)) =:= W
   ) extends NonSource[W] {
     type Prior = (K, V)
-    def previous = event
+    def previous: Event[(K, V)] = event
   }
 
   case class Second[A]() extends Function[(Any, A), A] {
-    def apply(kv: (Any, A)) = kv._2
+    def apply(kv: (Any, A)): A = kv._2
   }
 
   case class ToSome[A]() extends Function[A, Some[A]] {
-    def apply(a: A) = Some(a)
+    def apply(a: A): Some[A] = Some(a)
   }
 
   case class MapValuesFn[A0, A, B, C](fn: B => C, ev: A0 <:< (A, B))
       extends Function[A0, (A, C)] {
-    def apply(a0: A0) = {
+    def apply(a0: A0): (A, C) = {
       val ab = ev(a0)
       (ab._1, fn(ab._2))
     }
@@ -287,7 +292,7 @@ object LookupOrder {
 }
 
 case class MaxMonoid[A](ord: Ordering[A]) extends Monoid[Option[A]] {
-  def empty = None
+  def empty: Option[Nothing] = None
   def combine(left: Option[A], right: Option[A]): Option[A] =
     (left, right) match {
       case (None, r) => r

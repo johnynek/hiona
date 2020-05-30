@@ -91,9 +91,9 @@ object Example {
   )
 
   val latestBar: Feature[String, Option[PriceData]] =
-    hkStockData.withTime
-      .map { case (sd, ts) => (sd.symbol, PriceData(sd.close, sd.volume, ts)) }
-      .latest(Duration.Infinite)
+    hkStockData.withTime.map {
+      case (sd, ts) => (sd.symbol, PriceData(sd.close, sd.volume, ts))
+    }.latest
 
   // these are timestamps of bar closings 1 ms after they happen
   val barEnd: Event[Timestamp] = {
@@ -298,7 +298,7 @@ object Example {
       val dur = Duration.minutes(valueOf[Min].toLong)
 
       Label(
-        coreEvent[Min, T].latest(Duration.Infinite)
+        coreEvent[Min, T].latest
       ).lookForward(dur)
     }
 

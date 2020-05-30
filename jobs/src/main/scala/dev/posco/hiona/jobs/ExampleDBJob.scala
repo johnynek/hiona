@@ -1,8 +1,9 @@
 package dev.posco.hiona.jobs
 
 import cats.effect.IO
-import dev.posco.hiona._
 import cats.implicits._
+import dev.posco.hiona._
+import dev.posco.hiona.jobs.Featurize._
 import dev.posco.hiona.db.DBSupport
 import doobie.implicits._
 
@@ -15,14 +16,6 @@ object ExampleDBJob extends aws.DBS3CliApp {
     Validator.fromEpochSecondsStr(_.timestamp)
   )
 
-  case class CurrencyExchange(
-      base_currency: String,
-      timestamp_epoch_millis: Long,
-      one_base_in_quote: Double
-  ) {
-    def toUSD(localAmt: Double): Double = localAmt / one_base_in_quote
-  }
-
   val valueInUSD: Event.Source[CurrencyExchange] =
     Event.source[CurrencyExchange](
       "finnhub.exchange_rates",
@@ -34,7 +27,7 @@ object ExampleDBJob extends aws.DBS3CliApp {
     * sql queries
     * DBSupport.factoryFor(src, "some sqlString here")
     */
-  def candleDbSupportFactory =
+  def candleDbSupportFactory: DBSupport.Factory =
     db.DBSupport
       .factoryFor(
         src,
@@ -42,7 +35,7 @@ object ExampleDBJob extends aws.DBS3CliApp {
         sql"select _symbol, timestamp, open from finnhub.stock_candles where timestamp is not NULL limit 10000"
       )
 
-  def currencyExchangeDbSupportFactory =
+  def currencyExchangeDbSupportFactory: DBSupport.Factory =
     db.DBSupport
       .factoryFor(
         valueInUSD,
@@ -50,7 +43,7 @@ object ExampleDBJob extends aws.DBS3CliApp {
           SELECT
             base_currency,
             timestamp_epoch_millis,
-            one_base_in_quote
+            one_quote_in_base
           FROM finnhub.exchange_rates
           WHERE quote_currency = 'USD'
           ORDER BY timestamp_epoch_millis
