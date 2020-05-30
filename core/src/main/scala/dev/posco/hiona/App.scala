@@ -6,7 +6,6 @@ import cats.effect.{Blocker, ContextShift, ExitCode, IO, IOApp, Resource}
 import com.monovore.decline.{Argument, Command, Opts}
 import fs2.{Pipe, Pull, Stream}
 import java.nio.file.Path
-import org.slf4j.LoggerFactory
 
 import cats.implicits._
 

@@ -1,0 +1,11 @@
+{
+  "body": {
+    "args":
+      [
+        "run",
+        "--logevery", "24h",
+        "--limit", "1000",
+        "--output", "s3://predictionmachine-data/temp/candle1_1000.csv"
+      ]
+    }
+}

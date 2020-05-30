@@ -3,6 +3,14 @@ package dev.posco.hiona
 import cats.Monoid
 import cats.implicits._
 
+/**
+  * Time-varying value of type V about entities of type K.
+  *
+  * For example, lets us compute moving average of price.
+  * The ways to get one of these is Feature.Summed and Feature.Latest,
+  * the way to combine features is with Feature#zip, or transform with
+  * Feature#map
+  */
 sealed abstract class Feature[K, V] {
 
   final def zip[W](that: Feature[K, W]): Feature[K, (V, W)] =

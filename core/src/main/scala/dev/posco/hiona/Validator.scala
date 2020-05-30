@@ -29,7 +29,7 @@ object Validator {
 
   def fromEpochSecondsStr[A](get: A => String): Validator[A] =
     new Validator[A] {
-      def validate(a: A) = {
+      def validate(a: A): Either[TimestampParseFailure[Any], Timestamp] = {
         val ts = get(a)
         try Right(Timestamp(ts.toLong * 1000))
         catch {

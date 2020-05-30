@@ -1,8 +1,8 @@
 import Dependencies._
 
-ThisBuild / scalaVersion     := "2.13.2"
-ThisBuild / version          := "0.1.0-SNAPSHOT"
-ThisBuild / organization     := "dev.posco"
+ThisBuild / scalaVersion := "2.13.2"
+ThisBuild / version := "0.1.0-SNAPSHOT"
+ThisBuild / organization := "dev.posco"
 ThisBuild / organizationName := "devposco"
 
 lazy val commonSettings =
@@ -10,31 +10,36 @@ lazy val commonSettings =
     testFrameworks += new TestFramework("munit.Framework"),
     scalacOptions ++= Seq(
       "-Wunused",
- //     "-Xfatal-warnings",
+      //     "-Xfatal-warnings",
       "-Xlint",
       "-Yrangepos",
       "-Ywarn-dead-code",
       "-Ywarn-value-discard",
       "-deprecation",
-      "-encoding", "UTF-8",
+      "-encoding",
+      "UTF-8",
       "-feature",
       "-language:existentials",
       "-language:experimental.macros",
       "-language:higherKinds",
       "-language:implicitConversions",
-      "-unchecked",
+      "-unchecked"
     ),
     // HACK: without these lines, the console is basically unusable,
     // since all imports are reported as being unused (and then become
     // fatal errors).
-    scalacOptions in (Compile, console) ~= { _.filterNot("-Xlint" == _) },
+    scalacOptions in (Compile, console) ~= {
+      _.filterNot(Set("-Xlint", "-Wunused"))
+    },
     scalacOptions in (Test, console) := (scalacOptions in (Compile, console)).value,
     addCompilerPlugin("com.olegpy" %% "better-monadic-for" % "0.3.1"),
     assemblyMergeStrategy in assembly := {
       case PathList("META-INF", "MANIFEST.MF") => MergeStrategy.discard
-      case _ => MergeStrategy.first
+      case _                                   => MergeStrategy.first
     },
-    addCompilerPlugin("org.typelevel" %% "kind-projector" % "0.11.0" cross CrossVersion.full)
+    addCompilerPlugin(
+      "org.typelevel" %% "kind-projector" % "0.11.0" cross CrossVersion.full
+    )
   )
 
 lazy val core = (project in file("core"))
@@ -55,9 +60,9 @@ lazy val core = (project in file("core"))
       fs2,
       fs2io,
       shapeless,
-      slf4jApi,
+      slf4jApi
     ),
-    commonSettings,
+    commonSettings
   )
 
 lazy val aws = (project in file("aws"))
@@ -81,9 +86,9 @@ lazy val aws = (project in file("aws"))
       fs2,
       fs2io,
       postgresJdbc,
-      streamUpload,
+      streamUpload
     ),
-    commonSettings,
+    commonSettings
   )
   .dependsOn(core)
 
@@ -97,7 +102,7 @@ lazy val jobs = (project in file("jobs"))
       scalaCheck % Test,
       slf4jSimple
     ),
-    commonSettings,
+    commonSettings
   )
   .dependsOn(core, aws)
 
@@ -106,6 +111,6 @@ lazy val bench = (project in file("bench"))
   .settings(
     name := "hiona-bench",
     moduleName := "hiona-bench",
-    commonSettings,
+    commonSettings
   )
   .dependsOn(core)
