@@ -17,5 +17,11 @@ jobs:
       uses: actions/setup-java@v1
       with:
         java-version: 1.8
+    - uses: harmon758/postgresql-action@v1
+      with:
+        postgresql version: '12.2'
+        postgresql db: sbt_it_tests
+        postgresql user: sbtester
+        postgresql password: sbtpw
     - name: Run tests
-      run: sbt test
+      run: sbt test it:test

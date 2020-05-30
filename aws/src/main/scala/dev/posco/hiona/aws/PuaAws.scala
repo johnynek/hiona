@@ -6,6 +6,7 @@ import cats.{Applicative, Defer, Monad}
 import com.amazonaws.services.lambda.runtime.Context
 import doobie.ConnectionIO
 import io.circe.{Decoder, Encoder, Json}
+import org.postgresql.util.PSQLException
 import scala.concurrent.duration.FiniteDuration
 import java.sql.SQLTransientException
 
@@ -73,6 +74,9 @@ class PuaAws(
         case Some(Left(err))   => IO.raiseError(err)
         case None              => IO.pure(None)
       }
+      .recoverWith {
+        case (_: SQLTransientException | _: PSQLException) => IO.pure(None)
+      }
 
   def toIOFn[A: Encoder](
       pua: Pua
@@ -97,10 +101,14 @@ class PuaAws(
             dbControl.completeSlot(slot, Right(a.asJson), _ => _ => noWaiters)
         } yield fn(slot)
 
-      for {
-        io <- dbControl.run(transaction)
-        res <- io
-      } yield res
+      lazy val io: IO[Long] = dbControl
+        .run(transaction)
+        .flatten
+        .recoverWith {
+          case (_: SQLTransientException | _: PSQLException) => io
+        }
+
+      io
     }
   }
 
@@ -258,7 +266,8 @@ object PuaAws {
       dbControl: DBControl,
       makeLambda: LambdaFunctionName => Json => IO[Json],
       blocker: Blocker,
-      ctxShift: ContextShift[IO]
+      ctxShift: ContextShift[IO],
+      timer: Timer[IO]
   )
 
   def buildLambdaState: IO[State] = ???
@@ -357,9 +366,8 @@ class PuaWorker extends PureLambda[PuaAws.State, PuaAws.Action, Unit] {
         case Some(Right(json)) =>
           // the slot is complete, we can now fire off an event:
           val fn = st.makeLambda(tc.name)
-          Applicative[ConnectionIO].pure(
-            fn(json).attempt.flatMap(write)
-          )
+          val invoke = fn(json).attempt.flatMap(write)
+          Applicative[ConnectionIO].pure(invoke)
         case Some(err @ Left(_)) =>
           st.dbControl.completeSlot(tc.resultSlot, err, st.makeLambda) <*
             st.dbControl.removeWaiter(tc)
@@ -461,6 +469,17 @@ class PuaWorker extends PureLambda[PuaAws.State, PuaAws.Action, Unit] {
   }
 
   def run(input: IO[PuaAws.Action], st: State, context: Context): IO[Unit] = {
+    val rng = new java.util.Random(context.getAwsRequestId().hashCode)
+    val nextDouble: IO[Double] = IO(rng.nextDouble)
+
+    def nextSleep(retry: Int): IO[Unit] =
+      for {
+        d <- nextDouble
+        dr = retry * 100.0 * d
+        dur = FiniteDuration(dr.toLong, "ms")
+        _ <- st.timer.sleep(dur)
+      } yield ()
+
     val dbOp: ConnectionIO[IO[Unit]] =
       LiftIO[ConnectionIO]
         .liftIO(input)
@@ -474,19 +493,26 @@ class PuaWorker extends PureLambda[PuaAws.State, PuaAws.Action, Unit] {
         }
 
     // we can retry transient operations here:
-    st.dbControl
-      .run(dbOp)
-      .flatten // now run the IO after changing the DB
-      .recoverWith {
-        case _: SQLTransientException =>
+    def runWithRetries[A](io: IO[A], retry: Int, max: Int): IO[A] =
+      io.recoverWith {
+        case (_: SQLTransientException | _: PSQLException) if retry < max =>
           // if we have a transient failure, just retry as long
           // as the lambda has a budget for
-          run(input, st, context)
+          val nextR = retry + 1
+          nextSleep(nextR) *> runWithRetries(io, nextR, max)
         case err =>
           input.flatMap { act =>
             IO { println("=" * 800); println(s"on: $act\nerror: $err") } *> IO
               .raiseError(err)
           }
       }
+
+    // we arbitrarily set to 50 here.
+    val max = 50
+    // phase1 is all the db writes without doing any IO
+    // after we do that, we do remote IO and maybe some more db writes
+    val phase1 = st.dbControl.run(dbOp)
+    runWithRetries(phase1, 0, max)
+      .flatMap(runWithRetries(_, 0, max))
   }
 }

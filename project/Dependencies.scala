@@ -27,6 +27,7 @@ object Dependencies {
   lazy val delimited = "net.tixxit" %% "delimited-core" % "0.10.0"
   lazy val diffx = "com.softwaremill.diffx" %% "diffx-core" % "0.3.28"
   lazy val doobie = "org.tpolecat" %% "doobie-core" % "0.9.0"
+  lazy val doobieHikari = "org.tpolecat" %% "doobie-hikari" % "0.9.0"
   lazy val fs2 = "co.fs2" %% "fs2-core" % V.fs2
   lazy val fs2io = "co.fs2" %% "fs2-io" % V.fs2
   lazy val h2 = "com.h2database" % "h2" % "1.4.200"

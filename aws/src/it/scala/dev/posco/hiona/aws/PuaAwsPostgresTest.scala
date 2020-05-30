@@ -1,69 +1,27 @@
 package dev.posco.hiona.aws
 
-import cats.data.NonEmptyList
-import cats.effect.concurrent.{Ref, Semaphore}
-import cats.effect.{Blocker, ContextShift, IO, Resource}
+import cats.effect.concurrent.Ref
+import cats.effect.{Blocker, IO}
 import com.amazonaws.services.lambda.runtime.Context
-import doobie._
-import doobie.enum.TransactionIsolation.TransactionSerializable
 import io.circe.Json
 import org.scalacheck.Prop
 import scala.concurrent.duration.FiniteDuration
 
 import cats.implicits._
-import doobie.implicits._
 
-/*
-object ImpLog {
-  implicit val han = doobie.util.log.LogHandler.jdkLogHandler
-}
-
-import ImpLog.han
- */
-
-class H2DBControl(transactor: Transactor[IO], sem: Semaphore[IO])
-    extends PostgresDBControl(transactor) {
-  override def run[A](con: ConnectionIO[A]): IO[A] =
-    // H2 seems to have bugs with serializability
-    sem.withPermit(super.run(con))
-}
-
-object H2DBControl {
-  def apply(
-      blocker: Blocker
-  )(implicit ctx: ContextShift[IO]): Resource[IO, H2DBControl] = {
-    val xa0 = Transactor.fromDriverManager[IO](
-      classOf[org.h2.Driver].getName,
-      "jdbc:h2:mem:test;DB_CLOSE_DELAY=-1;LOCK_MODE=1",
-      //"jdbc:h2:~/test;LOCK_MODE=1",
-      "sa", // user
-      "", // password
-      blocker
-    )
-
-    val b = for {
-      _ <- FC.setAutoCommit(false)
-      _ <-
-        sql"SET SESSION CHARACTERISTICS AS TRANSACTION ISOLATION LEVEL SERIALIZABLE".update.run.void
-      _ <- HC.setTransactionIsolation(TransactionSerializable)
-    } yield ()
-
-    val xa = Transactor.before.set(xa0, b)
-
-    Resource.liftF(Semaphore[IO](1).map(new H2DBControl(xa, _)))
-  }
-}
-
-class PuaAwsTest extends munit.ScalaCheckSuite {
+class PuaAwsPostgresTest extends munit.ScalaCheckSuite {
   implicit val ctx = IO.contextShift(scala.concurrent.ExecutionContext.global)
+  val timer = IO.timer(scala.concurrent.ExecutionContext.global)
 
   override def scalaCheckTestParameters =
     super.scalaCheckTestParameters
       .withMinSuccessfulTests(
-        10
+        20
       ) // a bit slow, but locally, this passes with more
 
-  property("h2 puaaws matches what we expect") {
+  //override val scalaCheckInitialSeed = "gV_zHGkPkmQY_dODNFYtlHXPSnq6eea0NHyGt-9VNpK="
+
+  property("postgres puaaws matches what we expect") {
 
     def law(
         pua: Pua,
@@ -72,8 +30,12 @@ class PuaAwsTest extends munit.ScalaCheckSuite {
         fn: Json => IO[Json]
     ) = {
       val computation =
-        Blocker[IO].flatMap(b => H2DBControl(b).map((b, _))).use {
-          case (blocker, dbControl) =>
+        Blocker[IO]
+        .flatMap { blocker =>
+          PostgresDBControl("sbt_it_tests", "sbtester", "sbtpw", blocker)
+            .map((blocker, _))
+        }
+        .use { case (blocker, dbControl) =>
             // make the rng deterministic
             val rng = new java.util.Random(123)
             // assign a random name for the lambda
@@ -84,7 +46,7 @@ class PuaAwsTest extends munit.ScalaCheckSuite {
                 .next
 
             val usedRequests = scala.collection.mutable.Set[String]()
-            def nextReq: String =
+            def nextReq: String = {
               usedRequests.synchronized {
                 val reqId = rng.nextInt.toString
                 if (usedRequests(reqId)) nextReq
@@ -93,6 +55,7 @@ class PuaAwsTest extends munit.ScalaCheckSuite {
                   reqId
                 }
               }
+            }
 
             // this is yucky, but we have a circular dependency
             // that is broken before we invoke
@@ -110,13 +73,13 @@ class PuaAwsTest extends munit.ScalaCheckSuite {
             implicit val timer =
               IO.timer(scala.concurrent.ExecutionContext.global)
 
-            val setupH2Worker: PuaAws.State =
+            val setupPostgresWorker: PuaAws.State =
               PuaAws.State(dbControl, dir, blocker, ctx, timer)
 
             val worker = new PuaWorker {
               override def setup =
-                IO.pure(setupH2Worker)
-                  .as(setupH2Worker)
+                IO.pure(setupPostgresWorker)
+                  .as(setupPostgresWorker)
             }
 
             val puaAws = new PuaAws(dbControl, invokeLam)
@@ -144,7 +107,7 @@ class PuaAwsTest extends munit.ScalaCheckSuite {
               worker
                 .run(
                   IO.fromEither(j.as[PuaAws.Action]),
-                  setupH2Worker,
+                  setupPostgresWorker,
                   mockContext
                 )
                 .start
@@ -155,7 +118,7 @@ class PuaAwsTest extends munit.ScalaCheckSuite {
               puaAws.toIOFnPoll[Json, Json](pua, FiniteDuration(50, "ms"))
 
             for {
-              _ <- dbControl.run(dbControl.initializeTables).attempt
+              _ <- dbControl.run(dbControl.initializeTables)
               _ <- setWorker
               res <- inputs.parTraverse(dbFn)
               _ <- dbControl.run(dbControl.cleanupTables)
@@ -178,30 +141,6 @@ class PuaAwsTest extends munit.ScalaCheckSuite {
         }
         .unsafeRunSync()
     }
-
-    val dir = PuaLocal.emptyDirectory
-      .addFn("a", { j: Long => IO.pure(j) })
-      .addFn("b", { j: Long => IO.pure(j + 1) })
-      .addFn("c", { j: Json => IO.pure(j) })
-      .addFn("d", { j: Json => IO.pure(j) })
-
-    val regression0 =
-      Pua.Compose(
-        Pua.Fanout(NonEmptyList.of(Pua.call("a"), Pua.call("b"))),
-        Pua.Compose(Pua.call("c"), Pua.call("d"))
-      )
-
-    law(
-      regression0,
-      dir,
-      List(Json.fromLong(1L)),
-      { j: Json =>
-        val j1 = Json.fromLong(
-          j.as[Long].getOrElse(sys.error(s"expected long in $j")) + 1L
-        )
-        IO.pure(Json.fromValues(List(j, j1)))
-      }
-    )
 
     Prop.forAllNoShrink(PuaGens.genDirectory) {
       case (pua, dir0, inputs, fn) => law(pua, dir0, inputs, fn)

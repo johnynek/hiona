@@ -65,14 +65,18 @@ lazy val core = (project in file("core"))
     commonSettings
   )
 
+lazy val IntegrationTest = config("it") extend(Test)
+
 lazy val aws = (project in file("aws"))
+  .configs(IntegrationTest)
   .settings(
+    Defaults.itSettings,
     name := "hiona-aws",
     moduleName := "hiona-aws",
     libraryDependencies ++= Seq(
-      munit % Test,
-      munitScalaCheck % Test,
-      scalaCheck % Test,
+      munit % "it,test",
+      munitScalaCheck % "it,test",
+      scalaCheck % "it,test",
       h2 % Test,
       awsLambdaCore1,
       awsLambdaService,
@@ -83,6 +87,7 @@ lazy val aws = (project in file("aws"))
       circeJawn,
       circeParser,
       commonsCodec,
+      doobieHikari,
       fs2,
       fs2io,
       postgresJdbc,

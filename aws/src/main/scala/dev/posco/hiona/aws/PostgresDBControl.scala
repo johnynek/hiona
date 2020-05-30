@@ -1,53 +1,69 @@
 package dev.posco.hiona.aws
 
-import cats.Monad
-import cats.effect.{IO, LiftIO}
+import cats.{Monad, MonadError}
+import cats.effect.{Blocker, ContextShift, IO, Resource}
 import doobie._
-import io.circe.{Encoder, Json}
+import io.circe.{Decoder, Encoder, Json}
 
 import cats.implicits._
 import doobie.implicits._
+
+/*
+ * uncomment this to turn on logging (but this
+ * may be the wrong place now, sorry... I don't
+ * )
+object ImpLog {
+  implicit val han = doobie.util.log.LogHandler.jdkLogHandler
+}
+
+import ImpLog.han
+ */
 
 class PostgresDBControl(transactor: Transactor[IO]) extends DBControl {
 
   def initializeTables: ConnectionIO[Unit] = {
     val t1 = sql"""CREATE TABLE slots(
-      slotid bigint auto_increment PRIMARY KEY,
+      slotid SERIAL PRIMARY KEY,
       created timestamp NOT NULL DEFAULT NOW(),
       result text,
       error_number int,
       failure text,
-      waiters text
+      completed timestamp
     )""".update.run
 
     val t2 = sql"""CREATE TABLE waiters(
-      waitid bigint auto_increment PRIMARY KEY,
+      waitid SERIAL PRIMARY KEY,
       created timestamp NOT NULL DEFAULT NOW(),
-      function_name text,
-      function_arg text
+      function_name text NOT NULL,
+      function_arg text NOT NULL
     )""".update.run
 
-    (t1 >> t2).void
+    val t3 = sql"""CREATE TABLE waits(
+      waitid bigint NOT NULL,
+      slotid bigint NOT NULL,
+      created timestamp NOT NULL DEFAULT NOW()
+    )""".update.run
+
+    (t1 >> t2 >> t3).void
   }
 
   def cleanupTables: ConnectionIO[Unit] =
     for {
       _ <- sql"DROP TABLE slots".update.run
       _ <- sql"DROP TABLE waiters".update.run
+      _ <- sql"DROP TABLE waits".update.run
     } yield ()
 
   def run[A](cio: ConnectionIO[A]): IO[A] =
     cio.transact(transactor)
 
-  def allocSlot: ConnectionIO[Long] = {
-    val emptyJson = "[]"
-    sql"""insert into slots (waiters) values ($emptyJson)""".update
+  def allocSlot: ConnectionIO[Long] =
+    sql"""insert into slots (result, error_number, failure) values (NULL, NULL, NULL)""".update
       .withUniqueGeneratedKeys[Long]("slotid")
-  }
 
-  def stringToJson(str: String): ConnectionIO[Json] =
-    LiftIO[ConnectionIO]
-      .liftIO(IO.fromEither(io.circe.parser.parse(str)))
+  def stringTo[A: Decoder](str: String): ConnectionIO[A] =
+    MonadError[ConnectionIO, Throwable]
+      .fromEither(io.circe.parser.parse(str).flatMap(_.as[A]))
 
   def readSlot(
       slotId: Long
@@ -61,7 +77,7 @@ class PostgresDBControl(transactor: Transactor[IO]) extends DBControl {
     ): ConnectionIO[Option[Either[PuaAws.Error, Json]]] =
       os match {
         case Some(jsonString) =>
-          stringToJson(jsonString)
+          stringTo[Json](jsonString)
             .map(j => Some(Right(j)))
         case None =>
           oerr match {
@@ -84,38 +100,15 @@ class PostgresDBControl(transactor: Transactor[IO]) extends DBControl {
   }
 
   def getWaiters(slotId: Long): ConnectionIO[List[Long]] =
-    for {
-      ws <-
-        sql"""select waiters from slots where slotid = $slotId"""
-          .query[String]
-          .unique
-      json <- stringToJson(ws)
-      ids <- LiftIO[ConnectionIO].liftIO(IO.fromEither(json.as[List[Long]]))
-    } yield ids
+    sql"""select waitid from waits where slotid = $slotId"""
+      .query[Long]
+      .to[List]
 
-  def addWait(slotId: Long, waitId: Long): ConnectionIO[Unit] =
-    for {
-      ids <- getWaiters(slotId)
-      waits = waitId :: ids
-      //_ = println(s"waiters on $slotId: $waits")
-      _ <- setWaiters(slotId, waits)
-    } yield ()
+  private def addWait(slotId: Long, waitId: Long): ConnectionIO[Unit] =
+    sql"""insert into waits (waitid, slotid) values ($waitId, $slotId)""".update.run.void
 
-  def setWaiters(slotId: Long, waiters: List[Long]): ConnectionIO[Unit] = {
-    val newIds = Encoder[List[Long]].apply(waiters).noSpaces
-    sql"""update slots set waiters = $newIds where slotid = $slotId""".update.run.void
-  }
-
-  def rmWait(slotId: Long, waitId: Long): ConnectionIO[Unit] = {
-    val slot = getWaiters(slotId)
-      .flatMap { current =>
-        val pending = current.filterNot(_ == waitId)
-        setWaiters(slotId, pending)
-      }
-    val wait = sql"delete from waiters where waitid = $waitId".update.run
-
-    (slot *> wait).void
-  }
+  private def rmWait(slotId: Long, waitId: Long): ConnectionIO[Unit] =
+    sql"delete from waits where waitid = $waitId AND slotid = $slotId".update.run.void
 
   def addWaiter(
       act: PuaAws.BlockingAction,
@@ -156,7 +149,7 @@ class PostgresDBControl(transactor: Transactor[IO]) extends DBControl {
         sql"select function_name, function_arg from waiters where waitid = $waitId"
           .query[(String, String)]
           .unique
-      json <- stringToJson(jsonStr)
+      json <- stringTo[Json](jsonStr)
     } yield (LambdaFunctionName(nm), json)
 
   def completeSlot(
@@ -168,9 +161,9 @@ class PostgresDBControl(transactor: Transactor[IO]) extends DBControl {
     val updateSlot: ConnectionIO[Unit] =
       result match {
         case Right(json) =>
-          sql"update slots set result = ${json.noSpaces} where slotid = $slotId".update.run.void
+          sql"update slots set result = ${json.noSpaces}, completed = NOW() where slotid = $slotId".update.run.void
         case Left(PuaAws.Error(code, msg)) =>
-          sql"update slots set error_number = $code, failure = $msg where slotid = $slotId".update.run.void
+          sql"update slots set error_number = $code, failure = $msg, completed = NOW() where slotid = $slotId".update.run.void
       }
 
     for {
@@ -184,5 +177,36 @@ class PostgresDBControl(transactor: Transactor[IO]) extends DBControl {
         case (fn, arg) => invoker(fn)(arg)
       }
     } yield notify
+  }
+}
+
+object PostgresDBControl {
+  def apply(
+      db: String,
+      uname: String,
+      password: String,
+      blocker: Blocker
+  )(implicit ctx: ContextShift[IO]): Resource[IO, PostgresDBControl] = {
+
+    import doobie.hikari._
+
+    val setSer = for {
+      _ <- FC.setAutoCommit(false)
+      _ <- HC.setTransactionIsolation(
+        doobie.enum.TransactionIsolation.TransactionSerializable
+      )
+    } yield ()
+
+    for {
+      ce <- doobie.ExecutionContexts.fixedThreadPool[IO](32) // our connect EC
+      xtor <- HikariTransactor.newHikariTransactor[IO](
+        classOf[org.postgresql.Driver].getName, // driver classname
+        s"jdbc:postgresql://127.0.0.1/$db", // connect URL (driver-specific)
+        uname,
+        password,
+        ce,
+        blocker
+      )
+    } yield new PostgresDBControl(Transactor.before.set(xtor, setSer))
   }
 }
