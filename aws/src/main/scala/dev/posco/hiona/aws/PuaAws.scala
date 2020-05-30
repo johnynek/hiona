@@ -89,11 +89,12 @@ class PuaAws(
         fn <- start(popt)
       } yield (fn, input)
 
+    // no one knows about our slot, so no one is waiting
+    // on it, so we don't need to have a real invocation
+    def noWaiters: IO[Unit] =
+      IO.raiseError(new Exception("expected no waiters"))
+
     { a: A =>
-      // no one knows about our slot, so no one is waiting
-      // on it, so we don't need to have a real invocation
-      val noWaiters: IO[Json] =
-        IO.raiseError(new Exception("expected no waiters"))
       val transaction =
         for {
           (fn, slot) <- buildSlots
@@ -101,14 +102,15 @@ class PuaAws(
             dbControl.completeSlot(slot, Right(a.asJson), _ => _ => noWaiters)
         } yield fn(slot)
 
-      lazy val io: IO[Long] = dbControl
-        .run(transaction)
-        .flatten
-        .recoverWith {
-          case (_: SQLTransientException | _: PSQLException) => io
-        }
+      Defer[IO].fix[Long] { recur =>
+        dbControl
+          .run(transaction)
+          .flatten
+          .recoverWith {
+            case (_: SQLTransientException | _: PSQLException) => recur
+          }
+      }
 
-      io
     }
   }
 
@@ -183,6 +185,7 @@ object PuaAws {
 
     // create tables
     case object InitTables extends Action
+    case object CheckTimeouts extends Action
 
     implicit val actionEncoder: Encoder[Action] = {
       import io.circe.generic.semiauto._
@@ -213,6 +216,8 @@ object PuaAws {
                 .deepMerge(unList(ul))
             case InitTables =>
               Json.obj("kind" -> Json.fromString("init_tables"))
+            case CheckTimeouts =>
+              Json.obj("kind" -> Json.fromString("check_timeouts"))
           }
       }
     }
@@ -241,6 +246,8 @@ object PuaAws {
                 unList(a)
               case "init_tables" =>
                 Right(InitTables)
+              case "check_timeouts" =>
+                Right(CheckTimeouts)
               case unknown =>
                 Left(
                   DecodingFailure(
@@ -265,6 +272,7 @@ object PuaAws {
   case class State(
       dbControl: DBControl,
       makeLambda: LambdaFunctionName => Json => IO[Json],
+      makeAsyncLambda: LambdaFunctionName => Json => IO[Unit],
       blocker: Blocker,
       ctxShift: ContextShift[IO],
       timer: Timer[IO]
@@ -295,7 +303,11 @@ abstract class DBControl {
   def completeSlot(
       slotId: Long,
       result: Either[PuaAws.Error, Json],
-      invoker: LambdaFunctionName => Json => IO[Json]
+      invoker: LambdaFunctionName => Json => IO[Unit]
+  ): ConnectionIO[IO[Unit]]
+
+  def resendNotifications(
+      invoker: LambdaFunctionName => Json => IO[Unit]
   ): ConnectionIO[IO[Unit]]
 }
 
@@ -320,7 +332,7 @@ class PuaWorker extends PureLambda[PuaAws.State, PuaAws.Action, Unit] {
           val thisRes = either.map(_ => tc.json)
           for {
             action <-
-              dbControl.completeSlot(tc.resultSlot, thisRes, st.makeLambda)
+              dbControl.completeSlot(tc.resultSlot, thisRes, st.makeAsyncLambda)
             _ <- dbControl.removeWaiter(tc)
           } yield action
         case None =>
@@ -354,7 +366,8 @@ class PuaWorker extends PureLambda[PuaAws.State, PuaAws.Action, Unit] {
       val res = json.leftMap(PuaAws.Error.fromInvocationError(_))
       st.dbControl
         .run(for {
-          next <- st.dbControl.completeSlot(tc.resultSlot, res, st.makeLambda)
+          next <-
+            st.dbControl.completeSlot(tc.resultSlot, res, st.makeAsyncLambda)
           _ <- st.dbControl.removeWaiter(tc)
         } yield next)
         .flatten
@@ -369,7 +382,7 @@ class PuaWorker extends PureLambda[PuaAws.State, PuaAws.Action, Unit] {
           val invoke = fn(json).attempt.flatMap(write)
           Applicative[ConnectionIO].pure(invoke)
         case Some(err @ Left(_)) =>
-          st.dbControl.completeSlot(tc.resultSlot, err, st.makeLambda) <*
+          st.dbControl.completeSlot(tc.resultSlot, err, st.makeAsyncLambda) <*
             st.dbControl.removeWaiter(tc)
         case None =>
           //println(s"$tc could not read")
@@ -396,7 +409,7 @@ class PuaWorker extends PureLambda[PuaAws.State, PuaAws.Action, Unit] {
             val write = nelJson.sequence.map { noErrors =>
               Json.fromValues(noErrors.toList)
             }
-            dbControl.completeSlot(ml.resultSlot, write, st.makeLambda) <*
+            dbControl.completeSlot(ml.resultSlot, write, st.makeAsyncLambda) <*
               dbControl.removeWaiter(ml)
 
           case None =>
@@ -431,7 +444,11 @@ class PuaWorker extends PureLambda[PuaAws.State, PuaAws.Action, Unit] {
                     .zip(v)
                     .traverse {
                       case (slot, json) =>
-                        dbControl.completeSlot(slot, Right(json), st.makeLambda)
+                        dbControl.completeSlot(
+                          slot,
+                          Right(json),
+                          st.makeAsyncLambda
+                        )
                     }
                     .map(_.sequence_)
                 case _ =>
@@ -442,7 +459,11 @@ class PuaWorker extends PureLambda[PuaAws.State, PuaAws.Action, Unit] {
 
                   ul.resultSlots
                     .traverse { slot =>
-                      dbControl.completeSlot(slot, Left(err), st.makeLambda)
+                      dbControl.completeSlot(
+                        slot,
+                        Left(err),
+                        st.makeAsyncLambda
+                      )
                     }
                     .map(_.sequence_)
               }
@@ -450,7 +471,7 @@ class PuaWorker extends PureLambda[PuaAws.State, PuaAws.Action, Unit] {
               // set all the downstreams as failures
               ul.resultSlots
                 .traverse { slot =>
-                  dbControl.completeSlot(slot, err, st.makeLambda)
+                  dbControl.completeSlot(slot, err, st.makeAsyncLambda)
                 }
                 .map(_.sequence_)
           }
@@ -490,6 +511,8 @@ class PuaWorker extends PureLambda[PuaAws.State, PuaAws.Action, Unit] {
           case ml @ MakeList(_, _, _)      => makeList(ml, st, context)
           case ul @ UnList(_, _, _)        => unList(ul, st, context)
           case InitTables                  => st.dbControl.initializeTables.as(IO.unit)
+          case CheckTimeouts =>
+            st.dbControl.resendNotifications(st.makeAsyncLambda)
         }
 
     // we can retry transient operations here:

@@ -65,29 +65,29 @@ class PostgresDBControl(transactor: Transactor[IO]) extends DBControl {
     MonadError[ConnectionIO, Throwable]
       .fromEither(io.circe.parser.parse(str).flatMap(_.as[A]))
 
+  private def toRes(
+      os: Option[String],
+      oerr: Option[Int],
+      omsg: Option[String]
+  ): ConnectionIO[Option[Either[PuaAws.Error, Json]]] =
+    os match {
+      case Some(jsonString) =>
+        stringTo[Json](jsonString)
+          .map(j => Some(Right(j)))
+      case None =>
+        oerr match {
+          case Some(num) =>
+            Monad[ConnectionIO].pure(
+              Some(Left(PuaAws.Error(num, omsg.getOrElse(""))))
+            )
+          case None => Monad[ConnectionIO].pure(None)
+        }
+    }
+
   def readSlot(
       slotId: Long
   ): ConnectionIO[Option[Either[PuaAws.Error, Json]]] = {
     import shapeless._
-
-    def toRes(
-        os: Option[String],
-        oerr: Option[Int],
-        omsg: Option[String]
-    ): ConnectionIO[Option[Either[PuaAws.Error, Json]]] =
-      os match {
-        case Some(jsonString) =>
-          stringTo[Json](jsonString)
-            .map(j => Some(Right(j)))
-        case None =>
-          oerr match {
-            case Some(num) =>
-              Monad[ConnectionIO].pure(
-                Some(Left(PuaAws.Error(num, omsg.getOrElse(""))))
-              )
-            case None => Monad[ConnectionIO].pure(None)
-          }
-      }
 
     for {
       res :: errNum :: failMsg :: HNil <-
@@ -155,7 +155,7 @@ class PostgresDBControl(transactor: Transactor[IO]) extends DBControl {
   def completeSlot(
       slotId: Long,
       result: Either[PuaAws.Error, Json],
-      invoker: LambdaFunctionName => Json => IO[Json]
+      invoker: LambdaFunctionName => Json => IO[Unit]
   ): ConnectionIO[IO[Unit]] = {
     //println(s"completeSlot($slotId, $result)")
     val updateSlot: ConnectionIO[Unit] =
@@ -176,6 +176,23 @@ class PostgresDBControl(transactor: Transactor[IO]) extends DBControl {
       notify = calls.traverse_ {
         case (fn, arg) => invoker(fn)(arg)
       }
+    } yield notify
+  }
+
+  def resendNotifications(
+      invoker: LambdaFunctionName => Json => IO[Unit]
+  ): ConnectionIO[IO[Unit]] = {
+    val sends = sql"""
+      SELECT waitid
+      FROM slots INNER JOIN waits ON slots.slotid = waits.slotid
+      WHERE completed IS NOT NULL"""
+      .query[Long]
+      .to[List]
+
+    for {
+      waits <- sends
+      fnJson <- waits.traverse(getArg)
+      notify = fnJson.traverse_ { case (fn, json) => invoker(fn)(json) }
     } yield notify
   }
 }

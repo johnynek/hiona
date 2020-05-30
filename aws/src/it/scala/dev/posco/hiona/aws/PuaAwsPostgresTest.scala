@@ -69,12 +69,13 @@ class PuaAwsPostgresTest extends munit.ScalaCheckSuite {
             }
 
             val dir = dir0.addFn(lambdaName, invokeLam)
+            val dirA = { ln: LambdaFunctionName => { json: Json => dir(ln)(json).start.void } }
 
             implicit val timer =
               IO.timer(scala.concurrent.ExecutionContext.global)
 
             val setupPostgresWorker: PuaAws.State =
-              PuaAws.State(dbControl, dir, blocker, ctx, timer)
+              PuaAws.State(dbControl, dir, dirA, blocker, ctx, timer)
 
             val worker = new PuaWorker {
               override def setup =

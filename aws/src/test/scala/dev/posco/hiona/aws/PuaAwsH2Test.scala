@@ -1,14 +1,16 @@
 package dev.posco.hiona.aws
 
+import cats.Defer
 import cats.data.NonEmptyList
 import cats.effect.concurrent.{Ref, Semaphore}
-import cats.effect.{Blocker, ContextShift, IO, Resource}
+import cats.effect.{Blocker, ContextShift, IO, Resource, Timer}
 import com.amazonaws.services.lambda.runtime.Context
 import doobie._
 import doobie.enum.TransactionIsolation.TransactionSerializable
 import io.circe.Json
 import org.scalacheck.Prop
 import scala.concurrent.duration.FiniteDuration
+import scala.concurrent.Await
 
 import cats.implicits._
 import doobie.implicits._
@@ -63,6 +65,25 @@ class PuaAwsTest extends munit.ScalaCheckSuite {
         10
       ) // a bit slow, but locally, this passes with more
 
+  def await30[A](io: IO[A]): A =
+    Await.result(io.unsafeToFuture(), FiniteDuration(30, "s"))
+
+  def resender[A](
+      stop: IO[Boolean],
+      dur: FiniteDuration,
+      action: IO[A]
+  )(implicit t: Timer[IO], ctx: ContextShift[IO]): IO[Unit] =
+    Defer[IO]
+      .fix[Unit] { recur =>
+        for {
+          _ <- t.sleep(dur)
+          stopV <- stop
+          _ <- if (stopV) IO.unit else (action.start *> recur)
+        } yield ()
+      }
+      .start
+      .void
+
   property("h2 puaaws matches what we expect") {
 
     def law(
@@ -105,13 +126,17 @@ class PuaAwsTest extends munit.ScalaCheckSuite {
               }
             }
 
-            val dir = dir0.addFn(lambdaName, invokeLam)
+            val dir1 = dir0.addFn(lambdaName, invokeLam)
+
+            val dir = { ln: LambdaFunctionName => json: Json =>
+              dir1(ln)(json).void
+            }
 
             implicit val timer =
               IO.timer(scala.concurrent.ExecutionContext.global)
 
             val setupH2Worker: PuaAws.State =
-              PuaAws.State(dbControl, dir, blocker, ctx, timer)
+              PuaAws.State(dbControl, dir1, dir, blocker, ctx, timer)
 
             val worker = new PuaWorker {
               override def setup =
@@ -140,16 +165,43 @@ class PuaAwsTest extends munit.ScalaCheckSuite {
                 def getRemainingTimeInMillis(): Int = ???
               }
 
-            val setWorker = workerRef.set { j =>
+            val lossyRng = new java.util.Random(42)
+
+            def makeLossy[A](fn: Json => IO[A]): Json => IO[Unit] = { j: Json =>
+              // if we lose initial messages adding waiters
+              // it still deadlocks
+              IO.suspend {
+                j.as[PuaAws.Action] match {
+                  case Right(ba: PuaAws.BlockingAction)
+                      if ba.waitId.isDefined =>
+                    if (lossyRng.nextDouble() < 0.2)
+                      // 20%
+                      IO.unit
+                    else fn(j).start.void
+                  case _ => fn(j).start.void
+                }
+              }
+            }
+
+            val setWorker = workerRef.set(makeLossy { j =>
               worker
                 .run(
                   IO.fromEither(j.as[PuaAws.Action]),
                   setupH2Worker,
                   mockContext
                 )
-                .start
-                .void
-            }
+            })
+
+            val doneRef = Ref.unsafe[IO, Boolean](false)
+            val check = resender(
+              doneRef.get,
+              FiniteDuration(1, "s"),
+              worker.run(
+                IO.pure(PuaAws.Action.CheckTimeouts),
+                setupH2Worker,
+                mockContext
+              )
+            )
 
             val dbFn =
               puaAws.toIOFnPoll[Json, Json](pua, FiniteDuration(50, "ms"))
@@ -157,26 +209,29 @@ class PuaAwsTest extends munit.ScalaCheckSuite {
             for {
               _ <- dbControl.run(dbControl.initializeTables).attempt
               _ <- setWorker
+              _ <- check
               res <- inputs.parTraverse(dbFn)
+              _ <- doneRef.set(true)
               _ <- dbControl.run(dbControl.cleanupTables)
             } yield res
         }
 
-      (computation.attempt, inputs.traverse(fn).attempt)
-        .mapN {
-          case (Right(a), Right(b)) =>
-            assertEquals(a, b)
-          case (Left(_), Left(_)) =>
-            assert(true)
-          case (left, right) =>
-            // this will fail, but we want to see what we get
-            left match {
-              case Left(err) => err.printStackTrace
-              case Right(_)  => ()
-            }
-            assertEquals(left, right)
-        }
-        .unsafeRunSync()
+      await30(
+        (computation.attempt, inputs.traverse(fn).attempt)
+          .mapN {
+            case (Right(a), Right(b)) =>
+              assertEquals(a, b)
+            case (Left(_), Left(_)) =>
+              assert(true)
+            case (left, right) =>
+              // this will fail, but we want to see what we get
+              left match {
+                case Left(err) => err.printStackTrace
+                case Right(_)  => ()
+              }
+              assertEquals(left, right)
+          }
+      )
     }
 
     val dir = PuaLocal.emptyDirectory

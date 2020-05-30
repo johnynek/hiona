@@ -70,7 +70,8 @@ object PuaAwsActionGens {
       genCb,
       genMakeList,
       genUnList,
-      Gen.const(Action.InitTables)
+      Gen.const(Action.InitTables),
+      Gen.const(Action.CheckTimeouts)
     )
   }
 }
