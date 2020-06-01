@@ -37,18 +37,32 @@ object DBSupport {
       InputFactory.merge(facts.map(_.build(xa)))
   }
 
-  def factoryFor[A: Read](src: Event.Source[A], sqlString: Fragment): Factory =
+  /**
+    * Build a DBSupport.Factory for the given source.
+    * There are two input groups to aid in type inference: the first
+    * parameter type fixes A, then for query we can infer A. This is
+    * useful because the query is generally made with sql"...".query
+    *
+   * Note, we fix the Query0[A] type rather than accepting a doobie.Fragment
+    * to encourage safer reuse of queries (since Fragments are untyped).
+    *
+   * Finally, doobie logging for an SQL query is controlled by
+    * doobie.util.log.LogHandler at the call-site of .query on the fragment
+    * By accepting the Query here, we make it clear the logging is controlled
+    * outside of this call (in the user code that sets up the source).
+    */
+  def factoryFor[A](src: Event.Source[A])(query: Query0[A]): Factory =
     new Factory { self =>
       def build[F[_]](
           xa: Transactor[F]
       )(implicit me: MonadError[F, Throwable]): InputFactory[F] =
-        inputFactory[F, A](src, sqlString, xa)
+        inputFactory[F, A](src, query, xa)
     }
 
-  def inputFactory[F[_], A: Read](
+  def inputFactory[F[_], A](
       src: Event.Source[A],
-      sqlString: Fragment,
+      query: Query0[A],
       xa: Transactor[F]
   )(implicit me: MonadError[F, Throwable]): InputFactory[F] =
-    InputFactory.fromStream(src, sqlString.query[A].stream.transact(xa))
+    InputFactory.fromStream(src, query.stream.transact(xa))
 }

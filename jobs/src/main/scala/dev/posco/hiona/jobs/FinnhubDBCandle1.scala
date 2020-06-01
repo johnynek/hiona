@@ -242,7 +242,7 @@ object FinnhubDBCandle1 extends aws.DBS3CliApp {
           WHERE exch_code = $exch_code
           ORDER BY candle_end_epoch_millis
           LIMIT $limit
-         """
+         """.query[Candle]
 
   /**
     * This is what binds the the Event.Source to particular
@@ -251,8 +251,8 @@ object FinnhubDBCandle1 extends aws.DBS3CliApp {
     */
   def dbSupportFactory: DBSupport.Factory =
     db.DBSupport
-      .factoryFor(src, candles_sql(exch_code, sqlQueryLimit))
-      .combine(db.DBSupport.factoryFor(valueInUSD, exchange_rates_sql))
+      .factoryFor(src)(candles_sql(exch_code, sqlQueryLimit))
+      .combine(db.DBSupport.factoryFor(valueInUSD)(exchange_rates_sql.query))
 
   def eventArgs: Args = Args.labeledEvent[Result](labeled)
 

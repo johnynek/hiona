@@ -29,16 +29,14 @@ object ExampleDBJob extends aws.DBS3CliApp {
     */
   def candleDbSupportFactory: DBSupport.Factory =
     db.DBSupport
-      .factoryFor(
-        src,
+      .factoryFor(src)(
         //sql"select _symbol, timestamp, open from finnhub.stock_candles where timestamp is not NULL order by timestamp asc limit 10000"
-        sql"select _symbol, timestamp, open from finnhub.stock_candles where timestamp is not NULL limit 10000"
+        sql"select _symbol, timestamp, open from finnhub.stock_candles where timestamp is not NULL limit 10000".query
       )
 
   def currencyExchangeDbSupportFactory: DBSupport.Factory =
     db.DBSupport
-      .factoryFor(
-        valueInUSD,
+      .factoryFor(valueInUSD)(
         sql"""
           SELECT
             base_currency,
@@ -47,7 +45,7 @@ object ExampleDBJob extends aws.DBS3CliApp {
           FROM finnhub.exchange_rates
           WHERE quote_currency = 'USD'
           ORDER BY timestamp_epoch_millis
-         """
+         """.query
       )
 
   override def dbSupportFactory: DBSupport.Factory =
