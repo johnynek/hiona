@@ -66,7 +66,7 @@ class PuaAwsTest extends munit.ScalaCheckSuite {
       ) // a bit slow, but locally, this passes with more
 
   def await30[A](io: IO[A]): A =
-    Await.result(io.unsafeToFuture(), FiniteDuration(30, "s"))
+    Await.result(io.unsafeToFuture(), FiniteDuration(15, "s"))
 
   def resender[A](
       stop: IO[Boolean],
@@ -139,12 +139,8 @@ class PuaAwsTest extends munit.ScalaCheckSuite {
               PuaAws.State(dbControl, dir1, dir, blocker, ctx, timer)
 
             val worker = new PuaWorker {
-              override def setup =
-                IO.pure(setupH2Worker)
-                  .as(setupH2Worker)
+              override def setup = IO.pure(setupH2Worker)
             }
-
-            val puaAws = new PuaAws(dbControl, invokeLam)
 
             def mockContext: Context =
               new Context {
@@ -165,6 +161,15 @@ class PuaAwsTest extends munit.ScalaCheckSuite {
                 def getRemainingTimeInMillis(): Int = ???
               }
 
+            val syncFn: Json => IO[Json] = { j: Json =>
+              worker
+                .run(
+                  IO.fromEither(j.as[PuaAws.Action]),
+                  setupH2Worker,
+                  mockContext
+                )
+            }
+
             val lossyRng = new java.util.Random(42)
 
             def makeLossy[A](fn: Json => IO[A]): Json => IO[Unit] = { j: Json =>
@@ -183,14 +188,11 @@ class PuaAwsTest extends munit.ScalaCheckSuite {
               }
             }
 
-            val setWorker = workerRef.set(makeLossy { j =>
-              worker
-                .run(
-                  IO.fromEither(j.as[PuaAws.Action]),
-                  setupH2Worker,
-                  mockContext
-                )
-            })
+            val asyncFn = syncFn.andThen(_.start.void) //makeLossy(syncFn)
+            val invoke = PuaAws.Invoke.fromSyncAsync(syncFn, asyncFn)
+            val puaAws = new PuaAws(invoke)
+
+            val setWorker = workerRef.set(asyncFn)
 
             val doneRef = Ref.unsafe[IO, Boolean](false)
             val check = resender(

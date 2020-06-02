@@ -35,7 +35,7 @@ abstract class SlotEnv {
 
   // This creates a new entry in the database for an output location
   // only one item should ever write to it
-  def allocSlot: Slots[SlotId]
+  def allocSlot(pua: Pua): Slots[SlotId]
 
   // this is really a special job just waits for all the inputs
   // and finally writes to an output
@@ -48,19 +48,21 @@ abstract class SlotEnv {
     import Pua._
 
     p match {
-      case Const(toJson) =>
+      case c @ Const(toJson) =>
         // we have to wait on a slot since functions
         // are effectful
-        allocSlot.map { res => s: SlotId => toConst(toJson, s, res).as(res) }
-      case Call(nm) =>
-        allocSlot.map { out => arg: SlotId => toFnLater(nm, arg, out).as(out) }
+        allocSlot(c).map { res => s: SlotId => toConst(toJson, s, res).as(res) }
+      case c @ Call(nm) =>
+        allocSlot(c).map { out => arg: SlotId =>
+          toFnLater(nm, arg, out).as(out)
+        }
       case Compose(f, s) =>
         (start(f), start(s)).mapN { (fstart, sstart) => arg: SlotId =>
           fstart(arg).flatMap(sstart)
         }
 
-      case Fanout(lams) =>
-        (lams.traverse(start), allocSlot).mapN {
+      case f @ Fanout(lams) =>
+        (lams.traverse(start), allocSlot(f)).mapN {
           (innerFns, res) => arg: SlotId =>
             for {
               inners <- innerFns.traverse(_(arg))
@@ -69,10 +71,10 @@ abstract class SlotEnv {
         }
       case Identity =>
         applicativeSlots.pure { s: SlotId => monadEff.pure(s) }
-      case Parallel(pars) =>
+      case p @ Parallel(pars) =>
         // [a1 => b1, a2 => b2, .. ]
         // to [a1, a2, a3, ...] => [b1, b2, b3, ...]
-        (pars.traverse(start), pars.traverse(_ => allocSlot), allocSlot).mapN {
+        (pars.traverse(start), pars.traverse(allocSlot), allocSlot(p)).mapN {
           (innerFns, inSlots, res) => arg: SlotId =>
             for {
               _ <- unList(arg, inSlots)

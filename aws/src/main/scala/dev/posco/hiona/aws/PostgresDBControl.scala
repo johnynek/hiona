@@ -57,9 +57,13 @@ class PostgresDBControl(transactor: Transactor[IO]) extends DBControl {
   def run[A](cio: ConnectionIO[A]): IO[A] =
     cio.transact(transactor)
 
-  def allocSlot: ConnectionIO[Long] =
-    sql"""insert into slots (result, error_number, failure) values (NULL, NULL, NULL)""".update
-      .withUniqueGeneratedKeys[Long]("slotid")
+  def allocSlots(count: Int): ConnectionIO[List[Long]] = {
+    val single =
+      sql"""insert into slots (result, error_number, failure) values (NULL, NULL, NULL)""".update
+        .withUniqueGeneratedKeys[Long]("slotid")
+
+    (0 until count).toList.traverse(_ => single)
+  }
 
   def stringTo[A: Decoder](str: String): ConnectionIO[A] =
     MonadError[ConnectionIO, Throwable]
@@ -69,16 +73,16 @@ class PostgresDBControl(transactor: Transactor[IO]) extends DBControl {
       os: Option[String],
       oerr: Option[Int],
       omsg: Option[String]
-  ): ConnectionIO[Option[Either[PuaAws.Error, Json]]] =
+  ): ConnectionIO[Option[PuaAws.Error.Or[Json]]] =
     os match {
       case Some(jsonString) =>
         stringTo[Json](jsonString)
-          .map(j => Some(Right(j)))
+          .map(j => Some(PuaAws.Error.NotError(j)))
       case None =>
         oerr match {
           case Some(num) =>
             Monad[ConnectionIO].pure(
-              Some(Left(PuaAws.Error(num, omsg.getOrElse(""))))
+              Some(PuaAws.Error(num, omsg.getOrElse("")))
             )
           case None => Monad[ConnectionIO].pure(None)
         }
@@ -86,7 +90,7 @@ class PostgresDBControl(transactor: Transactor[IO]) extends DBControl {
 
   def readSlot(
       slotId: Long
-  ): ConnectionIO[Option[Either[PuaAws.Error, Json]]] = {
+  ): ConnectionIO[Option[PuaAws.Error.Or[Json]]] = {
     import shapeless._
 
     for {
@@ -95,7 +99,6 @@ class PostgresDBControl(transactor: Transactor[IO]) extends DBControl {
           .query[Option[String] :: Option[Int] :: Option[String] :: HNil]
           .unique
       optEither <- toRes(res, errNum, failMsg)
-      //_ = println(s"readSlot($slotId) == $optEither")
     } yield optEither
   }
 
@@ -154,21 +157,19 @@ class PostgresDBControl(transactor: Transactor[IO]) extends DBControl {
 
   def completeSlot(
       slotId: Long,
-      result: Either[PuaAws.Error, Json],
+      result: PuaAws.Error.Or[Json],
       invoker: LambdaFunctionName => Json => IO[Unit]
   ): ConnectionIO[IO[Unit]] = {
     //println(s"completeSlot($slotId, $result)")
     val updateSlot: ConnectionIO[Unit] =
       result match {
-        case Right(json) =>
+        case PuaAws.Error.NotError(json) =>
           sql"update slots set result = ${json.noSpaces}, completed = NOW() where slotid = $slotId".update.run.void
-        case Left(PuaAws.Error(code, msg)) =>
+        case PuaAws.Error(code, msg) =>
           sql"update slots set error_number = $code, failure = $msg, completed = NOW() where slotid = $slotId".update.run.void
       }
 
     for {
-      // todo: this is a race, the transaction hasn't happened yet, but the message is sent now
-      // if the message is lost, it is never retried
       _ <- updateSlot
       waits <- getWaiters(slotId)
       calls <- waits.traverse(getArg)

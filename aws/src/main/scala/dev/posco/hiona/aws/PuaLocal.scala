@@ -9,7 +9,10 @@ import io.circe.{Decoder, Encoder, Json}
 import cats.implicits._
 
 final class PuaLocal(
-    ref: Ref[IO, (Long, Map[Long, Deferred[IO, Either[Throwable, Json]]])],
+    ref: Ref[
+      IO,
+      (Long, Map[Long, Deferred[IO, Either[Throwable, Json]]])
+    ],
     run: LambdaFunctionName => (Json => IO[Json]),
     optimizeStart: Boolean = true
 )(implicit ctx: ContextShift[IO])
@@ -86,7 +89,7 @@ final class PuaLocal(
 
   // This creates a new entry in the database for an output location
   // only one item should ever write to it
-  def allocSlot: Slots[SlotId] =
+  def allocSlot(p: Pua): Slots[SlotId] =
     ref.access
       .flatMap {
         case ((nextId, slots), set) =>
@@ -94,7 +97,7 @@ final class PuaLocal(
             d <- Deferred[IO, Either[Throwable, Json]]
             slots1 = slots.updated(nextId, d)
             success <- set((nextId + 1L, slots1))
-            slot <- if (success) IO.pure(nextId) else allocSlot
+            slot <- if (success) IO.pure(nextId) else allocSlot(p)
           } yield slot
       }
 
@@ -146,7 +149,8 @@ final class PuaLocal(
     { a: A =>
       for {
         fn <- makeFn
-        inslot <- allocSlot
+        inputPua = Pua.const(a)
+        inslot <- allocSlot(inputPua)
         _ <- writeSlot(Encoder[A].apply(a), inslot)
         out <- fn(inslot)
         json <- readSlot(out)
@@ -164,7 +168,10 @@ object PuaLocal {
       runFn: LambdaFunctionName => (Json => IO[Json])
   )(implicit ctx: ContextShift[IO]): IO[PuaLocal] =
     Ref
-      .of[IO, (Long, Map[Long, Deferred[IO, Either[Throwable, Json]]])](
+      .of[
+        IO,
+        (Long, Map[Long, Deferred[IO, Either[Throwable, Json]]])
+      ](
         (0L, Map.empty)
       )
       .map(new PuaLocal(_, runFn))
@@ -173,7 +180,10 @@ object PuaLocal {
       runFn: LambdaFunctionName => (Json => IO[Json])
   )(implicit ctx: ContextShift[IO]): IO[PuaLocal] =
     Ref
-      .of[IO, (Long, Map[Long, Deferred[IO, Either[Throwable, Json]]])](
+      .of[
+        IO,
+        (Long, Map[Long, Deferred[IO, Either[Throwable, Json]]])
+      ](
         (0L, Map.empty)
       )
       .map(new PuaLocal(_, runFn, optimizeStart = false))

@@ -22,12 +22,12 @@ object PuaAwsActionGens {
     val recur = Gen.lzy(genJson)
     val kv = Gen.zip(arb[String], recur)
     Gen.frequency(
-      3 -> arb[String].map(Json.fromString),
+      4 -> arb[String].map(Json.fromString),
+      4 -> arb[Int].map(Json.fromInt),
+      4 -> arb[Long].map(Json.fromLong),
       3 -> arb[Boolean].map(Json.fromBoolean),
-      3 -> arb[Int].map(Json.fromInt),
-      3 -> arb[Long].map(Json.fromLong),
       3 -> arb[Double].map(Json.fromDoubleOrNull),
-      3 -> Gen.const(Json.Null),
+      2 -> Gen.const(Json.Null),
       1 -> genSizeExp1.flatMap(Gen.listOfN(_, recur)).map(Json.fromValues),
       1 -> genSizeExp1.flatMap(Gen.listOfN(_, kv)).map(Json.fromFields)
     )
@@ -65,13 +65,27 @@ object PuaAwsActionGens {
         case (a, b, c) => Action.UnList(a, b, c)
       }
 
+    val genAS =
+      Gen.choose(0, 1000).map(Action.AllocSlots(_))
+
+    val genCS =
+      Gen.zip(arb[Long], genJson).map {
+        case (s, j) => Action.CompleteSlot(s, j)
+      }
+
+    val genRS =
+      arb[Long].map(Action.ReadSlot(_))
+
     Gen.oneOf(
       genConst,
       genCb,
       genMakeList,
       genUnList,
       Gen.const(Action.InitTables),
-      Gen.const(Action.CheckTimeouts)
+      Gen.const(Action.CheckTimeouts),
+      genAS,
+      genCS,
+      genRS
     )
   }
 }

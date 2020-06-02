@@ -78,12 +78,8 @@ class PuaAwsPostgresTest extends munit.ScalaCheckSuite {
               PuaAws.State(dbControl, dir, dirA, blocker, ctx, timer)
 
             val worker = new PuaWorker {
-              override def setup =
-                IO.pure(setupPostgresWorker)
-                  .as(setupPostgresWorker)
+              override def setup = IO.pure(setupPostgresWorker)
             }
-
-            val puaAws = new PuaAws(dbControl, invokeLam)
 
             def mockContext: Context =
               new Context {
@@ -104,16 +100,19 @@ class PuaAwsPostgresTest extends munit.ScalaCheckSuite {
                 def getRemainingTimeInMillis(): Int = ???
               }
 
-            val setWorker = workerRef.set { j =>
+            val syncFn: Json => IO[Json] = { j: Json =>
               worker
                 .run(
                   IO.fromEither(j.as[PuaAws.Action]),
                   setupPostgresWorker,
                   mockContext
                 )
-                .start
-                .void
             }
+
+            val asyncFn = syncFn.andThen(_.start.void)
+            val puaAws = new PuaAws(PuaAws.Invoke.fromSyncAsync(syncFn, asyncFn))
+
+            val setWorker = workerRef.set(asyncFn)
 
             val dbFn =
               puaAws.toIOFnPoll[Json, Json](pua, FiniteDuration(50, "ms"))
