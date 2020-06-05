@@ -68,38 +68,25 @@ object App extends GenApp {
 }
 
 sealed abstract class Args {
-  def sources: Map[String, Set[Event.Source[_]]]
-
-  def typeWithRow: TypeWith[Row]
+  type Type
+  val row: Row[Type]
+  val value: Emittable.Value[Type]
 }
 
 object Args {
-  def event[A](ev: Event[A])(implicit r: Row[A]): EventArgs[A] =
-    EventArgs(r, ev)
+  def event[A](ev: Event[A])(implicit r: Row[A]): Args =
+    new Args {
+      type Type = A
+      val row = r
+      val value = Emittable.Value(ev)
+    }
 
-  def labeledEvent[A](ev: LabeledEvent[A])(implicit r: Row[A]): LabeledArgs[A] =
-    LabeledArgs(r, ev)
-
-  final case class EventArgs[A](row: Row[A], event: Event[A]) extends Args {
-    def columnNames: List[String] = row.columnNames(0)
-
-    def sources: Map[String, Set[Event.Source[_]]] =
-      Event.sourcesOf(event)
-
-    def typeWithRow: TypeWith[Row] = TypeWith(row)
-  }
-
-  final case class LabeledArgs[A](
-      row: Row[A],
-      labeled: LabeledEvent[A]
-  ) extends Args {
-    def columnNames: List[String] =
-      row.columnNames(0)
-    def sources: Map[String, Set[Event.Source[_]]] =
-      LabeledEvent.sourcesOf(labeled)
-
-    def typeWithRow: TypeWith[Row] = TypeWith(row)
-  }
+  def labeledEvent[A](ev: LabeledEvent[A])(implicit r: Row[A]): Args =
+    new Args {
+      type Type = A
+      val row = r
+      val value = Emittable.Value(ev)
+    }
 }
 
 abstract class GenApp { self =>
@@ -125,31 +112,32 @@ abstract class GenApp { self =>
       .prefetchN(1)
   }
 
+  type StreamRes[+A] = Stream[IO, (Timestamp, A)]
+
   def run(
       args: Args,
       inputs: List[(String, Ref)],
       output: Ref,
       blocker: Blocker,
       onInput: Pipe[IO, Point, Point],
-      onOutput: FunctionK[Stream[IO, *], Stream[IO, *]]
+      onOutput: FunctionK[StreamRes, StreamRes]
   )(implicit
       ctx: ContextShift[IO]
   ): IO[Unit] = {
 
-    val (row, stream) = args match {
-      case Args.EventArgs(r, event) =>
-        val input: InputFactory[IO] =
-          inputFactory(inputs, event, blocker)
-        (r, Engine.run(input.through(pipe).through(onInput), event))
-      case Args.LabeledArgs(r, le) =>
-        val input: InputFactory[IO] =
-          inputFactory(inputs, le, blocker)
-        (r, Engine.run(input.through(pipe).through(onInput), le))
-    }
+    val row: Row[args.Type] = args.row
+
+    val input: InputFactory[IO] =
+      inputFactory(inputs, args.value, blocker)
+
+    val stream: Stream[IO, (Timestamp, args.Type)] =
+      Engine.run(input.through(pipe).through(onInput), args.value)
 
     val writerRes = writer(output, row)
 
-    val result = onOutput(stream.through(pipe))
+    val result: Stream[IO, args.Type] =
+      onOutput(stream.through(pipe)).map(_._2)
+
     Fs2Tools.sinkStream(result, writerRes).compile.drain
   }
 
@@ -181,7 +169,8 @@ abstract class GenApp { self =>
       inputs: List[(String, Ref)],
       output: Ref,
       logDelta: Option[Duration],
-      limit: Option[Int]
+      limit: Option[Int],
+      tb: TimeBound
   ) extends Cmd {
     def run(args: Args, blocker: Blocker)(implicit
         ctx: ContextShift[IO]
@@ -249,17 +238,26 @@ abstract class GenApp { self =>
             }
         }
 
-      val result = limit match {
+      val limitFn = limit match {
         case Some(i) =>
-          new FunctionK[Stream[IO, *], Stream[IO, *]] {
-            def apply[A](s: Stream[IO, A]) = s.take(i)
+          new FunctionK[StreamRes, StreamRes] {
+            def apply[A](s: Stream[IO, (Timestamp, A)]) = s.take(i)
           }
         case None =>
-          FunctionK.id[Stream[IO, *]]
+          FunctionK.id[StreamRes]
       }
 
+      // we can only filter lower bounded data at output
+      val lowerBoundFn =
+        new FunctionK[StreamRes, StreamRes] {
+          def apply[A](s: Stream[IO, (Timestamp, A)]) =
+            tb.filterOutput[IO, (Timestamp, A)](_._1)(s)
+        }
+
+      val inputFn = tb.filterInput[IO, Point](_.ts).andThen(loggerFn)
+      val outputFn = lowerBoundFn.andThen(limitFn)
       self
-        .run(args, inputs, output, blocker, loggerFn, result)
+        .run(args, inputs, output, blocker, inputFn, outputFn)
         .map(_ => ExitCode.Success)
     }
   }
@@ -292,25 +290,21 @@ abstract class GenApp { self =>
           .orNone,
         Opts
           .option[Int]("limit", "maximum number of events to write out")
-          .orNone
-      ).mapN(RunCmd(_, _, _, _))
+          .orNone,
+        TimeBound.opts
+      ).mapN(RunCmd(_, _, _, _, _))
     }
 
   case object ShowCmd extends Cmd {
     def run(args: Args, blocker: Blocker)(implicit
         ctx: ContextShift[IO]
     ): IO[ExitCode] = {
-      val (cols, srcs, lookups) =
-        args match {
-          case a @ Args.EventArgs(_, event) =>
-            (a.columnNames, Event.sourcesOf(event).keys, Event.lookupsOf(event))
-          case la @ Args.LabeledArgs(_, lab) =>
-            (
-              la.columnNames,
-              LabeledEvent.sourcesAndOffsetsOf(lab).keys,
-              LabeledEvent.lookupsOf(lab)
-            )
-        }
+      val cols = args.row.columnNames(0)
+      val srcs = Emittable[Emittable.Value].sourcesAndOffsetsOf(args.value).keys
+      val lookups = Emittable[Emittable.Value].toEither(args.value) match {
+        case Right(ev) => Event.lookupsOf(ev)
+        case Left(le)  => LabeledEvent.lookupsOf(le)
+      }
       IO {
         val names = srcs.toList.sorted.mkString("", ", ", "")
         println(s"sources: $names")
@@ -390,9 +384,12 @@ abstract class GenApp { self =>
           outMap <- pathMap("output", outputs)
           srcMap <- pathMap(
             "event sources",
-            arg.sources.toList.flatMap {
-              case (k, vs) => vs.map((k, _))
-            }
+            Emittable[Emittable.Value]
+              .sourcesAndOffsetsOf(arg.value)
+              .toList
+              .flatMap {
+                case (k, (vs, _)) => vs.map((k, _))
+              }
           )
           table0 <- tab("inputs", "outputs", inMap, outMap)
           table <- table0.toList.traverse {
@@ -473,12 +470,12 @@ abstract class GenApp { self =>
     def run(args: Args, blocker: Blocker)(implicit
         ctx: ContextShift[IO]
     ): IO[ExitCode] = {
-      val twRow = args.typeWithRow
 
-      val s1: Stream[IO, twRow.Type] =
-        read(input1, twRow.evidence, blocker).through(pipe)
-      val s2: Stream[IO, twRow.Type] =
-        read(input2, twRow.evidence, blocker).through(pipe)
+      val row: Row[args.Type] = args.row
+      val s1: Stream[IO, args.Type] =
+        read(input1, row, blocker).through(pipe)
+      val s2: Stream[IO, args.Type] =
+        read(input2, row, blocker).through(pipe)
 
       def toList[A](a: A, row: Row[A]): List[String] = {
         val ary = new Array[String](row.columns)
@@ -503,8 +500,8 @@ abstract class GenApp { self =>
       val diffStrings = diffLimit.zipWithIndex.map {
         case (((a, b), idx), diffidx) =>
           import com.softwaremill.diffx._
-          val aList = toList(a, twRow.evidence)
-          val bList = toList(b, twRow.evidence)
+          val aList = toList(a, row)
+          val bList = toList(b, row)
 
           case class Col(column: Int, value: String)
           val diffIdx = aList

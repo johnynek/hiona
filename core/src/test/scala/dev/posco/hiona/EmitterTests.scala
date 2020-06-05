@@ -22,7 +22,7 @@ class EmitterTests extends munit.ScalaCheckSuite {
       in: InputFactory[IO],
       ev: E[A]
   ): IO[List[A]] =
-    Engine.run(in, ev).compile.toList
+    Engine.run(in, ev).map(_._2).compile.toList
 
   test("basic map/event processing") {
     val src = Event.source[(Long, Int)](
@@ -186,7 +186,7 @@ class EmitterTests extends munit.ScalaCheckSuite {
 
         val ifac: InputFactory[IO] = toFactory(inputs)
         val results: List[twe.Type] =
-          Engine.run(ifac, event).compile.toList.unsafeRunSync()
+          Engine.run(ifac, event).map(_._2).compile.toList.unsafeRunSync()
 
         val simres: List[twe.Type] =
           Simulator.eventToLazyList(event, inputs).map(_._2).toList

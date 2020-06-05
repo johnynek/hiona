@@ -17,7 +17,7 @@ object Engine {
   def run[F[_]: LiftIO, E[_]: Emittable, A](
       inputFactory: InputFactory[F],
       ev: E[A]
-  ): Stream[F, A] = {
+  ): Stream[F, (Timestamp, A)] = {
     val inputs = inputFactory.allInputs(ev)
 
     val ioEmit = Emitter.from(ev)
@@ -29,8 +29,11 @@ object Engine {
   def runStream[F[_]: LiftIO, A](
       inputs: Stream[F, Point],
       emit: Emitter[A]
-  ): Stream[F, A] = {
-    def feed(inputs: Stream[F, Point], seq: Long): Pull[F, A, Unit] =
+  ): Stream[F, (Timestamp, A)] = {
+    def feed(
+        inputs: Stream[F, Point],
+        seq: Long
+    ): Pull[F, (Timestamp, A), Unit] =
       inputs.pull.uncons
         .flatMap {
           case Some((points, rest)) =>
@@ -70,16 +73,23 @@ object Engine {
     // since we can add all the sources into an identically indexed array
     def feed(p: Point, seq: Long): IO[List[O]]
 
-    final def feedAll(batch: Chunk[Point], seq: Long): IO[(List[O], Long)] = {
+    final def feedAll(
+        batch: Chunk[Point],
+        seq: Long
+    ): IO[(List[(Timestamp, O)], Long)] = {
       def loop(
           idx: Int,
           seq: Long,
-          acc: List[O]
-      ): IO[(List[O], Long)] =
-        if (idx < batch.size)
-          feed(batch(idx), seq)
-            .flatMap(outs => loop(idx + 1, seq + 1L, outs reverse_::: acc))
-        else IO.pure((acc.reverse, seq))
+          acc: List[(Timestamp, O)]
+      ): IO[(List[(Timestamp, O)], Long)] =
+        if (idx < batch.size) {
+          val point = batch(idx)
+          val ts = point.ts
+          feed(point, seq)
+            .flatMap(outs =>
+              loop(idx + 1, seq + 1L, outs.map((ts, _)) reverse_::: acc)
+            )
+        } else IO.pure((acc.reverse, seq))
 
       loop(0, seq, Nil)
     }
@@ -606,7 +616,7 @@ object Engine {
     ) extends Emitter[B] {
       val consumes = prev.consumes
       def feed(point: Point, seq: Long): IO[List[B]] =
-        prev.feed(point, seq).map(listA => fn(point.ts, listA))
+        prev.feed(point, seq).map(fn(point.ts, _))
 
       def contract1: Emitter[B] =
         prev match {
