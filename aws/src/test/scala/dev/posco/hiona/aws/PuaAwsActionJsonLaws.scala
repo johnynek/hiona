@@ -4,7 +4,7 @@ import cats.data.NonEmptyList
 import io.circe.{Encoder, Json}
 import org.scalacheck.{Arbitrary, Gen, Prop}
 
-import PuaAws.Action
+import PuaAws.{Action, Call}
 import Arbitrary.{arbitrary => arb}
 
 object PuaAwsActionGens {
@@ -70,7 +70,7 @@ object PuaAwsActionGens {
 
     val genCS =
       Gen.zip(arb[Long], genJson).map {
-        case (s, j) => Action.CompleteSlot(s, j)
+        case (s, j) => Action.CompleteSlot(s, PuaAws.Or.First(j))
       }
 
     val genRS =
@@ -88,6 +88,31 @@ object PuaAwsActionGens {
       genRS
     )
   }
+
+  val genCall: Gen[Call] = {
+    lazy val genExp1: Gen[Int] =
+      Gen.oneOf(true, false).flatMap {
+        case true  => Gen.const(0)
+        case false => genExp1.map(_ + 1)
+      }
+
+    val genNot: Gen[Call.Notification] =
+      Gen.zip(Gen.identifier.map(LambdaFunctionName(_)), genJson).map {
+        case (n, j) => Call.Notification(n, j)
+      }
+
+    val genInv: Gen[Call.Invocation] =
+      Gen.zip(genNot, Gen.choose(0L, 1000L)).map {
+        case (Call.Notification(n, j), slot) => Call.Invocation(n, j, slot)
+      }
+
+    val genRep: Gen[Call.Repeated] =
+      genExp1
+        .flatMap(Gen.listOfN(_, Gen.oneOf(genNot, genInv)))
+        .map(Call.Repeated(_))
+
+    Gen.oneOf(genNot, genInv, genRep)
+  }
 }
 
 class PuaAwsActionJsonLaws extends munit.ScalaCheckSuite {
@@ -96,6 +121,14 @@ class PuaAwsActionJsonLaws extends munit.ScalaCheckSuite {
       val json = Encoder[Action].apply(action)
 
       assertEquals(json.as[Action], Right(action))
+    }
+  }
+
+  property("we can round-trip Calls") {
+    Prop.forAll(PuaAwsActionGens.genCall) { call =>
+      val json = Encoder[Call].apply(call)
+
+      assertEquals(json.as[Call], Right(call), s"json = $json")
     }
   }
 }

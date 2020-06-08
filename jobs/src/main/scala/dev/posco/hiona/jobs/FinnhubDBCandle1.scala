@@ -258,9 +258,11 @@ object FinnhubDBCandle1 extends aws.DBS3CliApp {
 
   lazy val transactor: doobie.Transactor[IO] =
     Databases
-      .rdsPostgresLocalTunnel(blocker)(Async[IO], contextShift)
+      .rdsPostgresLocalTunnel(Databases.pmdbProd, blocker)(
+        Async[IO],
+        contextShift
+      )
       .unsafeRunSync()
-      .apply(Databases.pmdbProd)
 }
 
 class FinnhubDBCandle1Lambda extends aws.LambdaApp(FinnhubDBCandle1.eventArgs) {
@@ -272,9 +274,8 @@ class FinnhubDBCandle1Lambda extends aws.LambdaApp(FinnhubDBCandle1.eventArgs) {
 
         lazy val transactor: doobie.Transactor[IO] =
           Databases
-            .rdsPostgres(blocker)(Async[IO], contextShift)
+            .rdsPostgres(Databases.pmdbProd, blocker)(Async[IO], contextShift)
             .unsafeRunSync()
-            .apply(Databases.pmdbProd)
       }
     }
 }

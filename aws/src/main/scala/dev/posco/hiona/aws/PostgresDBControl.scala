@@ -19,6 +19,8 @@ object ImpLog {
 import ImpLog.han
  */
 
+import PuaAws.{Or, Error => Err}
+
 class PostgresDBControl(transactor: Transactor[IO]) extends DBControl {
 
   def initializeTables: ConnectionIO[Unit] = {
@@ -73,16 +75,16 @@ class PostgresDBControl(transactor: Transactor[IO]) extends DBControl {
       os: Option[String],
       oerr: Option[Int],
       omsg: Option[String]
-  ): ConnectionIO[Option[PuaAws.Error.Or[Json]]] =
+  ): ConnectionIO[Option[Or[Err, Json]]] =
     os match {
       case Some(jsonString) =>
         stringTo[Json](jsonString)
-          .map(j => Some(PuaAws.Error.NotError(j)))
+          .map(j => Some(Or.First(j)))
       case None =>
         oerr match {
           case Some(num) =>
             Monad[ConnectionIO].pure(
-              Some(PuaAws.Error(num, omsg.getOrElse("")))
+              Some(Or.Second(PuaAws.Error(num, omsg.getOrElse(""))))
             )
           case None => Monad[ConnectionIO].pure(None)
         }
@@ -90,7 +92,7 @@ class PostgresDBControl(transactor: Transactor[IO]) extends DBControl {
 
   def readSlot(
       slotId: Long
-  ): ConnectionIO[Option[PuaAws.Error.Or[Json]]] = {
+  ): ConnectionIO[Option[Or[Err, Json]]] = {
     import shapeless._
 
     for {
@@ -157,15 +159,14 @@ class PostgresDBControl(transactor: Transactor[IO]) extends DBControl {
 
   def completeSlot(
       slotId: Long,
-      result: PuaAws.Error.Or[Json],
-      invoker: LambdaFunctionName => Json => IO[Unit]
-  ): ConnectionIO[IO[Unit]] = {
+      result: Or[Err, Json]
+  ): ConnectionIO[List[(LambdaFunctionName, Json)]] = {
     //println(s"completeSlot($slotId, $result)")
     val updateSlot: ConnectionIO[Unit] =
       result match {
-        case PuaAws.Error.NotError(json) =>
+        case Or.First(json) =>
           sql"update slots set result = ${json.noSpaces}, completed = NOW() where slotid = $slotId".update.run.void
-        case PuaAws.Error(code, msg) =>
+        case Or.Second(Err(code, msg)) =>
           sql"update slots set error_number = $code, failure = $msg, completed = NOW() where slotid = $slotId".update.run.void
       }
 
@@ -173,16 +174,10 @@ class PostgresDBControl(transactor: Transactor[IO]) extends DBControl {
       _ <- updateSlot
       waits <- getWaiters(slotId)
       calls <- waits.traverse(getArg)
-      //_ = println(s"slot: $slotId notify: $waits")
-      notify = calls.traverse_ {
-        case (fn, arg) => invoker(fn)(arg)
-      }
-    } yield notify
+    } yield calls
   }
 
-  def resendNotifications(
-      invoker: LambdaFunctionName => Json => IO[Unit]
-  ): ConnectionIO[IO[Unit]] = {
+  val resendNotifications: ConnectionIO[List[(LambdaFunctionName, Json)]] = {
     val sends = sql"""
       SELECT waitid
       FROM slots INNER JOIN waits ON slots.slotid = waits.slotid
@@ -193,8 +188,7 @@ class PostgresDBControl(transactor: Transactor[IO]) extends DBControl {
     for {
       waits <- sends
       fnJson <- waits.traverse(getArg)
-      notify = fnJson.traverse_ { case (fn, json) => invoker(fn)(json) }
-    } yield notify
+    } yield fnJson
   }
 }
 

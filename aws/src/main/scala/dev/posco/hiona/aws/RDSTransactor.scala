@@ -22,12 +22,14 @@ object RDSTransactor {
 
   case class DatabaseName(asString: String)
 
+  // TODO, this should return a Resource
   def build[F[_]: Async](
       region: String,
       secretName: String,
+      dbName: DatabaseName,
       blocker: Blocker,
       hostPort: Option[HostPort] = None
-  )(implicit ctx: ContextShift[F]): F[DatabaseName => Transactor[F]] =
+  )(implicit ctx: ContextShift[F]): F[Transactor[F]] =
     Secrets
       .makeClient[F](region)
       .use(client => Secrets.getJsonSecret(client, secretName))
@@ -45,15 +47,14 @@ object RDSTransactor {
         }
       }
       .map {
-        case (h, p, uname, password) => {
-          case DatabaseName(db) =>
-            Transactor.fromDriverManager[F](
-              classOf[org.postgresql.Driver].getName, // driver classname
-              s"jdbc:postgresql://$h:$p/$db", // connect URL (driver-specific)
-              uname,
-              password,
-              blocker
-            )
-        }
+        case (h, p, uname, password) =>
+          val db = dbName.asString
+          Transactor.fromDriverManager[F](
+            classOf[org.postgresql.Driver].getName, // driver classname
+            s"jdbc:postgresql://$h:$p/$db", // connect URL (driver-specific)
+            uname,
+            password,
+            blocker
+          )
       }
 }

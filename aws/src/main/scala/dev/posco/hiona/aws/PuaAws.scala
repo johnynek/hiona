@@ -1,17 +1,12 @@
 package dev.posco.hiona.aws
 
-import cats.data.NonEmptyList
-import cats.effect.{Blocker, ContextShift, IO, LiftIO, Timer}
-import cats.{Applicative, Defer, Functor, Monad, MonadError}
-import com.amazonaws.services.lambda.runtime.Context
-import doobie.ConnectionIO
+import cats.data.{NonEmptyList, WriterT}
+import cats.effect.{IO, Timer}
+import cats.{Applicative, Defer, Functor, Monad, MonadError, Monoid}
 import io.circe.{Decoder, DecodingFailure, Encoder, HCursor, Json}
-import org.postgresql.util.PSQLException
 import scala.concurrent.duration.FiniteDuration
-import java.sql.SQLTransientException
 
 import cats.implicits._
-import doobie.implicits._
 import io.circe.syntax._
 
 class PuaAws(
@@ -29,11 +24,16 @@ class PuaAws(
   implicit def applicativeSlots: Applicative[Slots] =
     PuaAws.Allocator.applicativeAllocator
 
-  type Eff[A] = IO[A]
+  type Eff[A] = WriterT[IO, PuaAws.Call, A]
   implicit def monadEff: Monad[Eff] =
-    cats.effect.Effect[IO]
+    WriterT.catsDataMonadForWriterT
 
   def allocSlot(p: Pua) = PuaAws.Allocator.allocSlot
+
+  private def dbCall[A <: PuaAws.Action](
+      a: A
+  )(implicit ev: a.Resp <:< PuaAws.Call, dec: Decoder[a.Resp]): Eff[Unit] =
+    WriterT(invoke.dbCall(a).map(resp => (ev(resp), ())))
 
   // run the lambda as an event-like function with a given
   // location to put the result
@@ -41,21 +41,21 @@ class PuaAws(
   // if the arg slot is not yet ready, we update the list of
   // nodes waiting on the arg
   def toFnLater(ln: LambdaFunctionName, arg: SlotId, out: SlotId): Eff[Unit] =
-    invoke.async(PuaAws.Action.ToCallback(ln, arg, out, None))
+    dbCall(PuaAws.Action.ToCallback(ln, arg, out, None))
 
   // We have to wait for inputs to be ready for constant
   // functions because we need to order effects correctl;
   def toConst(json: Json, arg: SlotId, out: SlotId): Eff[Unit] =
-    invoke.async(PuaAws.Action.ToConst(json, arg, out, None))
+    dbCall(PuaAws.Action.ToConst(json, arg, out, None))
 
   // this is really a special job just waits for all the inputs
   // and finally writes to an output
   def makeList(inputs: NonEmptyList[SlotId], output: SlotId): Eff[Unit] =
-    invoke.async(PuaAws.Action.MakeList(inputs, output, None))
+    dbCall(PuaAws.Action.MakeList(inputs, output, None))
 
   // opposite of makeList, wait on a slot, then unlist it
   def unList(input: SlotId, outputs: NonEmptyList[SlotId]): Eff[Unit] =
-    invoke.async(PuaAws.Action.UnList(input, outputs, None))
+    dbCall(PuaAws.Action.UnList(input, outputs, None))
 
   /**
     * We assume we can't talk to the DB locally, only the
@@ -64,28 +64,28 @@ class PuaAws(
     */
   def doAllocation(slots: Int): IO[List[Long]] =
     invoke
-      .sync(PuaAws.Action.AllocSlots(slots))
-      .map { slotList =>
-        //println(s"allocating: $slots slots = $slotList")
-        slotList
-      }
+      .dbCall(PuaAws.Action.AllocSlots(slots))
 
   def pollSlot[A: Decoder](slotId: Long): IO[Option[A]] =
     //println(s"in pollSlot($slotId)")
     invoke
-      .sync(PuaAws.Action.ReadSlot(slotId))
+      .dbCall(PuaAws.Action.ReadSlot(slotId))
       // .attempt
       // .map { r => println(s"pollSlot($slotId) => $r"); r }
       // .rethrow
       .flatMap {
-        case PuaAws.Maybe.Present(PuaAws.Error.NotError(json)) =>
+        case PuaAws.Maybe.Present(PuaAws.Or.First(json)) =>
           IO.fromEither(json.as[A]).map(Some(_))
-        case PuaAws.Maybe.Present(err: PuaAws.Error) => IO.raiseError(err)
-        case PuaAws.Maybe.Absent                     => IO.pure(None)
+        case PuaAws.Maybe.Present(PuaAws.Or.Second(err)) => IO.raiseError(err)
+        case PuaAws.Maybe.Absent                         => IO.pure(None)
       }
 
   def completeSlot(slotId: Long, json: Json): IO[Unit] =
-    invoke.async(PuaAws.Action.CompleteSlot(slotId, json))
+    invoke
+      .dbCall(
+        PuaAws.Action.CompleteSlot(slotId, PuaAws.Or.First(json))
+      )
+      .flatMap(invoke.handleCall)
 
   def toIOFn[A: Encoder](
       pua: Pua
@@ -104,8 +104,10 @@ class PuaAws(
       for {
         (fn, slot) <- allSlots.run(doAllocation)
         //_ = println(s"writing $slot = ${ajson.toString.take(30)}...")
+        (calls, resSlot) <- fn(slot).run
+        // the following can race, due to handleCall being async
+        _ <- calls.toList.traverse_(invoke.handleCall)
         _ <- completeSlot(slot, ajson)
-        resSlot <- fn(slot)
         //_ = println(s"result slot = $resSlot")
       } yield resSlot
     }
@@ -228,6 +230,76 @@ object PuaAws {
       }
   }
 
+  sealed abstract class Call {
+    def toList: List[Call.Call1] =
+      this match {
+        case c1: Call.Call1    => c1 :: Nil
+        case Call.Repeated(cs) => cs
+      }
+  }
+  object Call {
+    import io.circe.generic.semiauto._
+
+    sealed abstract class Call1 extends Call
+    final case class Notification(fn: LambdaFunctionName, arg: Json)
+        extends Call1
+    final case class Invocation(
+        fn: LambdaFunctionName,
+        arg: Json,
+        resultSlot: Long
+    ) extends Call1
+    final case class Repeated(items: List[Call1]) extends Call
+
+    val empty: Call = Repeated(Nil)
+
+    def notifications(items: List[(LambdaFunctionName, Json)]): Call =
+      Repeated(items.map { case (fn, arg) => Notification(fn, arg) })
+
+    implicit val callMonoid: Monoid[Call] =
+      new Monoid[Call] {
+        def empty = Call.empty
+        def combine(l: Call, r: Call) =
+          (l, r) match {
+            case (left, Repeated(Nil))          => left
+            case (Repeated(Nil), right)         => right
+            case (c1: Call1, c2: Call1)         => Repeated(c1 :: c2 :: Nil)
+            case (c1: Call1, Repeated(cs))      => Repeated(c1 :: cs)
+            case (Repeated(cs), c1: Call1)      => Repeated(cs :+ c1)
+            case (Repeated(cs1), Repeated(cs2)) => Repeated(cs1 ::: cs2)
+          }
+      }
+    implicit val encodeCall: Encoder[Call] = {
+      val encN = deriveEncoder[Notification]
+      val encI = deriveEncoder[Invocation]
+
+      new Encoder[Call] {
+        def apply(c: Call): Json =
+          c match {
+            case n: Notification => encN(n)
+            case i: Invocation   => encI(i)
+            case Repeated(items) => Json.fromValues(items.map(apply(_)))
+          }
+      }
+    }
+
+    implicit val decodeCall: Decoder[Call] = {
+      val decN = deriveDecoder[Notification]
+      val decI = deriveDecoder[Invocation]
+
+      implicit val decCall1: Decoder[Call1] =
+        decI.widen[Call1].recoverWith { case _ => decN.widen[Call1] }
+
+      new Decoder[Call] {
+        def apply(h: HCursor) =
+          h.value.asArray match {
+            case Some(vs) =>
+              vs.traverse(_.as[Call1]).map(vec => Repeated(vec.toList))
+            case None => decCall1(h)
+          }
+      }
+    }
+  }
+
   sealed abstract class Action {
     // the type of the response this action gets
     type Resp
@@ -235,7 +307,7 @@ object PuaAws {
 
   // These are actions that block on some other action
   sealed abstract class BlockingAction extends Action {
-    type Resp = Unit
+    type Resp = Call
 
     def waitId: Option[Long]
     def withWaitId(wid: Long): Action = {
@@ -286,16 +358,17 @@ object PuaAws {
       type Resp = Unit
     }
     case object CheckTimeouts extends Action {
-      type Resp = Unit
+      type Resp = Call
     }
     final case class AllocSlots(count: Int) extends Action {
       type Resp = List[Long]
     }
-    final case class CompleteSlot(slotId: Long, value: Json) extends Action {
-      type Resp = Unit
+    final case class CompleteSlot(slotId: Long, value: Or[Error, Json])
+        extends Action {
+      type Resp = Call
     }
     final case class ReadSlot(slotId: Long) extends Action {
-      type Resp = Maybe[Error.Or[Json]]
+      type Resp = Maybe[Or[Error, Json]]
     }
 
     implicit val actionEncoder: Encoder[Action] = {
@@ -348,6 +421,24 @@ object PuaAws {
       }
     }
 
+    implicit val checkTimeoutsDecoder: Decoder[CheckTimeouts.type] =
+      new Decoder[CheckTimeouts.type] {
+        def apply(a: HCursor) =
+          a.downField("kind")
+            .as[String]
+            .flatMap {
+              case "check_timeouts" =>
+                Right(CheckTimeouts)
+              case unknown =>
+                Left(
+                  DecodingFailure(
+                    s"unexpected kind: $unknown in Action decoding",
+                    a.history
+                  )
+                )
+            }
+      }
+
     implicit val actionDecoder: Decoder[Action] = {
       import io.circe.generic.semiauto._
 
@@ -395,64 +486,78 @@ object PuaAws {
   }
 
   trait Invoke {
-    def sync[A <: Action](a: A)(implicit dec: Decoder[a.Resp]): IO[a.Resp]
-    def async(a: Action): IO[Unit]
+    def dbCall[A <: Action](a: A)(implicit dec: Decoder[a.Resp]): IO[a.Resp]
+    def handleCall(c: Call): IO[Unit]
   }
 
   object Invoke {
-    def fromSyncAsync(
-        syncFn: Json => IO[Json],
-        asyncFn: Json => IO[Unit]
+    def fromSyncAsyncNames(
+        syncFn: LambdaFunctionName => Json => IO[Json],
+        asyncFn: LambdaFunctionName => Json => IO[Unit],
+        dbName: LambdaFunctionName,
+        callerName: LambdaFunctionName
     ): Invoke =
       new Invoke {
-        def sync[A <: Action](a: A)(implicit dec: Decoder[a.Resp]): IO[a.Resp] =
-          syncFn((a: Action).asJson).flatMap { resp =>
+        def dbCall[A <: Action](
+            a: A
+        )(implicit dec: Decoder[a.Resp]): IO[a.Resp] =
+          syncFn(dbName)((a: Action).asJson).flatMap { resp =>
             IO.fromEither(resp.as[a.Resp])
           }
 
-        def async(a: Action): IO[Unit] = asyncFn(a.asJson)
+        def handleCall(c: Call) = asyncFn(callerName)(c.asJson)
       }
   }
 
-  final case class Error(code: Int, message: String)
-      extends Exception(message)
-      with Error.Or[Nothing]
+  /**
+    * This is for json unions where we first try to decode
+    * A, then B.
+    */
+  sealed abstract trait Or[+B, +A] {
+    def map[C](fn: A => C): Or[B, C] =
+      this match {
+        case Or.First(a)  => Or.First(fn(a))
+        case Or.Second(b) => Or.Second(b)
+      }
+
+    def toEither: Either[B, A] =
+      this match {
+        case Or.First(a)  => Right(a)
+        case Or.Second(b) => Left(b)
+      }
+  }
+  object Or {
+    final case class First[+A](first: A) extends Or[Nothing, A]
+    final case class Second[+B](second: B) extends Or[B, Nothing]
+
+    implicit def encodeOr[B, A](implicit
+        encB: Encoder[B],
+        encA: Encoder[A]
+    ): Encoder[Or[B, A]] =
+      new Encoder[Or[B, A]] {
+        def apply(or: Or[B, A]) =
+          or match {
+            case First(a)  => encA(a)
+            case Second(b) => encB(b)
+          }
+      }
+
+    implicit def decodeOr[B, A](implicit
+        decB: Decoder[B],
+        decA: Decoder[A]
+    ): Decoder[Or[B, A]] = {
+      val secDec = decB.map(Second(_): Or[B, A])
+      decA
+        .map(First(_): Or[B, A])
+        .recoverWith { case _ => secDec }
+    }
+  }
+
+  final case class Error(code: Int, message: String) extends Exception(message)
   object Error {
     import io.circe.generic.semiauto._
     implicit val errorDecoder: Decoder[Error] = deriveDecoder[Error]
     implicit val errorEncoder: Encoder[Error] = deriveEncoder[Error]
-
-    sealed abstract trait Or[+A] {
-      def map[B](fn: A => B): Or[B] =
-        this match {
-          case e @ Error(_, _) => e
-          case NotError(a)     => NotError(fn(a))
-        }
-
-      def toEither: Either[Error, A] =
-        this match {
-          case e @ Error(_, _) => Left(e)
-          case NotError(a)     => Right(a)
-        }
-    }
-    final case class NotError[A](value: A) extends Error.Or[A]
-    object Or {
-      implicit def encoderOr[A: Encoder]: Encoder[Or[A]] =
-        new Encoder[Or[A]] {
-          val aEnc: Encoder[A] = Encoder[A]
-
-          def apply(o: Or[A]) =
-            o match {
-              case e @ Error(_, _) => errorEncoder(e)
-              case NotError(a)     => aEnc(a)
-            }
-        }
-
-      implicit def decoderOr[A: Decoder]: Decoder[Or[A]] = {
-        val notA = Decoder[A].map(NotError(_): Or[A])
-        errorDecoder.widen[Or[A]].handleErrorWith(_ => notA)
-      }
-    }
 
     val InvocationError: Int = 1
     val InvalidUnlistLength: Int = 2
@@ -460,312 +565,10 @@ object PuaAws {
     def fromInvocationError(err: Throwable): Error =
       Error(InvocationError, err.getMessage())
 
-    def fromEither[A](eit: Either[Throwable, A]): Or[A] =
+    def fromEither[A](eit: Either[Throwable, A]): Or[Error, A] =
       eit match {
-        case Left(e)  => fromInvocationError(e)
-        case Right(a) => NotError(a)
+        case Left(e)  => Or.Second(fromInvocationError(e))
+        case Right(a) => Or.First(a)
       }
-  }
-
-  final case class State(
-      dbControl: DBControl,
-      makeLambda: LambdaFunctionName => Json => IO[Json],
-      makeAsyncLambda: LambdaFunctionName => Json => IO[Unit],
-      blocker: Blocker,
-      ctxShift: ContextShift[IO],
-      timer: Timer[IO]
-  )
-
-  def buildLambdaState: IO[State] = ???
-}
-
-abstract class DBControl {
-
-  def initializeTables: ConnectionIO[Unit]
-
-  def cleanupTables: ConnectionIO[Unit]
-
-  def run[A](c: ConnectionIO[A]): IO[A]
-
-  def allocSlots(count: Int): ConnectionIO[List[Long]]
-
-  def readSlot(slotId: Long): ConnectionIO[Option[PuaAws.Error.Or[Json]]]
-
-  def addWaiter(
-      act: PuaAws.BlockingAction,
-      function: LambdaFunctionName
-  ): ConnectionIO[Unit]
-
-  def removeWaiter(act: PuaAws.BlockingAction): ConnectionIO[Unit]
-
-  def completeSlot(
-      slotId: Long,
-      result: PuaAws.Error.Or[Json],
-      invoker: LambdaFunctionName => Json => IO[Unit]
-  ): ConnectionIO[IO[Unit]]
-
-  def resendNotifications(
-      invoker: LambdaFunctionName => Json => IO[Unit]
-  ): ConnectionIO[IO[Unit]]
-}
-
-class PuaWorker extends PureLambda[PuaAws.State, PuaAws.Action, Json] {
-  import PuaAws.Action._
-  import PuaAws.State
-
-  def setup = PuaAws.buildLambdaState
-
-  def toConst(
-      tc: ToConst,
-      st: State,
-      context: Context
-  ): ConnectionIO[IO[Unit]] = {
-    import st.dbControl
-
-    dbControl
-      .readSlot(tc.argSlot)
-      .flatMap {
-        case Some(either) =>
-          // data or error exists, so, we can write the data
-          val thisRes = either.map(_ => tc.json)
-          for {
-            action <-
-              dbControl.completeSlot(tc.resultSlot, thisRes, st.makeAsyncLambda)
-            _ <- dbControl.removeWaiter(tc)
-          } yield action
-        case None =>
-          //println(s"$tc could not read")
-          // we have to wait and callback.
-          dbControl
-            .addWaiter(
-              tc,
-              LambdaFunctionName(context.getInvokedFunctionArn())
-            )
-            .as(IO.unit)
-      }
-  }
-
-  /**
-    *
-   * if the slot isn't complete, wait, else fire off the given callback
-    * we can't hold the transaction while we are blocking on the call here
-    * in the future, we could set up possibly an alias to configure async
-    * calls to the target, but that seems to change the calling semantics,
-    * maybe better just to use the smallest lambda for now and keep sync
-    * calls. We can revisit
-    */
-  def toCallback(
-      tc: ToCallback,
-      st: State,
-      context: Context
-  ): ConnectionIO[IO[Unit]] = {
-    // do the finishing transaction, including removing the waiter
-    def write(json: Either[Throwable, Json]): IO[Unit] = {
-      val res = PuaAws.Error.fromEither(json)
-      st.dbControl
-        .run(for {
-          next <-
-            st.dbControl.completeSlot(tc.resultSlot, res, st.makeAsyncLambda)
-          _ <- st.dbControl.removeWaiter(tc)
-        } yield next)
-        .flatten
-    }
-
-    st.dbControl
-      .readSlot(tc.argSlot)
-      .flatMap {
-        case Some(PuaAws.Error.NotError(json)) =>
-          // the slot is complete, we can now fire off an event:
-          val fn = st.makeLambda(tc.name)
-          val invoke = fn(json).attempt.flatMap(write)
-          Applicative[ConnectionIO].pure(invoke)
-        case Some(err @ PuaAws.Error(_, _)) =>
-          st.dbControl.completeSlot(tc.resultSlot, err, st.makeAsyncLambda) <*
-            st.dbControl.removeWaiter(tc)
-        case None =>
-          //println(s"$tc could not read")
-          // we have to wait and callback.
-          st.dbControl
-            .addWaiter(tc, LambdaFunctionName(context.getInvokedFunctionArn()))
-            .as(IO.unit)
-      }
-  }
-
-  def makeList(
-      ml: MakeList,
-      st: State,
-      context: Context
-  ): ConnectionIO[IO[Unit]] = {
-    import st.dbControl
-
-    ml.argSlots
-      .traverse(dbControl.readSlot(_))
-      .flatMap { neOpts =>
-        neOpts.sequence match {
-          case Some(nelJson) =>
-            // all the inputs are done, we can write
-            val write = nelJson.traverse(_.toEither).map { noErrors =>
-              Json.fromValues(noErrors.toList)
-            }
-            dbControl.completeSlot(
-              ml.resultSlot,
-              PuaAws.Error.fromEither(write),
-              st.makeAsyncLambda
-            ) <*
-              dbControl.removeWaiter(ml)
-
-          case None =>
-            // we are not done, continue to wait
-            dbControl
-              .addWaiter(
-                ml,
-                LambdaFunctionName(context.getInvokedFunctionArn())
-              )
-              .as(IO.unit)
-        }
-      }
-  }
-
-  def unList(
-      ul: UnList,
-      st: State,
-      context: Context
-  ): ConnectionIO[IO[Unit]] = {
-    import st.dbControl
-
-    dbControl
-      .readSlot(ul.argSlot)
-      .flatMap {
-        case Some(done) =>
-          val write = done match {
-            case PuaAws.Error.NotError(success) =>
-              val resSize = ul.resultSlots.size
-              success.asArray match {
-                case Some(v) if v.size == resSize =>
-                  ul.resultSlots.toList.toVector
-                    .zip(v)
-                    .traverse {
-                      case (slot, json) =>
-                        dbControl.completeSlot(
-                          slot,
-                          PuaAws.Error.NotError(json),
-                          st.makeAsyncLambda
-                        )
-                    }
-                    .map(_.sequence_)
-                case _ =>
-                  val err = PuaAws.Error(
-                    PuaAws.Error.InvalidUnlistLength,
-                    s"expected a list of size: $resSize, got: ${success.noSpaces}"
-                  )
-
-                  ul.resultSlots
-                    .traverse { slot =>
-                      dbControl.completeSlot(
-                        slot,
-                        err,
-                        st.makeAsyncLambda
-                      )
-                    }
-                    .map(_.sequence_)
-              }
-            case err @ PuaAws.Error(_, _) =>
-              // set all the downstreams as failures
-              ul.resultSlots
-                .traverse { slot =>
-                  dbControl.completeSlot(slot, err, st.makeAsyncLambda)
-                }
-                .map(_.sequence_)
-          }
-
-          write <* dbControl.removeWaiter(ul)
-        case None =>
-          //println(s"$ul could not read")
-          // we are not done, continue to wait
-          dbControl
-            .addWaiter(
-              ul,
-              LambdaFunctionName(context.getInvokedFunctionArn())
-            )
-            .as(IO.unit)
-      }
-  }
-
-  def run(input: IO[PuaAws.Action], st: State, context: Context): IO[Json] = {
-    val rng = new java.util.Random(context.getAwsRequestId().hashCode)
-    val nextDouble: IO[Double] = IO(rng.nextDouble)
-
-    def nextSleep(retry: Int): IO[Unit] =
-      for {
-        d <- nextDouble
-        dr = retry * 100.0 * d
-        dur = FiniteDuration(dr.toLong, "ms")
-        _ <- st.timer.sleep(dur)
-      } yield ()
-
-    def encode[A <: PuaAws.Action](a: A)(
-        resp: ConnectionIO[IO[a.Resp]]
-    )(implicit enc: Encoder[a.Resp]): ConnectionIO[IO[Json]] =
-      resp.map(_.map(_.asJson))
-
-    def process(a: PuaAws.Action): ConnectionIO[IO[Json]] =
-      a match {
-        case tc @ ToConst(_, _, _, _) => encode(tc)(toConst(tc, st, context))
-        case cb @ ToCallback(_, _, _, _) =>
-          encode(cb)(toCallback(cb, st, context))
-        case ml @ MakeList(_, _, _) => encode(ml)(makeList(ml, st, context))
-        case ul @ UnList(_, _, _)   => encode(ul)(unList(ul, st, context))
-        case InitTables =>
-          encode(InitTables)(st.dbControl.initializeTables.as(IO.unit))
-        case CheckTimeouts =>
-          encode(CheckTimeouts)(
-            st.dbControl.resendNotifications(st.makeAsyncLambda)
-          )
-        case as @ AllocSlots(count) =>
-          encode(as) {
-            st.dbControl.allocSlots(count).map(IO.pure)
-          }
-        case rs @ ReadSlot(slot) =>
-          encode(rs) {
-            st.dbControl.readSlot(slot).map { resp =>
-              IO.pure(PuaAws.Maybe.fromOption(resp))
-            }
-          }
-        case cs @ CompleteSlot(slot, json) =>
-          encode(cs) {
-            st.dbControl.completeSlot(
-              slot,
-              PuaAws.Error.NotError(json),
-              st.makeAsyncLambda
-            )
-          }
-      }
-
-    val dbOp: ConnectionIO[IO[Json]] =
-      LiftIO[ConnectionIO]
-        .liftIO(input)
-        //.map { act => println(act); act }
-        .flatMap(process)
-
-    // we can retry transient operations here:
-    def runWithRetries[A](io: IO[A], retry: Int, max: Int): IO[A] =
-      io.recoverWith {
-        case (_: SQLTransientException | _: PSQLException) if retry < max =>
-          // if we have a transient failure, just retry as long
-          // as the lambda has a budget for
-          val nextR = retry + 1
-          nextSleep(nextR) *> runWithRetries(io, nextR, max)
-        case err =>
-          input.flatMap { act =>
-            IO { println("=" * 800); println(s"on: $act\nerror: $err") } *> IO
-              .raiseError(err)
-          }
-      }
-
-    // we arbitrarily set to 50 here.
-    val max = 50
-    // phase1 is all the db writes without doing any IO
-    // after we do that, we do remote IO and maybe some more db writes
-    runWithRetries(st.dbControl.run(dbOp).flatten, 0, max)
   }
 }

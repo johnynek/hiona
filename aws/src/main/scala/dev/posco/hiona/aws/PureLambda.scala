@@ -22,6 +22,9 @@ abstract class PureLambda[Ctx, A, B](implicit
 
   def run(arg: IO[A], ctx: Ctx, context: Context): IO[B]
 
+  final def log(context: Context, msg: => String): IO[Unit] =
+    IO(context.getLogger.log(msg))
+
   def checkContext(ctx: Ctx, context: Context): IO[Unit] = {
     // just use the args
     assert(ctx != null)

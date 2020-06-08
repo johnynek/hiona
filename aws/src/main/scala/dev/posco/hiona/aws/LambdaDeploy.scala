@@ -10,12 +10,13 @@ import com.amazonaws.services.lambda.{AWSLambda, AWSLambdaClientBuilder}
 import com.amazonaws.services.lambda.model.{
   CreateFunctionRequest,
   DeleteFunctionRequest,
+  Environment,
   FunctionCode,
   GetFunctionConfigurationRequest,
   InvokeRequest,
+  Runtime,
   VpcConfig
 }
-import com.amazonaws.services.lambda.model
 import com.amazonaws.services.s3
 import io.circe.Json
 import io.circe.parser.decode
@@ -41,68 +42,44 @@ class LambdaDeploy(
   private def block[A](a: => A): IO[A] =
     blocker.blockOn(IO(a))
 
-  def lambdaResource(
-      coord: Coord,
-      lambdaName: Option[LambdaFunctionName],
+  def createLambda(
       casRoot: S3Addr,
-      role: String,
-      optVpc: Option[LambdaDeploy.Vpc]
-  ): Resource[IO, LambdaFunctionName] = {
-    logger.info("creating ephemeral lambda for {}", coord)
+      funcArgs: FunctionCreationArgs
+  ): IO[LambdaFunctionName] = {
+    logger.info("creating ephemeral lambda for {}", funcArgs.coord)
 
     val s3AddrIO =
-      ContentStore.put[IO](awsS3, casRoot, coord.jarPath, blocker)
+      ContentStore.put[IO](awsS3, casRoot, funcArgs.coord.jarPath, blocker)
 
-    val resName: IO[LambdaFunctionName] =
-      lambdaName match {
-        case None     => unique.next.map(LambdaFunctionName(_))
-        case Some(nm) => IO.pure(nm)
-      }
-
-    val ioRes = (resName, s3AddrIO).mapN { (nm, s3addr) =>
-      val name = nm.asString
-      val req0 = new CreateFunctionRequest()
-        .withHandler(coord.methodName.asString)
-        .withFunctionName(name)
-        .withCode(
-          new FunctionCode()
-            .withS3Bucket(s3addr.bucket)
-            .withS3Key(s3addr.key)
+    for {
+      s3addr <- s3AddrIO
+      (name, fa1) <- funcArgs.ensureNamed(unique)
+      _ <- IO {
+        logger.info(
+          "creating ephemeral function {} with code at {}",
+          name,
+          s3addr
         )
-        .withDescription(s"ad-hoc, emphemeral hiona function: $name")
-        .withMemorySize(3008)
-        .withTimeout(900)
-        .withRuntime(model.Runtime.Java11)
-        .withRole(role)
-
-      val req = optVpc match {
-        case None => req0
-        case Some(vpc) =>
-          val vpcConfig = new VpcConfig()
-            .withSubnetIds(vpc.subnets.toList.sorted: _*)
-            .withSecurityGroupIds(vpc.securityGroups.toList.sorted: _*)
-
-          req0.withVpcConfig(vpcConfig)
       }
+      _ <- block(awsLambda.createFunction(fa1.toRequest(s3addr)))
+    } yield name
+  }
 
-      val create =
-        IO(
-          logger.info(
-            "creating ephemeral function {} with code at {}",
-            name,
-            s3addr
-          )
-        ) *>
-          block(awsLambda.createFunction(req))
+  def lambdaResource(
+      casRoot: S3Addr,
+      funcArgs: FunctionCreationArgs
+  ): Resource[IO, LambdaFunctionName] = {
 
-      val nonPending = awsLambda.waitNonPending(nm, blocker)
+    val create =
+      createLambda(casRoot, funcArgs)
+        .flatMap { nm =>
+          awsLambda
+            .waitNonPending(nm, blocker)
+            .as(nm)
+        }
 
-      Resource
-        .make(create *> nonPending)(_ => deleteLambda(nm))
-        .as(nm)
-    }
-
-    Resource.liftF(ioRes).flatten
+    Resource
+      .make(create)(deleteLambda)
   }
 
   def deleteLambda(nm: LambdaFunctionName): IO[Unit] = {
@@ -122,78 +99,105 @@ class LambdaDeploy(
   }
 
   def invokeRemoteAsync(
-      coord: Coord,
-      lambdaName: Option[LambdaFunctionName],
       casRoot: S3Addr,
-      role: String,
-      in: Json,
-      optVpc: Option[LambdaDeploy.Vpc]
+      funcArgs: FunctionCreationArgs,
+      in: Json
   ): IO[Unit] =
-    lambdaResource(coord, lambdaName, casRoot, role, optVpc).allocated
-      .flatMap {
-        case (name, _) =>
-          awsLambda.makeLambdaAsync(name, blocker).apply(in)
+    createLambda(casRoot, funcArgs)
+      .flatMap { name =>
+        awsLambda.makeLambdaAsync(name, blocker).apply(in)
       }
 
   def invokeRemoteSync(
-      coord: Coord,
-      lambdaName: Option[LambdaFunctionName],
       casRoot: S3Addr,
-      role: String,
-      in: Json,
-      optVpc: Option[LambdaDeploy.Vpc]
+      funcArgs: FunctionCreationArgs,
+      in: Json
   ): IO[Json] =
-    lambdaResource(coord, lambdaName, casRoot, role, optVpc)
+    lambdaResource(casRoot, funcArgs)
       .use(name => awsLambda.makeLambda(name, blocker).apply(in))
 
   def invokeRemoteKind(
-      coord: Coord,
-      lambdaName: Option[LambdaFunctionName],
       casRoot: S3Addr,
-      role: String,
+      funcArgs: FunctionCreationArgs,
       in: Json,
-      kind: LambdaDeploy.InvocationKind,
-      optVpc: Option[LambdaDeploy.Vpc]
+      kind: LambdaDeploy.InvocationKind
   ): IO[Unit] =
     kind match {
       case LambdaDeploy.InvocationKind.Sync =>
-        invokeRemoteSync(coord, lambdaName, casRoot, role, in, optVpc)
+        invokeRemoteSync(casRoot, funcArgs, in)
           .flatMap { json =>
             IO(println(json.spaces2))
           }
       case LambdaDeploy.InvocationKind.Async =>
-        invokeRemoteAsync(coord, lambdaName, casRoot, role, in, optVpc)
+        invokeRemoteAsync(casRoot, funcArgs, in)
     }
+
+  def invokeExisting(
+      name: LambdaFunctionName,
+      in: Json,
+      kind: LambdaDeploy.InvocationKind
+  ): IO[Unit] =
+    kind match {
+      case LambdaDeploy.InvocationKind.Sync =>
+        awsLambda
+          .makeLambda(name, blocker)
+          .apply(in)
+          .flatMap { json =>
+            IO(println(json.spaces2))
+          }
+      case LambdaDeploy.InvocationKind.Async =>
+        awsLambda
+          .makeLambdaAsync(name, blocker)
+          .apply(in)
+    }
+
   val invokeRemoteCommand: Command[IO[Unit]] =
     Command("invoke_remote", "deploy, create, invoke, then delete")(
       (
-        Opts.option[Path]("jar", "the jar containing the code"),
-        Opts.option[MethodName]("method", "the lambda function method"),
-        Opts
-          .option[String]("name", "the name to give to the lambda")
-          .map(LambdaFunctionName(_))
-          .orNone,
-        Opts.option[S3Addr](
-          "cas_root",
-          "s3 uri to root of the content-addressed store"
-        ),
-        Opts.option[String]("role", "the arn of the role to use to invoke"),
-        Payload.optPayload,
-        LambdaDeploy.InvocationKind.invocationKindOpts,
-        LambdaDeploy.Vpc.vpcOpts
-      ).mapN { (p, mn, lambdaNameOpt, s3root, role, in, ik, optVpc) =>
+        LambdaDeploy.optFunArgs,
+        LambdaDeploy.casRootOpts,
+        Payload.optPayload("payload"),
+        LambdaDeploy.InvocationKind.invocationKindOpts
+      ).mapN { (funcArgs, s3root, payload, ik) =>
         for {
-          j <- in.toJson
+          fa <- funcArgs
+          j <- payload.toJson
           _ <- invokeRemoteKind(
-            Coord(p, mn),
-            lambdaNameOpt,
             s3root,
-            role,
+            fa,
             j,
-            ik,
-            optVpc
+            ik
           )
         } yield ()
+      }
+    )
+
+  val createCommand: Command[IO[Unit]] =
+    Command("create", "create and deploy a lambda")(
+      (
+        LambdaDeploy.casRootOpts,
+        LambdaDeploy.optFunArgs,
+        Opts
+          .flag("wait", "wait until the function is no longer pending")
+          .orFalse
+      ).mapN { (s3root, funcArgs, wait) =>
+        for {
+          fa <- funcArgs
+          name <- createLambda(s3root, fa)
+          _ <- if (wait) awsLambda.waitNonPending(name, blocker) else IO.unit
+          _ <- IO(println(s"created: $name"))
+        } yield ()
+      }
+    )
+
+  val invokeExistingCommand: Command[IO[Unit]] =
+    Command("invoke", "invoke an existing lambda")(
+      (
+        LambdaDeploy.optLambdaName,
+        Payload.optPayload("payload"),
+        LambdaDeploy.InvocationKind.invocationKindOpts
+      ).mapN { (nm, in, ik) =>
+        in.toJson.flatMap(invokeExisting(nm, _, ik))
       }
     )
 
@@ -208,7 +212,13 @@ class LambdaDeploy(
 
   val cmd: Command[IO[Unit]] =
     Command("lambdadeploy", "tool to deploy and invoke lambda functions")(
-      Opts.subcommands(invokeRemoteCommand, deleteFunction)
+      Opts
+        .subcommands(
+          invokeRemoteCommand,
+          deleteFunction,
+          invokeExistingCommand,
+          createCommand
+        )
     )
 }
 
@@ -227,6 +237,14 @@ object LambdaDeploy {
   }
 
   case class Coord(jarPath: Path, methodName: MethodName)
+  object Coord {
+    val jarPath: Opts[Path] =
+      Opts.option[Path]("jar", "the jar containing the code")
+
+    val opts: Opts[Coord] =
+      (jarPath, Opts.option[MethodName]("method", "the lambda function method"))
+        .mapN(Coord(_, _))
+  }
 
   case class Vpc(subnets: Set[String], securityGroups: Set[String])
   object Vpc {
@@ -239,6 +257,151 @@ object LambdaDeploy {
         case (sn, sg)   => Some(Vpc(sn.toSet, sg.toSet))
       }
   }
+
+  case class FunctionCreationArgs(
+      coord: Coord,
+      name: Option[LambdaFunctionName],
+      description: Option[String],
+      runtime: Runtime,
+      role: String,
+      memSize: Int,
+      timeout: Int,
+      env: Option[Map[String, String]],
+      vpc: Option[LambdaDeploy.Vpc]
+  ) {
+
+    def ensureNamed(
+        unique: UniqueName[IO]
+    ): IO[(LambdaFunctionName, FunctionCreationArgs)] =
+      name match {
+        case Some(n) => IO.pure((n, this))
+        case None =>
+          unique.next.map { nm =>
+            val lfn = LambdaFunctionName(nm)
+            (lfn, copy(name = Some(lfn)))
+          }
+      }
+
+    def toRequest(s3addr: S3Addr): CreateFunctionRequest = {
+      def withOpt[A](opt: Option[A])(
+          fn: (CreateFunctionRequest, A) => CreateFunctionRequest
+      ): CreateFunctionRequest => CreateFunctionRequest = { cfr =>
+        opt.fold(cfr)(fn(cfr, _))
+      }
+
+      val wenv = withOpt(env) { (req, env) =>
+        val e = env.toList.sortBy(_._1).foldLeft(new Environment()) {
+          case (e, (k, v)) =>
+            e.addVariablesEntry(k, v)
+        }
+        req.withEnvironment(e)
+      }
+
+      val wvpc = withOpt(vpc) { (req, vpc) =>
+        val vpcConfig = new VpcConfig()
+          .withSubnetIds(vpc.subnets.toList.sorted: _*)
+          .withSecurityGroupIds(vpc.securityGroups.toList.sorted: _*)
+
+        req.withVpcConfig(vpcConfig)
+      }
+
+      val desc1 =
+        if (description.isEmpty)
+          Some(s"function for ${coord.methodName} at $s3addr")
+        else description
+
+      val fns = List(
+        withOpt(name.map(_.asString))(_.withFunctionName(_)),
+        withOpt(desc1)(_.withDescription(_)),
+        wenv,
+        wvpc
+      )
+
+      val req0 = new CreateFunctionRequest()
+        .withHandler(coord.methodName.asString)
+        .withCode(
+          new FunctionCode()
+            .withS3Bucket(s3addr.bucket)
+            .withS3Key(s3addr.key)
+        )
+        .withRole(role)
+        .withMemorySize(memSize)
+        .withTimeout(timeout)
+        .withRuntime(runtime)
+
+      fns.foldLeft(req0)((r, fn) => fn(r))
+    }
+  }
+
+  val optLambdaName: Opts[LambdaFunctionName] =
+    Opts
+      .option[String]("name", "the name for the lambda")
+      .map(LambdaFunctionName(_))
+
+  val roleOpt: Opts[String] =
+    Opts.option[String]("role", "the arn of the role to use to invoke")
+
+  val runtimeOpts: Opts[Runtime] =
+    Opts
+      .option[String]("runtime", "the lambda runtime to use (default: Java11)")
+      .withDefault("Java11")
+      .mapValidated { str =>
+        try Validated.valid(Runtime.valueOf(str))
+        catch {
+          case _: IllegalArgumentException =>
+            val valid = Runtime.values.toList.map(_.toString).sorted
+            Validated.invalidNel(
+              s"invalid runtime: $str, expected: ${valid.mkString(", ")}"
+            )
+        }
+      }
+
+  val optFunArgs: Opts[IO[FunctionCreationArgs]] =
+    (
+      LambdaDeploy.Coord.opts,
+      optLambdaName.orNone,
+      Opts.option[String]("desc", "description of the lambda").orNone,
+      runtimeOpts,
+      roleOpt,
+      Opts
+        .option[Int](
+          "memsize",
+          "maximum MB of the lambda can use (3008 MB default)"
+        )
+        .withDefault(3008),
+      Opts
+        .option[Int](
+          "timeout",
+          "maximum number of seconds of the lambda can use (900s = 15m default)"
+        )
+        .withDefault(15 * 60),
+      Payload.optPayload("env").orNone,
+      LambdaDeploy.Vpc.vpcOpts
+    ).mapN {
+      (coord, lambdaNameOpt, desc, runtime, role, mem, timeout, env, optVpc) =>
+        for {
+          ejson <- env.traverse(_.toJson)
+          envMap <- ejson.traverse { j =>
+            IO.fromEither(j.as[Map[String, String]])
+          }
+        } yield FunctionCreationArgs(
+          coord,
+          lambdaNameOpt,
+          desc,
+          runtime,
+          role,
+          mem,
+          timeout,
+          envMap,
+          optVpc
+        )
+    }
+
+  val casRootOpts: Opts[S3Addr] =
+    Opts.option[S3Addr](
+      "cas_root",
+      "s3 uri to root of the content-addressed store"
+    )
 
   sealed abstract class FnState
   object FnState {
@@ -353,8 +516,9 @@ object LambdaDeploy {
         InvocationKind.Async,
         _ =>
           IO(
-            println(
-              s"invoking: $name, as an event. Function is not deleted after the call."
+            logger.info(
+              "invoking: {}, as an event. Function is not deleted after the call.",
+              name
             )
           )
       )
@@ -372,7 +536,13 @@ object LambdaDeploy {
         .withPayload(payload.noSpaces)
         .withInvocationType(kind.asString)
 
-      logger.info("invoking function {} with argument {}", name, payload)
+      logger.info(
+        "invoking function {} {} with argument {}\nrequest: {}",
+        name,
+        kind,
+        payload,
+        ir
+      )
 
       val invoke = blocker.blockOn(IO(awsLambda.invoke(ir)))
 
@@ -454,20 +624,19 @@ object LambdaDeploy {
         }
     }
 
-    val optPayload =
+    def optPayload(nm: String): Opts[Payload] =
       Opts
-        .option[String]("payload", "a literal json value to use as the arg")
+        .option[String](nm, s"a literal json value to use as the $nm")
         .map(Payload.Literal(_))
         .orElse(
           Opts
-            .option[Path]("payload_path", "the path containing Json")
+            .option[Path](
+              s"${nm}_path",
+              s"the path containing json to use as the $nm"
+            )
             .map(Payload.FromPath(_))
         )
-
   }
-}
-
-object LambdaDeployApp extends IOApp {
 
   val awsLambda: Resource[IO, AWSLambda] =
     Resource.make(IO {
@@ -479,7 +648,6 @@ object LambdaDeployApp extends IOApp {
         Option(bldr.getClientConfiguration)
           .getOrElse(PredefinedClientConfigurations.defaultConfig)
           .withConnectionMaxIdleMillis(timeout)
-          .withConnectionTTL(timeout)
           .withRequestTimeout(timeout)
 
       bldr.withClientConfiguration(cconf).build
@@ -489,10 +657,17 @@ object LambdaDeployApp extends IOApp {
     Resource.make(IO {
       s3.AmazonS3ClientBuilder.defaultClient()
     })(awsS3 => IO(awsS3.shutdown()))
+}
+
+object LambdaDeployApp extends IOApp {
 
   def run(args: List[String]): IO[ExitCode] =
-    (awsLambda, awsS3, Resource.liftF(UniqueName.build[IO]), Blocker[IO])
-      .mapN(new LambdaDeploy(_, _, _, _))
+    (
+      LambdaDeploy.awsLambda,
+      LambdaDeploy.awsS3,
+      Resource.liftF(UniqueName.build[IO]),
+      Blocker[IO]
+    ).mapN(new LambdaDeploy(_, _, _, _))
       .use { ld =>
         ld.cmd.parse(args) match {
           case Right(io) => io.as(ExitCode.Success)

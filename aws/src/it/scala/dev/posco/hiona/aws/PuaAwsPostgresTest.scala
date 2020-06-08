@@ -1,11 +1,8 @@
 package dev.posco.hiona.aws
 
-import cats.effect.concurrent.Ref
 import cats.effect.{Blocker, IO}
-import com.amazonaws.services.lambda.runtime.Context
 import io.circe.Json
 import org.scalacheck.Prop
-import scala.concurrent.duration.FiniteDuration
 
 import cats.implicits._
 
@@ -33,98 +30,10 @@ class PuaAwsPostgresTest extends munit.ScalaCheckSuite {
         Blocker[IO]
         .flatMap { blocker =>
           PostgresDBControl("sbt_it_tests", "sbtester", "sbtpw", blocker)
-            .map((blocker, _))
         }
-        .use { case (blocker, dbControl) =>
-            // make the rng deterministic
-            val rng = new java.util.Random(123)
-            // assign a random name for the lambda
-            val lambdaName: String =
-              Iterator
-                .continually(rng.nextInt.toString)
-                .dropWhile(nm => dir0.contains(LambdaFunctionName(nm)))
-                .next
+        .use(H2DBControl.makeComputation(_, pua, dir0, inputs))
 
-            val usedRequests = scala.collection.mutable.Set[String]()
-            def nextReq: String = {
-              usedRequests.synchronized {
-                val reqId = rng.nextInt.toString
-                if (usedRequests(reqId)) nextReq
-                else {
-                  usedRequests += reqId
-                  reqId
-                }
-              }
-            }
-
-            // this is yucky, but we have a circular dependency
-            // that is broken before we invoke
-            val workerRef: Ref[IO, Json => IO[Unit]] =
-              Ref.unsafe(_ => IO.unit)
-
-            val invokeLam: Json => IO[Unit] = { j: Json =>
-              IO.suspend {
-                workerRef.get.flatMap(_(j))
-              }
-            }
-
-            val dir = dir0.addFn(lambdaName, invokeLam)
-            val dirA = { ln: LambdaFunctionName => { json: Json => dir(ln)(json).start.void } }
-
-            implicit val timer =
-              IO.timer(scala.concurrent.ExecutionContext.global)
-
-            val setupPostgresWorker: PuaAws.State =
-              PuaAws.State(dbControl, dir, dirA, blocker, ctx, timer)
-
-            val worker = new PuaWorker {
-              override def setup = IO.pure(setupPostgresWorker)
-            }
-
-            def mockContext: Context =
-              new Context {
-                lazy val getAwsRequestId: String = nextReq
-                def getClientContext()
-                    : com.amazonaws.services.lambda.runtime.ClientContext = ???
-                def getFunctionName(): String = ???
-                def getFunctionVersion(): String = ???
-                def getIdentity()
-                    : com.amazonaws.services.lambda.runtime.CognitoIdentity =
-                  ???
-                def getInvokedFunctionArn(): String = lambdaName
-                def getLogGroupName(): String = ???
-                def getLogStreamName(): String = ???
-                def getLogger()
-                    : com.amazonaws.services.lambda.runtime.LambdaLogger = ???
-                def getMemoryLimitInMB(): Int = ???
-                def getRemainingTimeInMillis(): Int = ???
-              }
-
-            val syncFn: Json => IO[Json] = { j: Json =>
-              worker
-                .run(
-                  IO.fromEither(j.as[PuaAws.Action]),
-                  setupPostgresWorker,
-                  mockContext
-                )
-            }
-
-            val asyncFn = syncFn.andThen(_.start.void)
-            val puaAws = new PuaAws(PuaAws.Invoke.fromSyncAsync(syncFn, asyncFn))
-
-            val setWorker = workerRef.set(asyncFn)
-
-            val dbFn =
-              puaAws.toIOFnPoll[Json, Json](pua, FiniteDuration(50, "ms"))
-
-            for {
-              _ <- dbControl.run(dbControl.initializeTables)
-              _ <- setWorker
-              res <- inputs.parTraverse(dbFn)
-              _ <- dbControl.run(dbControl.cleanupTables)
-            } yield res
-        }
-
+      H2DBControl.await30 {
       (computation.attempt, inputs.traverse(fn).attempt)
         .mapN {
           case (Right(a), Right(b)) =>
@@ -139,7 +48,7 @@ class PuaAwsPostgresTest extends munit.ScalaCheckSuite {
             }
             assertEquals(left, right)
         }
-        .unsafeRunSync()
+      }
     }
 
     Prop.forAllNoShrink(PuaGens.genDirectory) {

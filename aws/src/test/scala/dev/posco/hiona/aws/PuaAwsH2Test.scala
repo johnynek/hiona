@@ -15,6 +15,7 @@ import scala.concurrent.Await
 import cats.implicits._
 import doobie.implicits._
 
+import PuaAws.Or
 /*
 object ImpLog {
   implicit val han = doobie.util.log.LogHandler.jdkLogHandler
@@ -54,24 +55,11 @@ object H2DBControl {
 
     Resource.liftF(Semaphore[IO](1).map(new H2DBControl(xa, _)))
   }
-}
-
-class PuaAwsTest extends munit.ScalaCheckSuite {
-  implicit val ctx = IO.contextShift(scala.concurrent.ExecutionContext.global)
-
-  override def scalaCheckTestParameters =
-    super.scalaCheckTestParameters
-      .withMinSuccessfulTests(
-        10
-      ) // a bit slow, but locally, this passes with more
-
-  def await30[A](io: IO[A]): A =
-    Await.result(io.unsafeToFuture(), FiniteDuration(15, "s"))
 
   def resender[A](
       stop: IO[Boolean],
       dur: FiniteDuration,
-      action: IO[A]
+      action: IO[Unit]
   )(implicit t: Timer[IO], ctx: ContextShift[IO]): IO[Unit] =
     Defer[IO]
       .fix[Unit] { recur =>
@@ -84,6 +72,191 @@ class PuaAwsTest extends munit.ScalaCheckSuite {
       .start
       .void
 
+  def makeComputation(
+      dbControl: DBControl,
+      pua: Pua,
+      dir0: PuaLocal.Directory,
+      inputs: List[Json]
+  )(implicit ctxShift: ContextShift[IO]): IO[List[Json]] = {
+    // make the rng deterministic
+    val rng = new java.util.Random(123)
+    // assign a random name for the lambda
+    def lambdaName(): String =
+      Iterator
+        .continually(rng.nextInt.toString)
+        .dropWhile(nm => dir0.contains(LambdaFunctionName(nm)))
+        .next
+
+    val dbLam = lambdaName()
+    val callerLam = lambdaName()
+
+    val usedRequests = scala.collection.mutable.Set[String]()
+    def nextReq: String =
+      usedRequests.synchronized {
+        val reqId = rng.nextInt.toString
+        if (usedRequests(reqId)) nextReq
+        else {
+          usedRequests += reqId
+          reqId
+        }
+      }
+
+    // this is yucky, but we have a circular dependency
+    // that is broken before we invoke
+    val workerRef: Ref[IO, Json => IO[Json]] =
+      Ref.unsafe(_ => IO.raiseError(new Exception("unitialized")))
+
+    val callerRef: Ref[IO, Json => IO[Unit]] =
+      Ref.unsafe(_ => IO.raiseError(new Exception("unitialized")))
+
+    val invokeWorker: Json => IO[Json] = { j: Json =>
+      IO.suspend {
+        workerRef.get.flatMap(_(j))
+      }
+    }
+
+    val invokeCaller: Json => IO[Unit] = { j: Json =>
+      IO.suspend {
+        callerRef.get.flatMap(_(j))
+      }
+    }
+
+    val dir1 = dir0
+      .addFn(dbLam, invokeWorker)
+      .addFn(callerLam, invokeCaller)
+
+    val dir = { ln: LambdaFunctionName => json: Json =>
+      dir1(ln)(json).start.void
+    }
+
+    val callerState: PuaCaller.State =
+      PuaCaller.State(LambdaFunctionName(dbLam), dir1, dir)
+
+    val caller = new PuaCaller {
+      override def setup = IO.pure(callerState)
+    }
+
+    implicit val timer =
+      IO.timer(scala.concurrent.ExecutionContext.global)
+
+    val setupH2Worker: PuaWorker.State =
+      PuaWorker.State(dbControl, timer)
+
+    val worker = new PuaWorker {
+      override def setup = IO.pure(setupH2Worker)
+    }
+
+    def mockContext(nm: String): Context =
+      new Context {
+        lazy val getAwsRequestId: String = nextReq
+        def getClientContext()
+            : com.amazonaws.services.lambda.runtime.ClientContext = ???
+        def getFunctionName(): String = ???
+        def getFunctionVersion(): String = ???
+        def getIdentity()
+            : com.amazonaws.services.lambda.runtime.CognitoIdentity =
+          ???
+        def getInvokedFunctionArn(): String = nm
+        def getLogGroupName(): String = ???
+        def getLogStreamName(): String = ???
+        def getLogger(): com.amazonaws.services.lambda.runtime.LambdaLogger =
+          new com.amazonaws.services.lambda.runtime.LambdaLogger {
+            def log(str: Array[Byte]): Unit =
+              () // println(new String(str, "UTF-8"))
+            def log(str: String): Unit = () //println(str)
+          }
+        def getMemoryLimitInMB(): Int = ???
+        def getRemainingTimeInMillis(): Int = ???
+      }
+
+    val syncFn: Json => IO[Json] = { j: Json =>
+      worker
+        .run(
+          IO.fromEither(j.as[PuaAws.Action]),
+          setupH2Worker,
+          mockContext(dbLam)
+        )
+    }
+
+    /*
+    val lossyRng = new java.util.Random(42)
+
+    def makeLossy[A](fn: Json => IO[A]): Json => IO[Unit] = { j: Json =>
+      // if we lose initial messages adding waiters
+      // it still deadlocks
+      IO.suspend {
+        j.as[PuaAws.Action] match {
+          case Right(ba: PuaAws.BlockingAction)
+              if ba.waitId.isDefined =>
+            if (lossyRng.nextDouble() < 0.2)
+              // 20%
+              IO.unit
+            else fn(j).start.void
+          case _ => fn(j).start.void
+        }
+      }
+    }
+    val asyncFn = makeLossy(syncFn)
+     */
+
+    val invoke = PuaAws.Invoke.fromSyncAsyncNames(
+      dir1,
+      dir,
+      LambdaFunctionName(dbLam),
+      LambdaFunctionName(callerLam)
+    )
+    val puaAws = new PuaAws(invoke)
+
+    val setWorker = workerRef.set(syncFn)
+    val setCaller = callerRef.set { j: Json =>
+      caller
+        .run(
+          IO.fromEither(
+            j.as[Or[PuaAws.Action.CheckTimeouts.type, PuaAws.Call]]
+          ),
+          callerState,
+          mockContext(callerLam)
+        )
+    }
+
+    val doneRef = Ref.unsafe[IO, Boolean](false)
+    /*
+    val check = resender(
+      doneRef.get,
+      FiniteDuration(1, "s"),
+      caller.run(IO.pure(Or.Second(PuaAws.Action.CheckTimeouts)), callerState, mockContext(callerLam))
+    )
+    // only needed if messages can be lost, but we aren't simulating that at the moment
+     */
+    val check = IO.unit
+
+    val dbFn =
+      puaAws.toIOFnPoll[Json, Json](pua, FiniteDuration(50, "ms"))
+
+    for {
+      _ <- dbControl.run(dbControl.initializeTables).attempt
+      _ <- setWorker
+      _ <- setCaller
+      _ <- check
+      res <- inputs.parTraverse(dbFn)
+      _ <- doneRef.set(true)
+      _ <- dbControl.run(dbControl.cleanupTables)
+    } yield res
+  }
+
+  def await30[A](io: IO[A]): A =
+    Await.result(io.unsafeToFuture(), FiniteDuration(30, "s"))
+}
+
+class PuaAwsTest extends munit.ScalaCheckSuite {
+  implicit val ctx = IO.contextShift(scala.concurrent.ExecutionContext.global)
+
+  override def scalaCheckTestParameters =
+    super.scalaCheckTestParameters
+      .withMinSuccessfulTests(
+        10
+      ) // a bit slow, but locally, this passes with more
+
   property("h2 puaaws matches what we expect") {
 
     def law(
@@ -93,132 +266,11 @@ class PuaAwsTest extends munit.ScalaCheckSuite {
         fn: Json => IO[Json]
     ) = {
       val computation =
-        Blocker[IO].flatMap(b => H2DBControl(b).map((b, _))).use {
-          case (blocker, dbControl) =>
-            // make the rng deterministic
-            val rng = new java.util.Random(123)
-            // assign a random name for the lambda
-            val lambdaName: String =
-              Iterator
-                .continually(rng.nextInt.toString)
-                .dropWhile(nm => dir0.contains(LambdaFunctionName(nm)))
-                .next
+        Blocker[IO]
+          .flatMap(H2DBControl(_))
+          .use(H2DBControl.makeComputation(_, pua, dir0, inputs))
 
-            val usedRequests = scala.collection.mutable.Set[String]()
-            def nextReq: String =
-              usedRequests.synchronized {
-                val reqId = rng.nextInt.toString
-                if (usedRequests(reqId)) nextReq
-                else {
-                  usedRequests += reqId
-                  reqId
-                }
-              }
-
-            // this is yucky, but we have a circular dependency
-            // that is broken before we invoke
-            val workerRef: Ref[IO, Json => IO[Unit]] =
-              Ref.unsafe(_ => IO.unit)
-
-            val invokeLam: Json => IO[Unit] = { j: Json =>
-              IO.suspend {
-                workerRef.get.flatMap(_(j))
-              }
-            }
-
-            val dir1 = dir0.addFn(lambdaName, invokeLam)
-
-            val dir = { ln: LambdaFunctionName => json: Json =>
-              dir1(ln)(json).void
-            }
-
-            implicit val timer =
-              IO.timer(scala.concurrent.ExecutionContext.global)
-
-            val setupH2Worker: PuaAws.State =
-              PuaAws.State(dbControl, dir1, dir, blocker, ctx, timer)
-
-            val worker = new PuaWorker {
-              override def setup = IO.pure(setupH2Worker)
-            }
-
-            def mockContext: Context =
-              new Context {
-                lazy val getAwsRequestId: String = nextReq
-                def getClientContext()
-                    : com.amazonaws.services.lambda.runtime.ClientContext = ???
-                def getFunctionName(): String = ???
-                def getFunctionVersion(): String = ???
-                def getIdentity()
-                    : com.amazonaws.services.lambda.runtime.CognitoIdentity =
-                  ???
-                def getInvokedFunctionArn(): String = lambdaName
-                def getLogGroupName(): String = ???
-                def getLogStreamName(): String = ???
-                def getLogger()
-                    : com.amazonaws.services.lambda.runtime.LambdaLogger = ???
-                def getMemoryLimitInMB(): Int = ???
-                def getRemainingTimeInMillis(): Int = ???
-              }
-
-            val syncFn: Json => IO[Json] = { j: Json =>
-              worker
-                .run(
-                  IO.fromEither(j.as[PuaAws.Action]),
-                  setupH2Worker,
-                  mockContext
-                )
-            }
-
-            val lossyRng = new java.util.Random(42)
-
-            def makeLossy[A](fn: Json => IO[A]): Json => IO[Unit] = { j: Json =>
-              // if we lose initial messages adding waiters
-              // it still deadlocks
-              IO.suspend {
-                j.as[PuaAws.Action] match {
-                  case Right(ba: PuaAws.BlockingAction)
-                      if ba.waitId.isDefined =>
-                    if (lossyRng.nextDouble() < 0.2)
-                      // 20%
-                      IO.unit
-                    else fn(j).start.void
-                  case _ => fn(j).start.void
-                }
-              }
-            }
-
-            val asyncFn = syncFn.andThen(_.start.void) //makeLossy(syncFn)
-            val invoke = PuaAws.Invoke.fromSyncAsync(syncFn, asyncFn)
-            val puaAws = new PuaAws(invoke)
-
-            val setWorker = workerRef.set(asyncFn)
-
-            val doneRef = Ref.unsafe[IO, Boolean](false)
-            val check = resender(
-              doneRef.get,
-              FiniteDuration(1, "s"),
-              worker.run(
-                IO.pure(PuaAws.Action.CheckTimeouts),
-                setupH2Worker,
-                mockContext
-              )
-            )
-
-            val dbFn =
-              puaAws.toIOFnPoll[Json, Json](pua, FiniteDuration(50, "ms"))
-
-            for {
-              _ <- dbControl.run(dbControl.initializeTables).attempt
-              _ <- setWorker
-              _ <- check
-              res <- inputs.parTraverse(dbFn)
-              _ <- doneRef.set(true)
-              _ <- dbControl.run(dbControl.cleanupTables)
-            } yield res
-        }
-
-      await30(
+      H2DBControl.await30(
         (computation.attempt, inputs.traverse(fn).attempt)
           .mapN {
             case (Right(a), Right(b)) =>

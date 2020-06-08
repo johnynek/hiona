@@ -203,7 +203,7 @@ object Pua {
         def bindings(m: ACursor): Decoder.Result[Map[String, PuaExpr]] =
           m.keys match {
             case None =>
-              Left(DecodingFailure("expeceted to find a {}", m.history))
+              Left(DecodingFailure("expected to find a {}", m.history))
             case Some(ks) =>
               ks.toList
                 .traverse(k => m.get[PuaExpr](k).map((k, _)))
@@ -225,6 +225,7 @@ object Pua {
                 b <- bindings(next)
                 in <- next.right.as[PuaExpr]
               } yield Let(b, in)
+            case name => Right(Var(name))
           }
       }
   }
