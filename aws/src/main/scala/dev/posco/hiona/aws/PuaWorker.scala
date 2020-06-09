@@ -189,7 +189,7 @@ abstract class PuaWorker
       }
   }
 
-  def run(input: IO[PuaAws.Action], st: State, context: Context): IO[Json] = {
+  def run(action: PuaAws.Action, st: State, context: Context): IO[Json] = {
     val rng = new java.util.Random(context.getAwsRequestId().hashCode)
     val nextDouble: IO[Double] = IO(rng.nextDouble)
 
@@ -260,18 +260,16 @@ abstract class PuaWorker
     val max = 50
     // phase1 is all the db writes without doing any IO
     // after we do that, we do remote IO and maybe some more db writes
-    input.flatMap { action =>
-      val dbOp = process(action)
+    val dbOp = process(action)
 
-      val logged =
-        for {
-          res <- st.dbControl.run(dbOp)
-          _ <- log(context, s"result: ${res.noSpaces}")
-        } yield res
+    val logged =
+      for {
+        res <- st.dbControl.run(dbOp)
+        _ <- log(context, s"result: ${res.noSpaces}")
+      } yield res
 
-      log(context, s"called with: ${action.asJson.noSpaces}") *>
-        runWithRetries(logged, 0, max)
-    }
+    log(context, s"called with: ${action.asJson.noSpaces}") *>
+      runWithRetries(logged, 0, max)
   }
 }
 
@@ -333,11 +331,11 @@ abstract class PuaCaller
     }
 
   def run(
-      in: IO[Or[PuaAws.Action.CheckTimeouts.type, PuaAws.Call]],
+      in: Or[PuaAws.Action.CheckTimeouts.type, PuaAws.Call],
       state: PuaCaller.State,
       context: Context
   ): IO[Unit] =
-    in.flatMap {
+    in match {
       case Or.First(call) => runCall(call, state, context)
       case Or.Second(checktime) =>
         state.callDB(checktime).flatMap(runCall(_, state, context))

@@ -48,8 +48,8 @@ class ToyLambda extends PureLambda[Unit, Json, Json] {
         .getOrElse(Json.Null)
     else Json.Null
 
-  def run(in: IO[Json], ctx: Unit, awsCtx: Context): IO[Json] =
-    in.flatMap(j => IO.fromEither(j.as[List[Json]]))
+  def run(in: Json, ctx: Unit, awsCtx: Context): IO[Json] =
+    IO.fromEither(in.as[List[Json]])
       .flatMap {
         case Nil => IO.pure(Json.Null)
         case fn :: args =>

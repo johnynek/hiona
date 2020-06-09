@@ -381,14 +381,12 @@ class ApplyLambda
     (LambdaDeploy.awsLambda, Blocker[IO]).mapN((_, _)).allocated.map(_._1)
 
   def run(
-      arg: IO[(String, Json)],
+      in: (String, Json),
       state: (AWSLambda, Blocker),
       context: Context
-  ): IO[Json] =
-    arg.flatMap {
-      case (nm, arg) =>
-        val fn = state._1.makeLambda(LambdaFunctionName(nm), state._2)
-
-        fn(arg)
-    }
+  ): IO[Json] = {
+    val (nm, arg) = in
+    val fn = state._1.makeLambda(LambdaFunctionName(nm), state._2)
+    fn(arg)
+  }
 }

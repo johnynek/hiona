@@ -6,7 +6,6 @@ import io.circe.jawn.CirceSupportParser.parseFromChannel
 import io.circe.{Decoder, Encoder}
 import java.io.{InputStream, OutputStream}
 import java.nio.channels.Channels
-import scala.util.control.NonFatal
 
 import io.circe.syntax._
 
@@ -20,7 +19,7 @@ abstract class PureLambda[Ctx, A, B](implicit
 
   private lazy val readCtx: Ctx = setup.unsafeRunSync()
 
-  def run(arg: IO[A], ctx: Ctx, context: Context): IO[B]
+  def run(arg: A, ctx: Ctx, context: Context): IO[B]
 
   final def log(context: Context, msg: => String): IO[Unit] =
     IO(context.getLogger.log(msg))
@@ -49,19 +48,14 @@ abstract class PureLambda[Ctx, A, B](implicit
     val ioUnit =
       for {
         _ <- checkContext(readCtx, context)
-        b <- run(input, readCtx, context)
+        a <- input
+        b <- run(a, readCtx, context)
         bjsonBytes = b.asJson.noSpaces.getBytes("UTF-8")
         _ <- IO(outputStream.write(bjsonBytes))
       } yield ()
 
-    val logger = context.getLogger()
-
     try ioUnit.unsafeRunSync()
-    catch {
-      case NonFatal(e) =>
-        logger.log(s"ERROR: $e")
-        throw e
-    } finally {
+    finally {
       inputStream.close()
       outputStream.close()
     }

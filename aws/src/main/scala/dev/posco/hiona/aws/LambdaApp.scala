@@ -42,7 +42,7 @@ abstract class LambdaApp(appArgs: Args) extends PureLambda[S3App, Json, Json] {
     }
 
   final def run(
-      jinput: IO[Json],
+      json: Json,
       s3App: S3App,
       context: Context
   ): IO[Json] =
@@ -52,7 +52,6 @@ abstract class LambdaApp(appArgs: Args) extends PureLambda[S3App, Json, Json] {
       implicit val ctx = s3App.contextShift
 
       for {
-        json <- jinput
         stringArgs <- IO.fromEither(parseArgs(json).leftMap(new Exception(_)))
         _ = logger.log(s"INFO: parsed input: $stringArgs")
         eitherCmd = s3App.command.parse(stringArgs)

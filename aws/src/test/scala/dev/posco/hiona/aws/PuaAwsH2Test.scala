@@ -170,12 +170,8 @@ object H2DBControl {
       }
 
     val syncFn: Json => IO[Json] = { j: Json =>
-      worker
-        .run(
-          IO.fromEither(j.as[PuaAws.Action]),
-          setupH2Worker,
-          mockContext(dbLam)
-        )
+      IO.fromEither(j.as[PuaAws.Action])
+        .flatMap(worker.run(_, setupH2Worker, mockContext(dbLam)))
     }
 
     /*
@@ -209,13 +205,12 @@ object H2DBControl {
 
     val setWorker = workerRef.set(syncFn)
     val setCaller = callerRef.set { j: Json =>
-      caller
-        .run(
-          IO.fromEither(
-            j.as[Or[PuaAws.Action.CheckTimeouts.type, PuaAws.Call]]
-          ),
-          callerState,
-          mockContext(callerLam)
+      IO.fromEither(
+          j.as[Or[PuaAws.Action.CheckTimeouts.type, PuaAws.Call]]
+        )
+        .flatMap(
+          caller
+            .run(_, callerState, mockContext(callerLam))
         )
     }
 
