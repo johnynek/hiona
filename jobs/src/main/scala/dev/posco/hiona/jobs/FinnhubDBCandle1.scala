@@ -52,9 +52,7 @@ object FinnhubDBCandle1 extends aws.DBS3CliApp {
   )
 
   val latestCandle: Feature[Symbol, Option[Candle]] =
-    src
-      .map(candle => (candle.symbol, candle))
-      .latest
+    src.latestBy(_.symbol)
 
   // region Values
 
@@ -95,16 +93,8 @@ object FinnhubDBCandle1 extends aws.DBS3CliApp {
     implicit def doubleModule[A: DoubleModule]: DoubleModule[Values[A]] =
       DoubleModule.genericModule
 
-    def moments(vd: Values[Double]): Values[Moments2] = {
-      import Moments2.value
-
-      Values(
-        close = value(vd.close),
-        change = value(vd.change),
-        range = value(vd.range),
-        volume = value(vd.volume)
-      )
-    }
+    def moments(vd: Values[Double]): Values[Moments2] =
+      vd.map(Moments2.value)
   }
 
   // endregion Values

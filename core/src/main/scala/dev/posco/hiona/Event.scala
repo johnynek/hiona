@@ -51,6 +51,12 @@ sealed abstract class Event[+A] {
     */
   final def through[B](fn: Event.Pipe[A, B]): Event[B] =
     fn(this)
+
+  /** attach a key from the event
+    */
+  final def keyBy[K](fn: A => K): Event[(K, A)] =
+    map(Event.KeyBy(fn))
+
 }
 
 object Event {
@@ -70,6 +76,24 @@ object Event {
     Source(name, implicitly[Row[A]], validator)
 
   def empty[A]: Event[A] = Empty
+
+  /**
+    * this are methods that use the type parameter A in an invariant way, which
+    * cannot be methods since we do want the type to be covariant on Event
+    */
+  implicit class InvariantEventMethods[A](private val self: Event[A])
+      extends AnyVal {
+
+    /** shortcut for keyBy(fn).latest
+      */
+    def latestBy[K](fn: A => K): Feature[K, Option[A]] =
+      self.keyBy(fn).latest
+
+    /** shortcut for keyBy(fn).sum
+      */
+    def sumBy[K](fn: A => K)(implicit m: Monoid[A]): Feature[K, A] =
+      self.keyBy(fn).sum
+  }
 
   /**
     * These are extension methods for events of tuples, which are common.
@@ -276,6 +300,10 @@ object Event {
 
   case class ToKey[A]() extends Function[A, (A, Unit)] {
     def apply(a: A): (A, Unit) = (a, ())
+  }
+
+  case class KeyBy[A, B](fn: A => B) extends Function[A, (B, A)] {
+    def apply(a: A): (B, A) = (fn(a), a)
   }
 
 }
