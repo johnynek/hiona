@@ -10,7 +10,7 @@ import cats.implicits._
   * This keeps a window of events at most Duration apart
   *
   * so any two timestamps in here, if t1 < t2 then t1 + duration > t2
-  * another way to say it: |t1 - t2| <= duration
+  * another way to say it: |t1 - t2| < duration
   */
 sealed abstract class TimeWindow[W <: Duration, A] {
   final def getWindow(implicit v: ValueOf[W]): W = v.value

@@ -28,8 +28,8 @@ java -Dorg.slf4j.simpleLogger.defaultLogLevel=debug -cp "$JAR" dev.posco.hiona.a
             [
               "run",
               "--logevery", "24h",
-              "--limit", "1000",
-              "--output", "s3://predictionmachine-data/temp/candle1_1000_exch.csv"
+              "--limit", "2000",
+              "--output", "s3://predictionmachine-data/temp/candle1_2000_exch.csv"
             ]
           }
       }

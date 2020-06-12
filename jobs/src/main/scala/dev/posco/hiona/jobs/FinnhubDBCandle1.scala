@@ -8,6 +8,8 @@ import dev.posco.hiona.db.DBSupport
 import dev.posco.hiona.jobs.Featurize._
 import doobie.implicits._
 
+import cats.implicits._
+
 /**
   * Specify and evaluate a computation graph
   */
@@ -134,6 +136,13 @@ object FinnhubDBCandle1 extends aws.DBS3CliApp {
           (MetaFeatures(ts, c.symbol), zh)
       }
 
+  case class Window10Values(turnover_usd: Double, volume: Double)
+  val turnoverVol10Feature: Feature[Symbol, Window10Values] =
+    metaAndZeroHistory
+      .map { case (m, z) => (m.symbol, (z.turnover_usd, z.lin.volume)) }
+      .windowSum(Duration.minutes(10L))
+      .map { case (t, v) => Window10Values(t, v) }
+
   val decayedFeatures
       : Feature[Symbol, Decays[(Values[Moments2], Values[Moments2])]] =
     Decays.feature(
@@ -154,14 +163,20 @@ object FinnhubDBCandle1 extends aws.DBS3CliApp {
     case Some(c) => Target(c.close, c.volume)
   })
 
+  val turnoverVol10Label: Label[Symbol, Window10Values] =
+    Label(turnoverVol10Feature).lookForward(Duration.minutes(10L))
+
   /**
     * Bundles together all the Targets of the computation
     */
   case class Targets(
+      entryWindow: Window10Values,
       target15: Target,
       target30: Target,
       target15Gain: Double,
-      target30Gain: Double
+      target30Gain: Double,
+      exit15Window: Window10Values,
+      exit30Window: Window10Values
   )
 
   case class Result(
@@ -191,14 +206,25 @@ object FinnhubDBCandle1 extends aws.DBS3CliApp {
         .map { case (meta, zh) => (meta.symbol, (meta, zh)) }
         .postLookup(decayedFeatures)
 
-    val lab15: Label[Symbol, Target] = label.lookForward(Duration.minutes(15))
-    val lab30: Label[Symbol, Target] = label.lookForward(Duration.minutes(30))
+    val min15 = Duration.minutes(15)
+    val min30 = Duration.minutes(30)
 
-    val lab15_30: Label[Symbol, (Target, Target)] = lab15.zip(lab30)
+    val lab15: Label[Symbol, Target] = label.lookForward(min15)
+    val lab30: Label[Symbol, Target] = label.lookForward(min30)
 
-    LabeledEvent(ev, lab15_30)
+    val allLabs: Label[
+      Symbol,
+      ((((Window10Values, Target), Target), Window10Values), Window10Values)
+    ] =
+      turnoverVol10Label
+        .zip(lab15)
+        .zip(lab30)
+        .zip(turnoverVol10Label.lookForward(min15))
+        .zip(turnoverVol10Label.lookForward(min30))
+
+    LabeledEvent(ev, allLabs)
       .map {
-        case (_, (((meta, zh), decayPair), (t15, t30))) =>
+        case (_, (((meta, zh), decayPair), ((((w0, t15), t30), w15), w30))) =>
           val linM = decayPair.map(_._1)
           val logM = decayPair.map(_._2)
           val linZ = linM.map { v =>
@@ -210,7 +236,7 @@ object FinnhubDBCandle1 extends aws.DBS3CliApp {
 
           val t15Gain = (t15.close / zh.lin.close) - 1.0
           val t30Gain = (t30.close / zh.lin.close) - 1.0
-          val targets = Targets(t15, t30, t15Gain, t30Gain)
+          val targets = Targets(w0, t15, t30, t15Gain, t30Gain, w15, w30)
 
           Result(meta, zh, linM, logM, linZ, logZ, targets)
       }
