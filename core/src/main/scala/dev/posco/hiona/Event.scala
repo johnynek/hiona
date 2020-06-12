@@ -179,12 +179,10 @@ object Event {
       ev1.sum(MaxMonoid(ord))
     }
 
-    /**
-      * Set the value to unit. Useful discard the values without
-      * rekeying the event stream.
-      */
-    final def keys: Event[(K, Unit)] =
-      mapValues(Feature.ConstFn(()))
+    final def min(implicit ord: Ordering[V]): Feature[K, Option[V]] = {
+      val ev1: Event[(K, Option[V])] = ev.mapValues(Event.ToSome())
+      ev1.sum(MaxMonoid(ord.reverse))
+    }
 
     /**
       * discard a key, this is used when looking up a feature on one aspect
@@ -198,6 +196,9 @@ object Event {
     /**
       * discard any trailing lookups and just get the events
       * that would trigger a subsequent lookup
+      *
+      * Useful discard the values without
+      * rekeying the event stream.
       */
     final def triggers: Event[(K, Unit)] =
       Event.triggersOf(ev)
@@ -245,14 +246,13 @@ object Event {
       case ns: NonSource[_] => lookupsOf(ns.previous)
     }
 
-  /**
-    * return an event that just signals when the keys change
-    */
-  def triggersOf[A](ev: Event[(A, Any)]): Event[(A, Unit)] = {
-    def loop(ev: Event[(A, Any)]): List[Event[(A, Unit)]] =
+  private[hiona] def triggersList[A](
+      ev: Event[(A, Any)]
+  ): List[Event[(A, Any)]] = {
+    def loop(ev: Event[(A, Any)]): List[Event[(A, Any)]] =
       ev match {
         case Empty                 => Nil
-        case src @ Source(_, _, _) => src.keys :: Nil
+        case src @ Source(_, _, _) => src :: Nil
         case Concat(left, right) =>
           loop(left) ::: loop(right)
         case Lookup(ev, _, _)                     => loop(ev)
@@ -261,12 +261,49 @@ object Event {
           // skip this and possibly remove more lookups
           val tupleEv: Event[(A, Any)] = evidence.liftCo[Event](ev)
           loop(tupleEv)
+        case v @ ValueWithTime(_, _) =>
+          // We can remove the value with time because it doesn't change the key
+          // this is complex to get the compiler to see the types line up
+          def go[K, V, W <: (A, Any)](
+              vt: ValueWithTime[K, V, W]
+          ): List[Event[(A, Any)]] = {
+            val ev0: Event[(K, V)] = vt.event
+            val ev1: Event[(K, (V, Timestamp))] =
+              // we add a mapValues, but this will be removed by looping:
+              ev0.mapValues(v => (v, Timestamp.MinValue))
+
+            // now  we can convert (K, (V, Timestamp)) to W
+            val ev2: Event[W] = vt.cast.liftCo[Event](ev1)
+            // widen using covariance
+            val ev3: Event[(A, Any)] = ev2
+            // now loop without the ValueWithTime on there
+            loop(ev3)
+          }
+          go(v)
         case ns: NonSource[_] =>
-          ns.keys :: Nil
+          ns :: Nil
       }
 
-    loop(ev).distinct.reduceOption(_ ++ _).getOrElse(Empty)
+    loop(ev)
   }
+
+  private[hiona] def unitValues[A](
+      ls: List[Event[(A, Any)]]
+  ): Event[(A, Unit)] = {
+    def keys[K](ev: Event[(K, Any)]): Event[(K, Unit)] =
+      ev.mapValues(Feature.ConstFn(()))
+
+    ls.distinct
+      .reduceOption(_ ++ _)
+      .map(keys)
+      .getOrElse(Empty)
+  }
+
+  /**
+    * return an event that just signals when the keys change
+    */
+  def triggersOf[A](ev: Event[(A, Any)]): Event[(A, Unit)] =
+    unitValues(triggersList(ev))
 
   def amplificationOf[A](ev: Event[A]): Amplification =
     ev match {

@@ -55,9 +55,32 @@ object Feature {
   case class ChangesFn[A]() extends Function1[((Unit, A), A), (A, A)] {
     def apply(in: ((Unit, A), A)) = (in._1._2, in._2)
   }
+  case class KeyTimeMapFn[K, V](fn: (K, Timestamp) => V)
+      extends Function3[K, Any, Timestamp, V] {
+    def apply(k: K, a: Any, ts: Timestamp): V = fn(k, ts)
+  }
+  case class KeyMapFn[K, V](fn: K => V) extends Function3[K, Any, Any, V] {
+    def apply(k: K, a: Any, ts: Any): V = fn(k)
+  }
 
+  /**
+    * A Feature that always has a single value
+    */
   def const[K, V](v: V): Feature[K, V] =
-    Event.empty[(K, Unit)].sum.map(ConstFn(v))
+    fromFn(ConstFn(v))
+
+  /**
+    * Built a feature purely from a function of the key and timestamp
+    */
+  def fromFnWithTime[K, V](fn: (K, Timestamp) => V): Feature[K, V] =
+    Event.empty[(K, Unit)].sum.mapWithKeyTime(KeyTimeMapFn(fn))
+
+  /**
+    * Built a feature purely from a function of the key
+    * (this is a constant feature for each key)
+    */
+  def fromFn[K, V](fn: K => V): Feature[K, V] =
+    Event.empty[(K, Unit)].sum.mapWithKeyTime(KeyMapFn(fn))
 
   def sourcesOf[K, V](f: Feature[K, V]): Map[String, Set[Event.Source[_]]] =
     f match {
@@ -69,16 +92,22 @@ object Feature {
           .combine(sourcesOf(left), sourcesOf(right))
     }
 
+  /**
+    * Return an event stream with matching keys when
+    * this feature can change *due to an event*
+    * Note, features can also incorporate time which
+    * changes constantly
+    */
   def triggersOf[K, V](f: Feature[K, V]): Event[(K, Unit)] = {
-    def loop[W](f: Feature[K, W]): List[Event[(K, Unit)]] =
+    def loop[W](f: Feature[K, W]): List[Event[(K, Any)]] =
       f match {
-        case Summed(ev, _)    => ev.triggers :: Nil
-        case Latest(ev, _, _) => ev.triggers :: Nil
+        case Summed(ev, _)    => Event.triggersList(ev)
+        case Latest(ev, _, _) => Event.triggersList(ev)
         case Mapped(f, _)     => loop(f)
         case Zipped(l, r, _)  => loop(l) ::: loop(r)
       }
 
-    loop(f).distinct.reduce(_ ++ _)
+    Event.unitValues(loop(f))
   }
 
   def lookupsOf[K, V](f: Feature[K, V]): Set[Event.Lookup[_, _, _]] =
