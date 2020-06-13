@@ -103,10 +103,11 @@ class LambdaDeploy(
       funcArgs: FunctionCreationArgs,
       in: Json
   ): IO[Unit] =
-    createLambda(casRoot, funcArgs)
-      .flatMap { name =>
-        awsLambda.makeLambdaAsync(name, blocker).apply(in)
-      }
+    for {
+      name <- createLambda(casRoot, funcArgs)
+      _ <- awsLambda.waitNonPending(name, blocker)
+      _ <- awsLambda.makeLambdaAsync(name, blocker).apply(in)
+    } yield ()
 
   def invokeRemoteSync(
       casRoot: S3Addr,
@@ -648,6 +649,8 @@ object LambdaDeploy {
         Option(bldr.getClientConfiguration)
           .getOrElse(PredefinedClientConfigurations.defaultConfig)
           .withConnectionMaxIdleMillis(timeout)
+          .withConnectionTimeout(timeout)
+          .withSocketTimeout(timeout)
           .withRequestTimeout(timeout)
 
       bldr.withClientConfiguration(cconf).build
