@@ -1,30 +1,49 @@
 package dev.posco.hiona.jobs
 
 import cats.Monoid
-import cats.effect.Async
-import cats.effect.IO
+import cats.effect.{Async, IO}
+import cats.implicits._
 import dev.posco.hiona._
 import dev.posco.hiona.db.DBSupport
 import dev.posco.hiona.jobs.Featurize._
 import doobie.implicits._
-
-import cats.implicits._
+import doobie.util.fragment.Fragment
 
 /**
   * Specify and evaluate a computation graph
   */
-object FinnhubDBCandle1 extends aws.DBS3CliApp {
+object FinnhubDBCandle extends aws.DBS3CliApp {
 
   // TODO: get from env vars, which are set in payload
-  val exch_code: ExchangeCode = "HK"
-  val sqlQueryLimit: Int = 1000
+  val sourceSqlView = "finnhub.stock_candles_5min"
+  val exchCode: ExchangeCode = "HK" // "HK", "T"
 
+  // TODO: maybe gain names that are suffixed target names (...+ '.gain' - can "_" become "."?)
   // TODO: adjust lookforward amounts for labels
   // TODO: featurize volume spikes on declines, featurize price digits
   // TODO: is candle_end_epoch_millis too early for "overnight candles"?? should it be checked against next start instead?
   // TODO: are empty bars handled correctly -- ie present with zero volume?
-  // what values do we use for open/high/low/close?
-  // or do we not even read them, for now?
+  // what values do we use for open/high/low/close? or do we not even read them, for now?
+
+  def candles_sql(exchCode: ExchangeCode): doobie.Query0[Candle] =
+    (fr"""
+          SELECT
+              symbol,
+              candle_start_epoch_millis,
+              candle_end_epoch_millis,
+              open,
+              high,
+              low,
+              close,
+              volume,
+              exch_code,
+              currency
+          FROM""" ++
+      Fragment.const(sourceSqlView) ++
+      fr"""
+          WHERE exch_code = $exchCode
+          ORDER BY candle_end_epoch_millis
+         """).query[Candle]
 
   /**
     * This describes the form of the input data. In this case, mirrors
@@ -32,14 +51,14 @@ object FinnhubDBCandle1 extends aws.DBS3CliApp {
     */
   case class Candle(
       symbol: Symbol,
-      candle_start_epoch_millis: Long,
-      candle_end_epoch_millis: Long,
+      candleStartEpochMillis: Long,
+      candleEndEpochMillis: Long,
       open: Double,
       high: Double,
       low: Double,
       close: Double,
       volume: Double,
-      exch_code: ExchangeCode,
+      exchCode: ExchangeCode,
       currency: Currency
   ) {
     def change: Double = close / open
@@ -50,7 +69,7 @@ object FinnhubDBCandle1 extends aws.DBS3CliApp {
 
   val src: Event.Source[Candle] = Event.source[Candle](
     "finnhub.stock_candles",
-    Validator.pure(candle => Timestamp(candle.candle_end_epoch_millis))
+    Validator.pure(candle => Timestamp(candle.candleEndEpochMillis))
   )
 
   val latestCandle: Feature[Symbol, Option[Candle]] =
@@ -109,7 +128,7 @@ object FinnhubDBCandle1 extends aws.DBS3CliApp {
   case class ZeroHistoryFeatures(
       minuteOfDay: Int,
       dayOfWeek: Int,
-      turnover_usd: Double,
+      turnoverUsd: Double,
       lin: Values[Double],
       log: Values[Double]
   )
@@ -126,7 +145,7 @@ object FinnhubDBCandle1 extends aws.DBS3CliApp {
           val zh = ZeroHistoryFeatures(
             ts.unixMinuteOfDay,
             ts.unixDayOfWeek,
-            turnover_usd = exch match {
+            turnoverUsd = exch match {
               case None    => Double.NaN
               case Some(e) => e.toUSD(c.close) * c.volume
             },
@@ -136,10 +155,10 @@ object FinnhubDBCandle1 extends aws.DBS3CliApp {
           (MetaFeatures(ts, c.symbol), zh)
       }
 
-  case class Window10Values(turnover_usd: Double, volume: Double)
+  case class Window10Values(turnoverUsd: Double, volume: Double)
   val turnoverVol10Feature: Feature[Symbol, Window10Values] =
     metaAndZeroHistory
-      .map { case (m, z) => (m.symbol, (z.turnover_usd, z.lin.volume)) }
+      .map { case (m, z) => (m.symbol, (z.turnoverUsd, z.lin.volume)) }
       .windowSum(Duration.minutes(10L))
       .map { case (t, v) => Window10Values(t, v) }
 
@@ -171,22 +190,22 @@ object FinnhubDBCandle1 extends aws.DBS3CliApp {
     */
   case class Targets(
       entryWindow: Window10Values,
-      target15: Target,
-      target30: Target,
-      target15Gain: Double,
-      target30Gain: Double,
+      mins15: Target,
+      mins30: Target,
+      gainMins15: Double,
+      gainMins30: Double,
       exit15Window: Window10Values,
       exit30Window: Window10Values
   )
 
   case class Result(
       metaFeatures: MetaFeatures,
+      targets: Targets,
       zeroHistory: ZeroHistoryFeatures,
       linMoments: Decays[Values[Moments2]],
       logMoments: Decays[Values[Moments2]],
       linZ: Decays[Values[Double]],
-      logZ: Decays[Values[Double]],
-      targets: Targets
+      logZ: Decays[Values[Double]]
   )
 
   /**
@@ -234,31 +253,13 @@ object FinnhubDBCandle1 extends aws.DBS3CliApp {
             v.zip(zh.log).map { case (m, d) => m.zscore(d) }
           }
 
-          val t15Gain = (t15.close / zh.lin.close) - 1.0
-          val t30Gain = (t30.close / zh.lin.close) - 1.0
-          val targets = Targets(w0, t15, t30, t15Gain, t30Gain, w15, w30)
+          val gainMins15 = (t15.close / zh.lin.close) - 1.0
+          val gainMins30 = (t30.close / zh.lin.close) - 1.0
+          val targets = Targets(w0, t15, t30, gainMins15, gainMins30, w15, w30)
 
-          Result(meta, zh, linM, logM, linZ, logZ, targets)
+          Result(meta, targets, zh, linM, logM, linZ, logZ)
       }
   }
-
-  def candles_sql(exch_code: ExchangeCode, limit: Int) = sql"""
-          SELECT
-              symbol,
-              candle_start_epoch_millis,
-              candle_end_epoch_millis,
-              open,
-              high,
-              low,
-              close,
-              volume,
-              exch_code,
-              currency
-          FROM finnhub.stock_candles_view
-          WHERE exch_code = $exch_code
-          ORDER BY candle_end_epoch_millis
-          LIMIT $limit
-         """.query[Candle]
 
   /**
     * This is what binds the the Event.Source to particular
@@ -267,7 +268,7 @@ object FinnhubDBCandle1 extends aws.DBS3CliApp {
     */
   def dbSupportFactory: DBSupport.Factory =
     db.DBSupport
-      .factoryFor(src)(candles_sql(exch_code, sqlQueryLimit))
+      .factoryFor(src)(candles_sql(exchCode))
       .combine(db.DBSupport.factoryFor(valueInUSD)(exchange_rates_sql.query))
 
   def eventArgs: Args = Args.labeledEvent[Result](labeled)
@@ -281,12 +282,12 @@ object FinnhubDBCandle1 extends aws.DBS3CliApp {
       .unsafeRunSync()
 }
 
-class FinnhubDBCandle1Lambda extends aws.LambdaApp(FinnhubDBCandle1.eventArgs) {
+class FinnhubDBCandleLambda extends aws.LambdaApp(FinnhubDBCandle.eventArgs) {
   override def setup: IO[aws.DBS3App] =
     IO {
       new aws.DBS3App {
         def dbSupportFactory: DBSupport.Factory =
-          FinnhubDBCandle1.dbSupportFactory
+          FinnhubDBCandle.dbSupportFactory
 
         lazy val transactor: doobie.Transactor[IO] =
           Databases

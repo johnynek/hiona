@@ -53,13 +53,13 @@ object Moments2 {
 
   implicit val moments2Monoid: Monoid[Moments2] =
     new Monoid[Moments2] {
-      def empty = zero
+      def empty: Moments2 = zero
       def combine(a: Moments2, b: Moments2): Moments2 = a + b
     }
 
   implicit val moments2DoubleModule: DoubleModule[Moments2] =
     new DoubleModule[Moments2] {
-      def monoid = moments2Monoid
+      def monoid: Monoid[Moments2] = moments2Monoid
       def scale(s: Double, v: Moments2): Moments2 =
         if (s == 0.0) zero
         else if (s == 1.0) v
@@ -86,6 +86,7 @@ object Moments2 {
     * large numbers of records similar to:
     * http://en.wikipedia.org/wiki/Algorithms_for_calculating_variance#Parallel_algorithm
     */
+  @scala.annotation.tailrec
   def combineMean(n: Double, an: Double, k: Double, ak: Double): Double =
     if (n < k) combineMean(k, ak, n, an)
     else {
