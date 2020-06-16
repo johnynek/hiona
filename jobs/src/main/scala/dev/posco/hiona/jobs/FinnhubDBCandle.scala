@@ -1,8 +1,9 @@
 package dev.posco.hiona.jobs
 
 import cats.Monoid
-import cats.effect.{Async, IO}
+import cats.effect.{Async, IO, Resource}
 import cats.implicits._
+import com.monovore.decline.{Command, Opts}
 import dev.posco.hiona._
 import dev.posco.hiona.db.DBSupport
 import dev.posco.hiona.jobs.Featurize._
@@ -14,10 +15,6 @@ import doobie.util.fragment.Fragment
   */
 object FinnhubDBCandle extends aws.DBS3CliApp {
 
-  // TODO: get from env vars, which are set in payload
-  val sourceSqlView = "finnhub.stock_candles_5min"
-  val exchCode: ExchangeCode = "HK" // "HK", "T"
-
   // TODO: maybe gain names that are suffixed target names (...+ '.gain' - can "_" become "."?)
   // TODO: adjust lookforward amounts for labels
   // TODO: featurize volume spikes on declines, featurize price digits
@@ -25,7 +22,10 @@ object FinnhubDBCandle extends aws.DBS3CliApp {
   // TODO: are empty bars handled correctly -- ie present with zero volume?
   // what values do we use for open/high/low/close? or do we not even read them, for now?
 
-  def candles_sql(exchCode: ExchangeCode): doobie.Query0[Candle] =
+  def candles_sql(
+      sourceSqlView: String,
+      exchCode: ExchangeCode
+  ): doobie.Query0[Candle] =
     (fr"""
           SELECT
               symbol,
@@ -266,33 +266,49 @@ object FinnhubDBCandle extends aws.DBS3CliApp {
     * sql queries
     * DBSupport.factoryFor(src, "some sqlString here")
     */
-  def dbSupportFactory: DBSupport.Factory =
-    db.DBSupport
-      .factoryFor(src)(candles_sql(exchCode))
-      .combine(db.DBSupport.factoryFor(valueInUSD)(exchange_rates_sql.query))
+  def dbSupportFactory: IO[DBSupport.Factory] = {
+    val sourceSqlView = "finnhub.stock_candles_5min"
+    val exchCode: ExchangeCode = "HK" // "HK", "T"
 
-  def eventArgs: Args = Args.labeledEvent[Result](labeled)
-
-  lazy val transactor: doobie.Transactor[IO] =
-    Databases
-      .rdsPostgresLocalTunnel(Databases.pmdbProd, blocker)(
-        Async[IO],
-        contextShift
-      )
-      .unsafeRunSync()
-}
-
-class FinnhubDBCandleLambda extends aws.LambdaApp(FinnhubDBCandle.eventArgs) {
-  override def setup: IO[aws.DBS3App] =
-    IO {
-      new aws.DBS3App {
-        def dbSupportFactory: DBSupport.Factory =
-          FinnhubDBCandle.dbSupportFactory
-
-        lazy val transactor: doobie.Transactor[IO] =
-          Databases
-            .rdsPostgres(Databases.pmdbProd, blocker)(Async[IO], contextShift)
-            .unsafeRunSync()
-      }
+    // get from env vars, which are set in payload
+    val dbCmd = Command("finnhub_db_candle", "finnhub db env args") {
+      (
+        Opts
+          .env[String]("db_sql_view", "sql view or table to use")
+          .orElse(Opts(sourceSqlView)),
+        Opts
+          .env[String]("db_exchange", "the exchange to limit to")
+          .orElse(Opts(exchCode))
+      ).mapN((_, _))
     }
+
+    IOEnv
+      .readArgs(dbCmd)
+      .map {
+        case (dbView, exch) =>
+          db.DBSupport
+            .factoryFor(src)(candles_sql(dbView, exch))
+            .combine(
+              db.DBSupport.factoryFor(valueInUSD)(exchange_rates_sql.query)
+            )
+      }
+  }
+
+  def eventOutput: Output = Output.labeledEvent[Result](labeled)
+
+  val transactor: Resource[IO, doobie.Transactor[IO]] =
+    Resource.liftF(
+      Databases
+        .rdsPostgresLocalTunnel(Databases.pmdbProd, blocker)(
+          Async[IO],
+          contextShift
+        )
+    )
 }
+
+class FinnhubDBCandleLambda
+    extends aws.DBLambdaApp0(
+      FinnhubDBCandle.eventOutput,
+      FinnhubDBCandle.dbSupportFactory,
+      Databases.pmdbProdTransactor[IO]
+    )

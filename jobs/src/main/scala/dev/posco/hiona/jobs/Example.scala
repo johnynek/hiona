@@ -353,4 +353,4 @@ object Example {
     }
 }
 
-object ExampleApp extends LabeledApp(Example.fullLabeled)
+object ExampleApp extends App0(Output.labeledEvent(Example.fullLabeled))

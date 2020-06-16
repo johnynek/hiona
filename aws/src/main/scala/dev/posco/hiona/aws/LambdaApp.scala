@@ -4,7 +4,8 @@ import cats.data.{Validated, ValidatedNel}
 import cats.effect.{Blocker, ContextShift, IO, Resource}
 import com.amazonaws.services.lambda.runtime.Context
 import com.amazonaws.services.s3
-import com.monovore.decline.Argument
+import com.monovore.decline.{Argument, Opts}
+import dev.posco.hiona.IOEnv
 import java.util.concurrent.Executors
 import io.circe.{Decoder, HCursor, Json}
 import scala.concurrent.ExecutionContext
@@ -30,11 +31,12 @@ object LambdaApp {
   }
 }
 
-abstract class LambdaApp(appArgs: Args) extends PureLambda[S3App, Json, Json] {
+class LambdaApp[A](opts: Opts[A], appOutput: A => Output)
+    extends PureLambda[S3App, Json, Json] {
 
   def setup = IO(new S3App)
 
-  def parseArgs(input: Json): Either[String, List[String]] =
+  def parseOutput(input: Json): Either[String, List[String]] =
     input.as[LambdaApp.BodyArgs] match {
       case Right(LambdaApp.BodyArgs(items)) => Right(items)
       case Left(err) =>
@@ -52,18 +54,23 @@ abstract class LambdaApp(appArgs: Args) extends PureLambda[S3App, Json, Json] {
       implicit val ctx = s3App.contextShift
 
       for {
-        stringArgs <- IO.fromEither(parseArgs(json).leftMap(new Exception(_)))
-        _ = logger.log(s"INFO: parsed input: $stringArgs")
-        eitherCmd = s3App.command.parse(stringArgs)
-        cmd <- IO.fromEither(eitherCmd.leftMap { msg =>
+        stringOutput <-
+          IO.fromEither(parseOutput(json).leftMap(new Exception(_)))
+        _ = logger.log(s"INFO: parsed input: $stringOutput")
+        cmd = s3App.commandWith(s3App.command, opts)
+        env <- IOEnv.read
+        eitherCmd = cmd.parse(stringOutput, env)
+        (cmd, arg) <- IO.fromEither(eitherCmd.leftMap { msg =>
           new Exception(s"couldn't parse args\n$msg")
         })
         _ = logger.log(s"INFO: about to run")
-        _ <- cmd.run(appArgs, s3App.blocker)
+        _ <- cmd.run(appOutput(arg), s3App.blocker)
         _ = logger.log(s"INFO: finished run")
       } yield Json.fromString("done")
     }
 }
+
+class LambdaApp0(output: Output) extends LambdaApp[Unit](Opts.unit, _ => output)
 
 class S3App extends GenApp {
   type Ref = S3Addr
@@ -127,13 +134,14 @@ class S3App extends GenApp {
       inputs: Iterable[(String, S3Addr)],
       e: E[A],
       blocker: Blocker
-  )(implicit ctx: ContextShift[IO]): InputFactory[IO] =
-    InputFactory.fromMany(inputs, e) { (src, s3path) =>
-      def go[T](src: Event.Source[T]) =
-        InputFactory.fromStream[IO, T](src, read(s3path, src.row, blocker))
+  )(implicit ctx: ContextShift[IO]): Resource[IO, InputFactory[IO]] =
+    Resource.pure[IO, InputFactory[IO]](InputFactory.fromMany(inputs, e) {
+      (src, s3path) =>
+        def go[T](src: Event.Source[T]) =
+          InputFactory.fromStream[IO, T](src, read(s3path, src.row, blocker))
 
-      go(src)
-    }
+        go(src)
+    })
 
   def writer[A](
       output: S3Addr,
@@ -145,53 +153,45 @@ class S3App extends GenApp {
 
 abstract class DBS3App extends S3App {
 
-  /**
-    * this will be something like:
-    * RDSTransactor.build(...).unsafeRunSync()(someDb)
-    *
-    * to cache the secret look up, make this a lazy val
-    */
-  def transactor: doobie.Transactor[IO]
+  def transactor: Resource[IO, doobie.Transactor[IO]]
 
   /**
     * This is what binds the the Event.Source to particular
     * sql queries
     * DBSupport.factoryFor(src, "some sqlString here")
     */
-  def dbSupportFactory: db.DBSupport.Factory
+  def dbSupportFactory: IO[db.DBSupport.Factory]
 
-  lazy val dbInputFactory: InputFactory[IO] =
-    dbSupportFactory.build(transactor)
+  final lazy val dbInputFactory: Resource[IO, InputFactory[IO]] =
+    for {
+      t <- transactor
+      dbsf <- Resource.liftF(dbSupportFactory)
+    } yield dbsf.build(t)
 
   override def inputFactory[E[_]: Emittable, A](
       inputs: Iterable[(String, S3Addr)],
       e: E[A],
       blocker: Blocker
-  )(implicit ctx: ContextShift[IO]): InputFactory[IO] =
-    dbInputFactory.combine(super.inputFactory(inputs, e, blocker))
-
-  def assertUnique(ctx: Context): IO[Unit] =
-    db.AtMostOnce.assertUnique(
-      ctx.getAwsRequestId,
-      getClass.getName,
-      transactor
-    )
+  )(implicit ctx: ContextShift[IO]): Resource[IO, InputFactory[IO]] =
+    (dbInputFactory, super.inputFactory(inputs, e, blocker)).mapN(_.combine(_))
 }
 
 abstract class DBS3CliApp extends DBS3App {
-  def eventArgs: Args
+  def eventOutput: Output
 
   def runIO(args: List[String]): IO[ExitCode] =
     IO.suspend {
-      command.parse(args) match {
-        case Right(cmd) =>
-          implicit val ictx = contextShift
-          cmd.run(eventArgs, blocker)
-        case Left(err) =>
-          IO {
-            System.err.println(err)
-            ExitCode.Error
-          }
+      IOEnv.read.flatMap { env =>
+        command.parse(args, env) match {
+          case Right(cmd) =>
+            implicit val ictx = contextShift
+            cmd.run(eventOutput, blocker)
+          case Left(err) =>
+            IO {
+              System.err.println(err)
+              ExitCode.Error
+            }
+        }
       }
     }
 
@@ -199,23 +199,16 @@ abstract class DBS3CliApp extends DBS3App {
     System.exit(runIO(args.toList).unsafeRunSync().code)
 }
 
-abstract class DBLambdaApp(
-    appArgs: Args,
-    dbsf: db.DBSupport.Factory,
+abstract class DBLambdaApp0(
+    appOutput: Output,
+    dbsf: IO[db.DBSupport.Factory],
     trans: (Blocker, ContextShift[IO]) => IO[Transactor[IO]]
-) extends LambdaApp(appArgs) {
+) extends LambdaApp0(appOutput) {
   override def setup =
     IO {
       new aws.DBS3App {
         def dbSupportFactory = dbsf
-        lazy val transactor = trans(blocker, contextShift).unsafeRunSync()
+        val transactor = Resource.liftF(trans(blocker, contextShift))
       }
-    }
-
-  override def checkContext(s3App: S3App, ctx: Context): IO[Unit] =
-    s3App match {
-      case db: DBS3App => db.assertUnique(ctx)
-      case notDB =>
-        IO.raiseError(new Exception(s"expected an DBS3App, got: $notDB"))
     }
 }

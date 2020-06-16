@@ -2,7 +2,7 @@ package dev.posco.hiona.aws
 
 import cats.data.{Validated, ValidatedNel}
 import cats.effect.{Blocker, ContextShift, ExitCode, IO, IOApp, Resource, Timer}
-import dev.posco.hiona.LazyToString
+import dev.posco.hiona.{IOEnv, LazyToString}
 import java.nio.file.Path
 import com.monovore.decline.{Argument, Command, Opts}
 import com.amazonaws.PredefinedClientConfigurations
@@ -672,13 +672,15 @@ object LambdaDeployApp extends IOApp {
       Blocker[IO]
     ).mapN(new LambdaDeploy(_, _, _, _))
       .use { ld =>
-        ld.cmd.parse(args) match {
-          case Right(io) => io.as(ExitCode.Success)
-          case Left(err) =>
-            IO {
-              System.err.println(err.toString)
-              ExitCode.Error
-            }
+        IOEnv.read.flatMap { env =>
+          ld.cmd.parse(args, env) match {
+            case Right(io) => io.as(ExitCode.Success)
+            case Left(err) =>
+              IO {
+                System.err.println(err.toString)
+                ExitCode.Error
+              }
+          }
         }
       }
 }

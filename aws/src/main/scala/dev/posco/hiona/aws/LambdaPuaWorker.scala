@@ -8,17 +8,16 @@ import com.amazonaws.services.lambda.model.Runtime
 import com.amazonaws.services.lambda.runtime.Context
 import com.amazonaws.services.s3
 import com.monovore.decline.{Command, Opts}
+import dev.posco.hiona.IOEnv
 import io.circe.Json
 import scala.concurrent.duration.FiniteDuration
 
-import scala.jdk.CollectionConverters._
 import cats.implicits._
 
 final class LambdaPuaWorker extends PuaWorker {
   def setup =
     for {
-      (db, region, sec) <-
-        LambdaPuaWorkerState.readEnvArgs(LambdaPuaWorkerState.dbEnvCmd)
+      (db, region, sec) <- IOEnv.readArgs(LambdaPuaWorkerState.dbEnvCmd)
       // we are ignoring the shutdown code, since the lambda gives no hooks for this
       (state, _) <- LambdaPuaWorkerState.state(db, region, sec).allocated
     } yield state
@@ -27,8 +26,7 @@ final class LambdaPuaWorker extends PuaWorker {
 final class LambdaPuaCaller extends PuaCaller {
   def setup =
     for {
-      dbFnName <-
-        LambdaPuaWorkerState.readEnvArgs(LambdaPuaWorkerState.callerEnvCmd)
+      dbFnName <- IOEnv.readArgs(LambdaPuaWorkerState.callerEnvCmd)
       // we are ignoring the shutdown code, since the lambda gives no hooks for this
       (state, _) <- LambdaPuaWorkerState.callerState(dbFnName).allocated
     } yield state
@@ -53,8 +51,6 @@ object LambdaPuaWorkerState {
       "pua_db_region" -> region,
       "pua_db_secret" -> secret
     )
-
-  val ioEnv: IO[Map[String, String]] = IO(System.getenv().asScala.toMap)
 
   val dbEnvCmd: Command[(DatabaseName, String, String)] =
     Command("lambda_pua_worker", "the lambda that manages pua state") {
@@ -83,25 +79,6 @@ object LambdaPuaWorkerState {
         )
         .map(LambdaFunctionName(_))
     }
-
-  def readEnvArgs[T](cmd: Command[T]): IO[T] = {
-
-    def result[A, B](e: Either[A, B]): IO[B] =
-      e match {
-        case Right(b) => IO.pure(b)
-        case Left(err) =>
-          IO.suspend {
-            System.err.println(err.toString)
-            IO.raiseError(new Exception(s"could not parse args: $err"))
-          }
-      }
-
-    for {
-      env <- ioEnv
-      either = cmd.parse(Nil, env)
-      r <- result(either)
-    } yield r
-  }
 
   def makeFunctions(awsLambda: AWSLambda, blocker: Blocker)(implicit
       ctx: ContextShift[IO]
@@ -356,13 +333,15 @@ object LambdaPuaClientApp extends IOApp {
     } yield LambdaPuaWorkerState.command(aws, awsS3, blocker)
 
     cmdRes.use { cmd =>
-      cmd.parse(args) match {
-        case Right(io) => io.as(ExitCode.Success)
-        case Left(err) =>
-          IO {
-            System.err.println(err.toString)
-            ExitCode.Error
-          }
+      IOEnv.read.flatMap { env =>
+        cmd.parse(args, env) match {
+          case Right(io) => io.as(ExitCode.Success)
+          case Left(err) =>
+            IO {
+              System.err.println(err.toString)
+              ExitCode.Error
+            }
+        }
       }
     }
   }

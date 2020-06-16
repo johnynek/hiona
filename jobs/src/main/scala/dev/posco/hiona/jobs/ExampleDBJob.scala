@@ -1,6 +1,6 @@
 package dev.posco.hiona.jobs
 
-import cats.effect.IO
+import cats.effect.{IO, Resource}
 import cats.implicits._
 import dev.posco.hiona._
 import dev.posco.hiona.jobs.Featurize._
@@ -48,8 +48,8 @@ object ExampleDBJob extends aws.DBS3CliApp {
          """.query
       )
 
-  override def dbSupportFactory: DBSupport.Factory =
-    candleDbSupportFactory.combine(currencyExchangeDbSupportFactory)
+  override def dbSupportFactory: IO[DBSupport.Factory] =
+    IO.pure(candleDbSupportFactory.combine(currencyExchangeDbSupportFactory))
 
   val symbolCount: Event[(String, (Timestamp, Long))] = {
     val feat: Feature[String, Long] = src.map(c => (c._symbol, 1L)).sum
@@ -59,17 +59,18 @@ object ExampleDBJob extends aws.DBS3CliApp {
       .postLookup(feat)
   }
 
-  def eventArgs: Args = Args.event(symbolCount)
+  def eventOutput: Output = Output.event(symbolCount)
 
-  lazy val transactor = Databases
-    .pmdbProdTransactor[IO]
-    .apply(blocker, contextShift)
-    .unsafeRunSync()
+  val transactor = Resource.liftF(
+    Databases
+      .pmdbProdTransactor[IO]
+      .apply(blocker, contextShift)
+  )
 }
 
 class ExampleDBLambdaJob
-    extends aws.DBLambdaApp(
-      ExampleDBJob.eventArgs,
-      ExampleDBJob.candleDbSupportFactory,
+    extends aws.DBLambdaApp0(
+      ExampleDBJob.eventOutput,
+      IO.pure(ExampleDBJob.candleDbSupportFactory),
       Databases.pmdbProdTransactor[IO]
     )

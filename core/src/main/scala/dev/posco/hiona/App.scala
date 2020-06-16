@@ -1,5 +1,6 @@
 package dev.posco.hiona
 
+import cats.Semigroupal
 import cats.arrow.FunctionK
 import cats.data.{Validated, ValidatedNel}
 import cats.effect.{Blocker, ContextShift, ExitCode, IO, IOApp, Resource}
@@ -9,37 +10,27 @@ import java.nio.file.Path
 
 import cats.implicits._
 
-abstract class App[A: Row](results: Event[A]) extends IOApp {
+class App[A](options: Opts[A], out: A => Output) extends IOApp {
 
   override def run(args: List[String]): IO[ExitCode] =
     IO.suspend {
-      App.command.parse(args) match {
-        case Right(cmd) =>
-          Blocker[IO].use(cmd.run(Args.event(results), _))
-        case Left(err) =>
-          IO {
-            System.err.println(err)
-            ExitCode.Error
-          }
+      val cmdA = App.commandWith(App.command, options)
+      IOEnv.read.flatMap { env =>
+        cmdA.parse(args, env) match {
+          case Right((cmd, a)) =>
+            Blocker[IO].use(cmd.run(out(a), _))
+          case Left(err) =>
+            IO {
+              System.err.println(err)
+              ExitCode.Error
+            }
+        }
       }
     }
 }
 
-abstract class LabeledApp[A: Row](results: LabeledEvent[A]) extends IOApp {
-
-  override def run(args: List[String]): IO[ExitCode] =
-    IO.suspend {
-      App.command.parse(args) match {
-        case Right(cmd) =>
-          Blocker[IO].use(cmd.run(Args.labeledEvent(results), _))
-        case Left(err) =>
-          IO {
-            System.err.println(err)
-            ExitCode.Error
-          }
-      }
-    }
-}
+// This is an App that has no arguments
+class App0(output: Output) extends App[Unit](Opts.unit, _ => output)
 
 object App extends GenApp {
   type Ref = Path
@@ -50,8 +41,10 @@ object App extends GenApp {
       inputs: Iterable[(String, Ref)],
       e: E[A],
       blocker: Blocker
-  )(implicit ctx: ContextShift[IO]): InputFactory[IO] =
-    InputFactory.fromPaths(inputs, e, blocker)
+  )(implicit ctx: ContextShift[IO]): Resource[IO, InputFactory[IO]] =
+    Resource.pure[IO, InputFactory[IO]](
+      InputFactory.fromPaths(inputs, e, blocker)
+    )
 
   def read[A](input: Ref, row: Row[A], blocker: Blocker)(implicit
       ctx: ContextShift[IO]
@@ -67,22 +60,22 @@ object App extends GenApp {
     Row.writerRes[A](output)(row)
 }
 
-sealed abstract class Args {
+sealed abstract class Output {
   type Type
   val row: Row[Type]
   val value: Emittable.Value[Type]
 }
 
-object Args {
-  def event[A](ev: Event[A])(implicit r: Row[A]): Args =
-    new Args {
+object Output {
+  def event[A](ev: Event[A])(implicit r: Row[A]): Output =
+    new Output {
       type Type = A
       val row = r
       val value = Emittable.Value(ev)
     }
 
-  def labeledEvent[A](ev: LabeledEvent[A])(implicit r: Row[A]): Args =
-    new Args {
+  def labeledEvent[A](ev: LabeledEvent[A])(implicit r: Row[A]): Output =
+    new Output {
       type Type = A
       val row = r
       val value = Emittable.Value(ev)
@@ -103,7 +96,7 @@ abstract class GenApp { self =>
       inputs: Iterable[(String, Ref)],
       e: E[A],
       blocker: Blocker
-  )(implicit ctx: ContextShift[IO]): InputFactory[IO]
+  )(implicit ctx: ContextShift[IO]): Resource[IO, InputFactory[IO]]
 
   def pipe[A](implicit ctx: ContextShift[IO]): Pipe[IO, A, A] = { strm =>
     strm
@@ -115,7 +108,7 @@ abstract class GenApp { self =>
   type StreamRes[+A] = Stream[IO, (Timestamp, A)]
 
   def run(
-      args: Args,
+      args: Output,
       inputs: List[(String, Ref)],
       output: Ref,
       blocker: Blocker,
@@ -123,23 +116,21 @@ abstract class GenApp { self =>
       onOutput: FunctionK[StreamRes, StreamRes]
   )(implicit
       ctx: ContextShift[IO]
-  ): IO[Unit] = {
+  ): IO[Unit] =
+    inputFactory(inputs, args.value, blocker)
+      .use { input =>
+        val row: Row[args.Type] = args.row
 
-    val row: Row[args.Type] = args.row
+        val stream: Stream[IO, (Timestamp, args.Type)] =
+          Engine.run(input.through(pipe).through(onInput), args.value)
 
-    val input: InputFactory[IO] =
-      inputFactory(inputs, args.value, blocker)
+        val writerRes = writer(output, row)
 
-    val stream: Stream[IO, (Timestamp, args.Type)] =
-      Engine.run(input.through(pipe).through(onInput), args.value)
+        val result: Stream[IO, args.Type] =
+          onOutput(stream.through(pipe)).map(_._2)
 
-    val writerRes = writer(output, row)
-
-    val result: Stream[IO, args.Type] =
-      onOutput(stream.through(pipe)).map(_._2)
-
-    Fs2Tools.sinkStream(result, writerRes).compile.drain
-  }
+        Fs2Tools.sinkStream(result, writerRes).compile.drain
+      }
 
   implicit def named[A: Argument]: Argument[(String, A)] =
     new Argument[(String, A)] {
@@ -160,7 +151,7 @@ abstract class GenApp { self =>
     }
 
   sealed abstract class Cmd {
-    def run(args: Args, blocker: Blocker)(implicit
+    def run(args: Output, blocker: Blocker)(implicit
         ctx: ContextShift[IO]
     ): IO[ExitCode]
   }
@@ -172,7 +163,7 @@ abstract class GenApp { self =>
       limit: Option[Int],
       tb: TimeBound
   ) extends Cmd {
-    def run(args: Args, blocker: Blocker)(implicit
+    def run(args: Output, blocker: Blocker)(implicit
         ctx: ContextShift[IO]
     ): IO[ExitCode] = {
 
@@ -296,7 +287,7 @@ abstract class GenApp { self =>
     }
 
   case object ShowCmd extends Cmd {
-    def run(args: Args, blocker: Blocker)(implicit
+    def run(args: Output, blocker: Blocker)(implicit
         ctx: ContextShift[IO]
     ): IO[ExitCode] = {
       val cols = args.row.columnNames(0)
@@ -349,7 +340,7 @@ abstract class GenApp { self =>
       else
         Left((m1.keySet -- m2.keySet, m2.keySet -- m1.keySet))
 
-    def run(arg: Args, blocker: Blocker)(implicit
+    def run(arg: Output, blocker: Blocker)(implicit
         ctx: ContextShift[IO]
     ): IO[ExitCode] = {
       val data: IO[List[(String, ((Ref, Ref), Event.Source[_]))]] = {
@@ -414,25 +405,29 @@ abstract class GenApp { self =>
         import scala.collection.mutable.ArrayBuffer
 
         val e: Event[A] = ev
-        val istream: fs2.Stream[IO, Point] =
-          inputFactory(List((ev.name, input)), e, blocker).allInputs(e)
+        val resIF = inputFactory(List((ev.name, input)), e, blocker)
 
-        val points: IO[ArrayBuffer[Point]] =
-          istream.chunks.compile
-            .fold(ArrayBuffer[Point]()) { (buf, chunk) =>
-              buf ++= chunk.iterator; buf
-            }
-            .map(_.sortInPlace)
+        Semigroupal[Resource[IO, *]]
+          .product(resIF, writer(output, ev.row))
+          .use {
+            case (infac, fn) =>
+              val istream: fs2.Stream[IO, Point] =
+                infac.allInputs(e)
 
-        writer(output, ev.row)
-          .use { fn =>
-            for {
-              ps <- points
-              ait = ps.iterator.map {
-                case Point.Sourced(_, a, _, _) => a.asInstanceOf[A]
-              }
-              _ <- fn(ait.iterator)
-            } yield ()
+              val points: IO[ArrayBuffer[Point]] =
+                istream.chunks.compile
+                  .fold(ArrayBuffer[Point]()) { (buf, chunk) =>
+                    buf ++= chunk.iterator; buf
+                  }
+                  .map(_.sortInPlace)
+
+              for {
+                ps <- points
+                ait = ps.iterator.map {
+                  case Point.Sourced(_, a, _, _) => a.asInstanceOf[A]
+                }
+                _ <- fn(ait.iterator)
+              } yield ()
           }
       }
 
@@ -467,7 +462,7 @@ abstract class GenApp { self =>
       limitIn: Option[Int],
       limit: Option[Int]
   ) extends Cmd {
-    def run(args: Args, blocker: Blocker)(implicit
+    def run(args: Output, blocker: Blocker)(implicit
         ctx: ContextShift[IO]
     ): IO[ExitCode] = {
 
@@ -547,6 +542,12 @@ abstract class GenApp { self =>
           .orNone
       ).mapN(DiffCmd(_, _, _, _, _))
     }
+
+  def commandWith[A, B](cmd: Command[A], opts: Opts[B]): Command[(A, B)] =
+    // we don't need help because cmd already controls that.
+    Command(cmd.name, cmd.header, helpFlag = false)(
+      Semigroupal[Opts].product(cmd.options, opts)
+    )
 
   val command: Command[Cmd] =
     Command("hiona", "feature engineering system") {

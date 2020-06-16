@@ -18,6 +18,6 @@ object Wordcount {
       .map { case (w, ((_, cnt), ts)) => (ts, w, cnt) }
 }
 
-class AwsWordcount extends aws.LambdaApp(Args.event(Wordcount.totalCount))
+class AwsWordcount extends aws.LambdaApp0(Output.event(Wordcount.totalCount))
 
-object CliWordcount extends App(Wordcount.totalCount)
+object CliWordcount extends App0(Output.event(Wordcount.totalCount))
