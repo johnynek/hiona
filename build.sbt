@@ -39,7 +39,9 @@ lazy val commonSettings =
     },
     addCompilerPlugin(
       "org.typelevel" %% "kind-projector" % "0.11.0" cross CrossVersion.full
-    )
+    ),
+    // comment this out if you want to be paranoid and run tests before assembly
+    test in assembly := {}
   )
 
 lazy val core = (project in file("core"))
