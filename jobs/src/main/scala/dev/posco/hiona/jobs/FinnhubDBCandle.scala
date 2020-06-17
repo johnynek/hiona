@@ -23,7 +23,8 @@ object FinnhubDBCandle extends aws.DBS3CliApp {
   // what values do we use for open/high/low/close? or do we not even read them, for now?
 
   def candles_sql(
-      sourceSqlView: String,
+      candlesView: String,
+      symbolsView: String,
       exchCode: ExchangeCode
   ): doobie.Query0[Candle] =
     (fr"""
@@ -39,10 +40,15 @@ object FinnhubDBCandle extends aws.DBS3CliApp {
               exch_code,
               currency
           FROM""" ++
-      Fragment.const(sourceSqlView) ++
-      fr"""
+      Fragment.const(candlesView) ++
+      fr""" AS C
+      INNER JOIN (SELECT DISTINCT symbol AS _symbol FROM
+      """ ++
+      Fragment.const(symbolsView) ++
+      fr""") AS S
+          ON symbol = _symbol
           WHERE exch_code = $exchCode
-          ORDER BY candle_end_epoch_millis
+          ORDER BY candle_end_epoch_millis, symbol
          """).query[Candle]
 
   /**
@@ -267,27 +273,37 @@ object FinnhubDBCandle extends aws.DBS3CliApp {
     * DBSupport.factoryFor(src, "some sqlString here")
     */
   def dbSupportFactory: IO[DBSupport.Factory] = {
-    val sourceSqlView = "finnhub.stock_candles_5min"
-    val exchCode: ExchangeCode = "HK" // "HK", "T"
+    val candlesView = "finnhub.stock_candles_5min"
+    val symbolsView = "finnhub.stock_symbols_view"
+    val exchCode: ExchangeCode = "US" // "HK", "T"
 
     // get from env vars, which are set in payload
     val dbCmd = Command("finnhub_db_candle", "finnhub db env args") {
       (
         Opts
-          .env[String]("db_sql_view", "sql view or table to use")
-          .orElse(Opts(sourceSqlView)),
+          .env[String]("db_candles_view", "sql view or table of candle data")
+          .orElse(Opts(candlesView)),
         Opts
-          .env[String]("db_exchange", "the exchange to limit to")
+          .env[String](
+            "db_symbols_view",
+            "sql view or table of symbols to limit to"
+          )
+          .orElse(Opts(symbolsView)),
+        Opts
+          .env[String](
+            "db_exchange",
+            "the exchange code to limit db_sql_view to"
+          )
           .orElse(Opts(exchCode))
-      ).mapN((_, _))
+      ).mapN((_, _, _))
     }
 
     IOEnv
       .readArgs(dbCmd)
       .map {
-        case (dbView, exch) =>
+        case (candlesView, symbolsView, exchCode) =>
           db.DBSupport
-            .factoryFor(src)(candles_sql(dbView, exch))
+            .factoryFor(src)(candles_sql(candlesView, symbolsView, exchCode))
             .combine(
               db.DBSupport.factoryFor(valueInUSD)(exchange_rates_sql.query)
             )

@@ -5,7 +5,7 @@ import dev.posco.hiona._
 import dev.posco.hiona.jobs.Featurize._
 
 /**
-  * Consider FinnhubDBCandle1 instead
+  * Consider FinnhubDBCandle instead
   */
 object FinnhubBars {
   case class Bar(
