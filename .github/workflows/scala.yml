@@ -2,7 +2,9 @@ name: Scala CI
 
 on:
   push:
-    branches: [ master ]
+    branches:
+      - master
+      - "tim/**"
   pull_request:
     branches: [ master ]
 
@@ -18,11 +20,28 @@ jobs:
       uses: actions/setup-java@v1
       with:
         java-version: 1.8
-    - uses: harmon758/postgresql-action@v1
+    - name: Cache SBT
+      # see [cache](https://github.com/actions/cache) and [sbt info](https://github.com/actions/cache/blob/master/examples.md#scala---sbt))
+      uses: actions/cache@v2
       with:
-        postgresql version: '12.2'
+        path: |
+          ~/.ivy2/cache
+          ~/.sbt
+        key: ${{ runner.os }}-sbt-${{ hashFiles('**/build.sbt') }}
+    - name: Setup Postgres
+      uses: harmon758/postgresql-action@v1
+      with:
+        # AWS is 10.7 compatible, can be pulled to
+        postgresql version: '10.13'
         postgresql db: sbt_it_tests
         postgresql user: sbtester
         postgresql password: sbtpw
+    - name: Configure AWS Credentials
+      # see https://github.com/marketplace/actions/configure-aws-credentials-action-for-github-actions
+      uses: aws-actions/configure-aws-credentials@v1
+      with:
+        aws-access-key-id: ${{ secrets.aws_access_key_id }}
+        aws-secret-access-key: ${{ secrets.aws_secret_access_key }}
+        aws-region: us-west-2
     - name: Run tests
       run: sbt test it:test
