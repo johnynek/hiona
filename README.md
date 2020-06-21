@@ -1,5 +1,10 @@
 # Hiona is a feature engineering system to correctly convert events into feature vectors for ML
 
+It is a reactive system, akin to Kafka streams, but can be run more simply -- in a single docker container or lambda.
+for more details on Event-Driven Functional Reactive Progamming, see eg "[Programming Paradigms for Dummies: What Every Programmer Should Know](https://www.info.ucl.ac.be/~pvr/VanRoyChapter.pdf)" by Peter Van Roy, the section on "Discrete synchronous programming" and surrounding context.
+
+> Using discrete time enormously simplifies programming for reactive systems. For example, it means that subprograms can be trivially composed: output events from one subcomponent are instantaneously available as input events in other subcomponents.
+
 ## Getting started
 Install a jdk and sbt:
 
