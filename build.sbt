@@ -82,6 +82,8 @@ lazy val aws = (project in file("aws"))
       h2 % Test,
       awsLambdaCore1,
       awsLambdaService,
+      awsEcsService,
+      awsEcrService,
       awsS3v1,
       awsSecretsManager,
       circeCore,

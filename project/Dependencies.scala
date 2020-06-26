@@ -13,6 +13,8 @@ object Dependencies {
 
   lazy val awsLambdaCore1 = "com.amazonaws" % "aws-lambda-java-core" % "1.2.0"
   lazy val awsLambdaService = "com.amazonaws" % "aws-java-sdk-lambda" % "1.11.783"
+  lazy val awsEcsService = "com.amazonaws" % "aws-java-sdk-ecs" % "1.11.809"
+  lazy val awsEcrService = "com.amazonaws" % "aws-java-sdk-ecr" % "1.11.809"
   lazy val awsS3v1 = aws1 % "aws-java-sdk-s3" % "1.11.766"
   lazy val awsSecretsManager = "com.amazonaws" % "aws-java-sdk-secretsmanager" % "1.11.774"
   lazy val cats = typelevel %% "cats-core" % "2.1.1"

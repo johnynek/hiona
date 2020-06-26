@@ -1,0 +1,29 @@
+{
+    "family": "hiona_job",
+    "networkMode": "awsvpc",
+    "executionRoleArn": "arn:aws:iam::131579175100:role/basic_fargate",
+    "taskRoleArn": "arn:aws:iam::131579175100:role/basic_fargate",
+    "containerDefinitions": [
+        {
+            "name": "hiona_image",
+            "image": "131579175100.dkr.ecr.us-west-2.amazonaws.com/hiona_img:latest",
+            "cpu": 4,
+            "memory": 8192,
+            "disableNetworking": false,
+            "logConfiguration": {
+              "logDriver": "awslogs",
+              "options": {
+                "awslogs-region": "us-west-2",
+                "awslogs-group": "hiona_logs",
+                "awslogs-create-group": "true",
+                "awslogs-stream-prefix": "hiona"
+              }
+            }
+        }
+    ],
+    "requiresCompatibilities": [
+        "FARGATE"
+    ],
+    "cpu": "4096",
+    "memory": "8192"
+}

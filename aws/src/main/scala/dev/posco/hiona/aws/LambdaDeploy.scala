@@ -247,7 +247,12 @@ object LambdaDeploy {
         .mapN(Coord(_, _))
   }
 
-  case class Vpc(subnets: Set[String], securityGroups: Set[String])
+  case class Vpc(subnets: Set[String], securityGroups: Set[String]) {
+    def toVpcConfig: VpcConfig =
+      new VpcConfig()
+        .withSubnetIds(subnets.toList.sorted: _*)
+        .withSecurityGroupIds(securityGroups.toList.sorted: _*)
+  }
   object Vpc {
     val vpcOpts: Opts[Option[Vpc]] =
       (
@@ -299,11 +304,7 @@ object LambdaDeploy {
       }
 
       val wvpc = withOpt(vpc) { (req, vpc) =>
-        val vpcConfig = new VpcConfig()
-          .withSubnetIds(vpc.subnets.toList.sorted: _*)
-          .withSecurityGroupIds(vpc.securityGroups.toList.sorted: _*)
-
-        req.withVpcConfig(vpcConfig)
+        req.withVpcConfig(vpc.toVpcConfig)
       }
 
       val desc1 =

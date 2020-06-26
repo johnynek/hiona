@@ -315,10 +315,8 @@ object FinnhubDBCandle extends aws.DBS3CliApp {
   val transactor: Resource[IO, doobie.Transactor[IO]] =
     Resource.liftF(
       Databases
-        .rdsPostgresLocalTunnel(Databases.pmdbProd, blocker)(
-          Async[IO],
-          contextShift
-        )
+        .pmdbProdTransactor[IO]
+        .apply(blocker, contextShift)
     )
 }
 
