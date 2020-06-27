@@ -1,4 +1,4 @@
-FROM openjdk:8-jdk-alpine
+FROM openjdk:13-jdk-alpine3.9
 
 WORKDIR /usr/src/app
 
