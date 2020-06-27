@@ -16,9 +16,8 @@ function create {
 }
 
 function login {
-  aws ecr get-login-password --region $REGION | docker login \
-    --username AWS \
-    --password-stdin \
+  aws ecr get-login-password --region $REGION |
+    docker login --username AWS --password-stdin \
     $AWSID.dkr.ecr.$REGION.amazonaws.com
 }
 
@@ -30,6 +29,7 @@ echo "built: $IMAGE"
 docker tag $IMAGE $AWSID.dkr.ecr.$REGION.amazonaws.com/$REPO:$TAG
 docker push $AWSID.dkr.ecr.$REGION.amazonaws.com/$REPO:$TAG
 
+# you can periodically run `docker image prune` to prune no longer needed local image builds
 # to register:
 # aws ecs register-task-definition --cli-input-json file://aws_config/hiona_task_def.json
 # to run:

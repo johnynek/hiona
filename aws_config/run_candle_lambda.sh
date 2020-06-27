@@ -1,8 +1,8 @@
 #!/bin/bash
 
 # Usage: eg
-# aws_config/run_candle.sh
-# aws_config/run_candle.sh --async
+# aws_config/run_candle_lambda.sh
+# aws_config/run_candle_lambda.sh --async
 
 # -u exits on ref on undef var
 set -eu

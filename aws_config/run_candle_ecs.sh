@@ -2,49 +2,59 @@
 
 set -eu
 
-# Set DIR to the directory containing the script
-DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"
-
-JARNAME="hiona-jobs-assembly-0.1.0-SNAPSHOT.jar"
-
-JAR="$DIR/../jobs/target/scala-2.13/$JARNAME"
-NOWUTC=$(date --utc +%Y%m%dT%H%M%S)
-
-NUM_ROWS=1000
-EXCH_CODE="US"  # "HK", "T"
+# Hiona colab nb: https://colab.research.google.com/drive/104WOl-31bBKMMvwRV7bI8HFV9Gg5wXS0
+# TODO: this can be a python script, running month-sized chunks in parallel
 
 CANDLE_SIZE=5  # 1, 5, 60
-#
-# "--inclusive_lower_ms"
-# "--exclusive_lower_ms"
-# https://pandas.pydata.org/pandas-docs/stable/user_guide/timeseries.html#from-timestamps-to-epoch
-# import pandas as pd
-# stamps = pd.to_datetime(["2020-01-01", "2020-03-01"])
-# (stamps - pd.Timestamp("1970-01-01")) // pd.Timedelta('1s') * 1000
-# "--inclusive_lower_ms", "",
+EXCH_CODE="US" # "HK", "T"
 DB_VIEW="_biotech"
-#OUT_PREFIX="s3://predictionmachine-data/hiona/${EXCH_CODE}${DB_VIEW}"
-OUT_PREFIX="s3://predictionmachine-data/temp/oscar_test_${NOWUTC}"
 
-OUTPUT="${OUT_PREFIX}/${EXCH_CODE}_candle${CANDLE_SIZE}_${NUM_ROWS}_turnover.csv"
+# NUM_ROWS=10000000
 
-TASKARN=$(java -cp $JAR dev.posco.hiona.aws.ECSDeployApp \
-  run \
-  --taskdef hiona_job:3 \
-  --cluster pm-fargate-oregon \
-  --env "$(
-  cat <<-EOF
+TIME_SPAN="2020-04"
+LOWER_MS=1585699200000
+UPPER_MS=1588291200000
+
+#TIME_SPAN="2020-05"
+#LOWER_MS=1588291200000
+#UPPER_MS=1590969600000
+
+#TIME_SPAN="2020-06"
+#LOWER_MS=1590969600000
+#UPPER_MS=1593561600000
+
+OUT_PREFIX="s3://predictionmachine-data/hiona/${EXCH_CODE}${DB_VIEW}"
+# OUT_PREFIX="s3://predictionmachine-data/temp/test_$(date --utc +%Y%m%dT%H%M%S)"
+# OUTPUT="${OUT_PREFIX}/${EXCH_CODE}_candle${CANDLE_SIZE}_${NUM_ROWS}_turnover.csv"
+OUTPUT="${OUT_PREFIX}/${EXCH_CODE}_candle${CANDLE_SIZE}_${TIME_SPAN}.csv"
+
+
+# Set DIR to the directory containing the script
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
+
+JARNAME="hiona-jobs-assembly-0.1.0-SNAPSHOT.jar"
+JAR="$DIR/../jobs/target/scala-2.13/$JARNAME"
+
+TASKARN=$(
+  java -cp $JAR dev.posco.hiona.aws.ECSDeployApp \
+    run \
+    --taskdef hiona_job:3 \
+    --cluster pm-fargate-oregon \
+    --env "$(
+      cat <<-EOF
   {"db_candles_view": "finnhub.stock_candles_${CANDLE_SIZE}min",
    "db_symbols_view": "finnhub.stock_symbols${DB_VIEW}_view",
    "db_exchange": "${EXCH_CODE}"}
 EOF
-  )" \
-  -- \
-  java -cp $JARNAME dev.posco.hiona.jobs.FinnhubDBCandle \
-  run \
-  --logevery 1h \
-  --limit $NUM_ROWS \
-  --output $OUTPUT
+    )" \
+    -- \
+    java -cp $JARNAME dev.posco.hiona.jobs.FinnhubDBCandle \
+    run \
+    --logevery 1h \
+    --output $OUTPUT \
+    --inclusive_lower_ms $LOWER_MS \
+    --exclusive_upper_ms $UPPER_MS
+  # --limit $NUM_ROWS
 )
 
 echo "waiting on $TASKARN"
