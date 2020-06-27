@@ -5,3 +5,5 @@ project/metals.sbt
 data/
 .bloop/
 .metals/
+*.jar
+aws_config/out
