@@ -126,7 +126,7 @@ object FinnhubDBCandle extends aws.DBS3CliApp {
 
   // endregion Values
 
-  case class MetaFeatures(ts: Timestamp, symbol: Symbol)
+  case class MetaFeatures(ts: Timestamp, symbol: Symbol, exchCode: ExchangeCode)
 
   /**
     * ZeroHistoryFeatures are independent of earlier values and are hence simple to compute
@@ -158,7 +158,7 @@ object FinnhubDBCandle extends aws.DBS3CliApp {
             lin = v,
             log = v.map(d => math.log(d + 1e-6))
           )
-          (MetaFeatures(ts, c.symbol), zh)
+          (MetaFeatures(ts, c.symbol, c.exchCode), zh)
       }
 
   case class Window10Values(turnoverUsd: Double, volume: Double)
