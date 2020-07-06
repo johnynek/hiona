@@ -37,6 +37,16 @@ final class AWSIO(s3client: s3.AmazonS3) {
       closeAfterUse = true
     )
 
+  def readCsv[F[_]: Sync: ContextShift, A: Row](
+      s3Addr: S3Addr,
+      chunkSize: Int,
+      skipHeader: Boolean,
+      blocker: Blocker
+  ): Stream[F, A] =
+    readStream[F](s3Addr, chunkSize, blocker)
+      .through(fs2.text.utf8Decode)
+      .through(Row.decodeFromCSV[F, A](implicitly[Row[A]], skipHeader))
+
   def putPath(s3Addr: S3Addr, path: Path): IO[Unit] =
     IO {
       s3client.putObject(s3Addr.bucket, s3Addr.key, path.toFile)

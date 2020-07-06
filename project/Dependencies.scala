@@ -7,10 +7,11 @@ object Dependencies {
   object V {
     val munit = "0.7.7"
     val circe = "0.13.0"
-    val fs2 = "2.3.0"
+    val fs2 = "2.4.2"
     val slf4j = "1.7.30"
   }
 
+  lazy val algebird = "com.twitter" %% "algebird-core" % "0.13.7"
   lazy val awsLambdaCore1 = "com.amazonaws" % "aws-lambda-java-core" % "1.2.0"
   lazy val awsLambdaService = "com.amazonaws" % "aws-java-sdk-lambda" % "1.11.783"
   lazy val awsEcsService = "com.amazonaws" % "aws-java-sdk-ecs" % "1.11.809"

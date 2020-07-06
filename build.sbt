@@ -1,6 +1,6 @@
 import Dependencies._
 
-ThisBuild / scalaVersion := "2.13.2"
+ThisBuild / scalaVersion := "2.13.3"
 ThisBuild / version := "0.1.0-SNAPSHOT"
 ThisBuild / organization := "dev.posco"
 ThisBuild / organizationName := "devposco"
@@ -106,6 +106,7 @@ lazy val jobs = (project in file("jobs"))
     name := "hiona-jobs",
     moduleName := "hiona-jobs",
     libraryDependencies ++= Seq(
+      algebird,
       munit % Test,
       munitScalaCheck % Test,
       scalaCheck % Test,
