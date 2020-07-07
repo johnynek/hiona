@@ -41,7 +41,7 @@ case class Decay[H <: Duration, V](scaledTime: Double, value: V) {
 }
 object Decay {
 
-  def scaledTime[H <: Duration: ValueOf](ts: Timestamp): Double =
+  @inline def scaledTime[H <: Duration: ValueOf](ts: Timestamp): Double =
     ts.epochMillis.toDouble / valueOf[H].millis
 
   def toFloat[H <: Duration: ValueOf, N: Numeric](
@@ -66,10 +66,7 @@ object Decay {
       time: Timestamp,
       value: V
   ): Decay[H, V] =
-    Decay(
-      time.epochMillis.toDouble / valueOf[H].millis,
-      value
-    )
+    Decay(scaledTime(time), value)
 
   implicit def monoidForDecay[H <: Duration, V: DoubleModule]
       : Monoid[Decay[H, V]] =

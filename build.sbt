@@ -49,6 +49,7 @@ lazy val core = (project in file("core"))
     name := "hiona-core",
     moduleName := "hiona-core",
     libraryDependencies ++= Seq(
+      algebird,
       munit % Test,
       munitScalaCheck % Test,
       scalaCheck % Test,
