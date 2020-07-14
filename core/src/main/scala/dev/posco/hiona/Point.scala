@@ -90,7 +90,7 @@ object Point {
     val validator = src.validator
 
     { in: fs2.Stream[F, A] =>
-      in.evalMap { a =>
+      in.evalMapChunk { a =>
         validator.validate(a) match {
           case Right(ts) => ae.pure(Sourced[A](src, a, ts, key): Point)
           case Left(err) => ae.raiseError[Point](err)

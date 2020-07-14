@@ -143,12 +143,11 @@ class S3App extends GenApp {
         go(src)
     })
 
-  def writer[A](
+  def sink[A](
       output: S3Addr,
       row: Row[A]
-  ): Resource[IO, Iterator[A] => IO[Unit]] =
-    //awsIO.tempWriter(output, row)
-    awsIO.multiPartOutput(output, row)
+  ): fs2.Pipe[IO, A, Nothing] =
+    Fs2Tools.sinkStream(awsIO.multiPartOutput(output, row))
 }
 
 abstract class DBS3App extends S3App {

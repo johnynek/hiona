@@ -1,6 +1,6 @@
 package dev.posco.hiona
 
-import cats.Functor
+import cats.Applicative
 import cats.arrow.FunctionK
 import cats.collections.Heap
 import cats.effect.{Blocker, ContextShift, IO, LiftIO, Resource, Sync}
@@ -29,7 +29,7 @@ object Fs2Tools {
     * Write a stream out with a given resource function and echo the results back
     * into the stream
     */
-  def tapStream[F[_]: Functor, A](
+  def tapStream[F[_]: Applicative, A](
       input: Stream[F, A],
       res: Resource[F, Iterable[A] => F[Unit]]
   ): Stream[F, A] =
@@ -37,26 +37,26 @@ object Fs2Tools {
       .resource(res)
       .flatMap { writeFn =>
         input.chunks
-          .evalMap(chunk => writeFn(chunk.toList).as(chunk))
+          .evalMapChunk(chunk => writeFn(chunk.toList).as(chunk))
           .flatMap(Stream.chunk(_))
       }
 
   /**
     * Like write stream, but returns an empty stream that only represents the effect
     */
-  def sinkStream[F[_], A](
-      stream: Stream[F, A],
+  def sinkStream[F[_]: Applicative, A](
       res: Resource[F, Iterator[A] => F[Unit]],
       chunkSize: Int = 1024
-  ): Stream[F, fs2.INothing] =
+  ): Pipe[F, A, fs2.INothing] = { stream: Stream[F, A] =>
     Stream
       .resource(res)
       .flatMap { writeFn =>
         stream
           .chunkMin(chunkSize)
-          .evalMap(chunk => writeFn(chunk.iterator))
+          .evalMapChunk(chunk => writeFn(chunk.iterator))
           .drain
       }
+  }
 
   def sortMerge[F[_], A: Ordering](
       streams: List[Stream[F, A]]
@@ -140,24 +140,6 @@ object Fs2Tools {
           }
           .stream
     }
-  }
-
-  /**
-    * this pulls the next A from the stream while in parallel applying B
-    */
-  def scanF[F[_], A, B](init: B)(fn: (B, A) => F[B]): Pipe[F, A, B] = {
-    def loop(in: Stream[F, A], init: B): Pull[F, B, Unit] =
-      in.pull.uncons1
-        .flatMap {
-          case Some((a, rest)) =>
-            val fb = fn(init, a)
-            Pull
-              .eval(fb)
-              .flatMap(b => Pull.output1(b) >> loop(rest, b))
-          case None => Pull.done
-        }
-
-    { in: Stream[F, A] => Stream(init) ++ loop(in, init).stream }
   }
 
   def fromPath[F[_]: Sync: ContextShift](

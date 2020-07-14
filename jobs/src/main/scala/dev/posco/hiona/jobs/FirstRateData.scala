@@ -4,8 +4,8 @@ import cats.ApplicativeError
 import cats.data.NonEmptyList
 import cats.effect.{Blocker, ContextShift, ExitCode, IO, IOApp, Resource}
 import dev.posco.hiona.aws.{AWSIO, S3Addr}
-import dev.posco.hiona.{Duration, Fs2Tools, Row, Timestamp}
-import fs2.{Pull, Stream}
+import dev.posco.hiona.{Duration, Fs2Tools, Row, SeqPartitioner, Timestamp}
+import fs2.Stream
 import java.nio.file.Path
 import java.text.SimpleDateFormat
 import java.util.{Date, TimeZone}
@@ -16,6 +16,8 @@ import scala.util.Try
 import com.monovore.decline.{Command, Opts}
 
 import cats.implicits._
+
+import SeqPartitioner.{Partitioner, Writer}
 
 object FirstRateData {
 
@@ -210,124 +212,49 @@ object FirstRateData {
     }
   }
 
-  trait Writer[-A] {
-    def write(item: A): IO[Boolean]
-    def close: IO[Unit]
-  }
-
-  object Writer {
-    def filtered[A](
-        writeRes: Resource[IO, Iterator[A] => IO[Unit]]
-    )(fn: A => Boolean): IO[Writer[A]] =
-      writeRes.allocated
-        .map {
-          case (writeFn, closeRes) =>
-            new Writer[A] {
-              def write(item: A) =
-                if (fn(item)) writeFn(Iterator.single(item)).as(true)
-                else IO.pure(false)
-
-              def close = closeRes
-            }
-        }
-
-    def recordPartioned(
-        expectedParts: List[String],
-        res: Resource[IO, Iterator[Output] => IO[Unit]]
-    ): IO[Writer[Output]] =
-      filtered(res) { rec =>
-        toPathParts(rec.symbol, rec.candleEndExclusiveMs) == expectedParts
-      }
-  }
-
-  trait Partitioner[A] {
-    def next(a: A): IO[Writer[A]]
-    def close: IO[Unit]
-
-    final def pipe: fs2.Pipe[IO, A, Unit] = { input: Stream[IO, A] =>
-      def run(
-          input: Stream[IO, A],
-          writer: Option[Writer[A]]
-      ): Pull[IO, Unit, Unit] =
-        input.pull.uncons
-          .flatMap {
-            case Some((chunk, tail)) =>
-              def writeNew(a: A): IO[Option[Writer[A]]] =
-                for {
-                  writer <- next(a)
-                  good <- writer.write(a).onError(_ => close)
-                  _ <-
-                    if (!good)
-                      (writer.close *> IO.raiseError(
-                        new IllegalStateException(
-                          s"item: $a built $writer which would not accept the value"
-                        )
-                      ))
-                    else IO.unit
-                } yield Some(writer)
-
-              val writeChunk = chunk.foldM(writer) {
-                case (None, a) => writeNew(a)
-                case (s @ Some(w), a) =>
-                  w.write(a)
-                    .onError(_ => w.close)
-                    .flatMap {
-                      case true  => IO.pure(s)
-                      case false => w.close *> writeNew(a)
-                    }
-              }
-
-              for {
-                nextW <- Pull.eval(writeChunk)
-                _ <- run(tail, nextW)
-              } yield ()
-            case None =>
-              writer.fold(Pull.done.covary[IO]) { w =>
-                Pull.eval(w.close) >> Pull.done
-              }
-          }
-
-      run(input, None).stream
-    }
-  }
-
-  object Partitioner {
-    // put items in base / symbol / yyyy / qq / data.csv.gz
-    def frdPart(
-        partRes: List[String] => Resource[IO, Iterator[Output] => IO[Unit]]
-    ): Partitioner[Output] =
-      new Partitioner[Output] {
-        def next(a: Output): IO[Writer[Output]] = {
-          val part = toPathParts(a.symbol, a.candleEndExclusiveMs)
-
-          Writer.recordPartioned(part, partRes(part))
-        }
-
-        def close: IO[Unit] = IO.unit
-      }
-
-    // the base directory the full key prefix, something like
-    // s3://data-pm/sources/processed/firstratedata_us1500/
-    def aws(base: S3Addr, awsIO: AWSIO): Partitioner[Output] = {
-      val partRes = { parts: List[String] =>
-        val fullKey = parts.foldLeft(base)(_ / _) / "candle1min.csv.gz"
-
-        awsIO.multiPartOutput(fullKey, implicitly[Row[Output]])
-      }
-
-      frdPart(partRes)
+  def recordPartioned(
+      expectedParts: List[String],
+      res: Resource[IO, Iterator[Output] => IO[Unit]]
+  ): IO[Writer[Output]] =
+    Writer.filtered(res) { rec =>
+      toPathParts(rec.symbol, rec.candleEndExclusiveMs) == expectedParts
     }
 
-    def localFs(base: Path): Partitioner[Output] = {
-      val partRes = { parts: List[String] =>
-        val fullPath =
-          parts.foldLeft(base)(_.resolve(_)).resolve("candle1min.csv.gz")
+  // put items in base / symbol / yyyy / qq / data.csv.gz
+  def frdPart(
+      partRes: List[String] => Resource[IO, Iterator[Output] => IO[Unit]]
+  ): Partitioner[Output] =
+    new SeqPartitioner.Partitioner[Output] {
+      def next(a: Output): IO[Writer[Output]] = {
+        val part = toPathParts(a.symbol, a.candleEndExclusiveMs)
 
-        Row.writerRes[Output](fullPath)
+        recordPartioned(part, partRes(part))
       }
 
-      frdPart(partRes)
+      def close: IO[Unit] = IO.unit
     }
+
+  // the base directory the full key prefix, something like
+  // s3://data-pm/sources/processed/firstratedata_us1500/
+  def aws(base: S3Addr, awsIO: AWSIO): Partitioner[Output] = {
+    val partRes = { parts: List[String] =>
+      val fullKey = parts.foldLeft(base)(_ / _) / "candle1min.csv.gz"
+
+      awsIO.multiPartOutput(fullKey, implicitly[Row[Output]])
+    }
+
+    frdPart(partRes)
+  }
+
+  def localFs(base: Path): Partitioner[Output] = {
+    val partRes = { parts: List[String] =>
+      val fullPath =
+        parts.foldLeft(base)(_.resolve(_)).resolve("candle1min.csv.gz")
+
+      Row.writerRes[Output](fullPath)
+    }
+
+    frdPart(partRes)
   }
 
   /**
@@ -400,13 +327,13 @@ object FirstRateData {
   def partitionOutputsAws(
       paths: List[Path],
       base: S3Addr,
-      aws: AWSIO,
+      awsIO: AWSIO,
       chunkSize: Int,
       blocker: Blocker
   )(implicit ctx: ContextShift[IO]): IO[Unit] =
     partitionZips(
       paths,
-      Partitioner.aws(base, aws),
+      aws(base, awsIO),
       symbolFromPath,
       { symYear: (String, Int) => parseOutput[IO](symYear._1) },
       chunkSize,
@@ -421,7 +348,7 @@ object FirstRateData {
   )(implicit ctx: ContextShift[IO]): IO[Unit] =
     partitionZips(
       paths,
-      Partitioner.localFs(base),
+      localFs(base),
       symbolFromPath,
       { symYear: (String, Int) => parseOutput[IO](symYear._1) },
       chunkSize,
@@ -491,7 +418,7 @@ object FirstRateDataApp extends IOApp {
                       case _ => Stream.empty
                     }
               }
-              .evalMap { rec =>
+              .evalMapChunk { rec =>
                 IO(println(rec.toString))
               }
               .compile

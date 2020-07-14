@@ -53,11 +53,11 @@ object App extends GenApp {
     Row.csvToStream[IO, A](input, skipHeader = true, blocker)
   }
 
-  def writer[A](
+  def sink[A](
       output: Path,
       row: Row[A]
-  ): Resource[IO, Iterator[A] => IO[Unit]] =
-    Row.writerRes[A](output)(row)
+  ): Pipe[IO, A, Nothing] =
+    Fs2Tools.sinkStream(Row.writerRes[A](output)(row))
 }
 
 sealed abstract class Output {
@@ -86,7 +86,7 @@ abstract class GenApp { self =>
   type Ref
   implicit def argumentForRef: Argument[Ref]
 
-  def writer[A](output: Ref, row: Row[A]): Resource[IO, Iterator[A] => IO[Unit]]
+  def sink[A](output: Ref, row: Row[A]): Pipe[IO, A, Nothing]
 
   def read[A](input: Ref, row: Row[A], blocker: Blocker)(implicit
       ctx: ContextShift[IO]
@@ -124,12 +124,10 @@ abstract class GenApp { self =>
         val stream: Stream[IO, (Timestamp, args.Type)] =
           Engine.run(input.through(pipe).through(onInput), args.value)
 
-        val writerRes = writer(output, row)
-
         val result: Stream[IO, args.Type] =
           onOutput(stream.through(pipe)).map(_._2)
 
-        Fs2Tools.sinkStream(result, writerRes).compile.drain
+        result.through(sink(output, row)).compile.drain
       }
 
   implicit def named[A: Argument]: Argument[(String, A)] =
@@ -407,27 +405,26 @@ abstract class GenApp { self =>
         val e: Event[A] = ev
         val resIF = inputFactory(List((ev.name, input)), e, blocker)
 
-        Semigroupal[Resource[IO, *]]
-          .product(resIF, writer(output, ev.row))
-          .use {
-            case (infac, fn) =>
-              val istream: fs2.Stream[IO, Point] =
-                infac.allInputs(e)
+        resIF
+          .use { infac =>
+            val istream: fs2.Stream[IO, Point] =
+              infac.allInputs(e)
 
-              val points: IO[ArrayBuffer[Point]] =
-                istream.chunks.compile
-                  .fold(ArrayBuffer[Point]()) { (buf, chunk) =>
-                    buf ++= chunk.iterator; buf
-                  }
-                  .map(_.sortInPlace)
-
-              for {
-                ps <- points
-                ait = ps.iterator.map {
-                  case Point.Sourced(_, a, _, _) => a.asInstanceOf[A]
+            val points: IO[ArrayBuffer[Point]] =
+              istream.chunks.compile
+                .fold(ArrayBuffer[Point]()) { (buf, chunk) =>
+                  buf ++= chunk.iterator; buf
                 }
-                _ <- fn(ait.iterator)
-              } yield ()
+                .map(_.sortInPlace())
+
+            for {
+              ps <- points
+              ait = ps.iterator.map {
+                case Point.Sourced(_, a, _, _) => a.asInstanceOf[A]
+              }
+              aitStream = Stream.fromIterator[IO](ait)
+              _ <- aitStream.through(sink(output, ev.row)).compile.drain
+            } yield ()
           }
       }
 
@@ -516,15 +513,13 @@ abstract class GenApp { self =>
           s"diff $diffidx from line $idx\n$diffAB\n"
       }
 
-      val wres = output match {
-        case Some(path) => writer(path, implicitly[Row[String]])
+      val outPipe = output match {
+        case Some(path) => sink(path, implicitly[Row[String]])
         case None =>
-          Resource.liftF(IO { (strs: Iterator[String]) =>
-            IO(strs.foreach(println))
-          })
+          stream: Stream[IO, String] => stream.lines(System.out).drain
       }
 
-      Fs2Tools.sinkStream(diffStrings, wres).compile.drain.as(ExitCode.Success)
+      outPipe(diffStrings).compile.drain.as(ExitCode.Success)
     }
   }
 
