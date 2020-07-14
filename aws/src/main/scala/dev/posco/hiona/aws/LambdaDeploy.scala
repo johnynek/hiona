@@ -657,10 +657,6 @@ object LambdaDeploy {
       bldr.withClientConfiguration(cconf).build
     })(awsl => IO(awsl.shutdown()))
 
-  val awsS3: Resource[IO, s3.AmazonS3] =
-    Resource.make(IO {
-      s3.AmazonS3ClientBuilder.defaultClient()
-    })(awsS3 => IO(awsS3.shutdown()))
 }
 
 object LambdaDeployApp extends IOApp {
@@ -668,7 +664,7 @@ object LambdaDeployApp extends IOApp {
   def run(args: List[String]): IO[ExitCode] =
     (
       LambdaDeploy.awsLambda,
-      LambdaDeploy.awsS3,
+      AWSIO.awsS3,
       Resource.liftF(UniqueName.build[IO]),
       Blocker[IO]
     ).mapN(new LambdaDeploy(_, _, _, _))

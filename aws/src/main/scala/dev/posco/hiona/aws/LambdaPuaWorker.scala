@@ -329,7 +329,7 @@ object LambdaPuaClientApp extends IOApp {
     val cmdRes = for {
       blocker <- Blocker[IO]
       aws <- LambdaDeploy.awsLambda
-      awsS3 <- LambdaDeploy.awsS3
+      awsS3 <- AWSIO.awsS3
     } yield LambdaPuaWorkerState.command(aws, awsS3, blocker)
 
     cmdRes.use { cmd =>

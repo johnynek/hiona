@@ -6,7 +6,7 @@ import cats.data.{NonEmptyList, Validated, ValidatedNel}
 import cats.effect.{Blocker, ExitCode, IO, IOApp}
 import com.monovore.decline.{Argument, Command, Opts}
 import com.twitter.algebird.{Last, Max, Min, Moments}
-import dev.posco.hiona.aws.{AWSIO, LambdaDeploy, S3Addr}
+import dev.posco.hiona.aws.{AWSIO, S3Addr}
 import dev.posco.hiona.{Duration, Fs2Tools, Row, ShapelessMonoid, Timestamp}
 import fs2.{Pull, Stream}
 import java.nio.file.Path
@@ -244,7 +244,7 @@ object TradeStats extends IOApp {
     case class S3In(s3a: S3Addr) extends Input1 {
       def getStream(blocker: Blocker): Stream[IO, Trade0] =
         Stream
-          .resource(LambdaDeploy.awsS3)
+          .resource(AWSIO.awsS3)
           .flatMap { s3 =>
             val awsio = new AWSIO(s3)
             awsio

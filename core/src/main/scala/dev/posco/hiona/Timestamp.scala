@@ -1,6 +1,9 @@
 package dev.posco.hiona
 
 import cats.Order
+import java.text.{ParsePosition, SimpleDateFormat}
+import java.util.TimeZone
+import scala.util.Try
 
 final case class Timestamp(epochMillis: Long) {
   def +(that: Duration): Timestamp =
@@ -120,4 +123,35 @@ object Timestamp {
       def compare(left: (Timestamp, Duration), right: (Timestamp, Duration)) =
         compareDiff(left._1, left._2, right._1, right._2)
     }
+
+  def parser(f: () => SimpleDateFormat): String => Try[Timestamp] = {
+    val tl = new ThreadLocal[SimpleDateFormat] {
+      override def initialValue = f()
+    }
+
+    { str: String =>
+      // ParsePosition is mutable and needs to be allocated each time
+      Try(Timestamp(tl.get.parse(str, new ParsePosition(0)).getTime))
+    }
+  }
+
+  def format(f: () => SimpleDateFormat): Timestamp => String = {
+    val tl = new ThreadLocal[SimpleDateFormat] {
+      override def initialValue = f()
+    }
+
+    { ts: Timestamp =>
+      val date = new java.util.Date(ts.epochMillis)
+      tl.get.format(date)
+    }
+  }
+
+  object Formats {
+    // yyyy-MM-dd HH:mm:ss
+    def dashedSpace8601(tz: TimeZone): () => SimpleDateFormat = { () =>
+      val sdf = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss")
+      sdf.setTimeZone(tz)
+      sdf
+    }
+  }
 }

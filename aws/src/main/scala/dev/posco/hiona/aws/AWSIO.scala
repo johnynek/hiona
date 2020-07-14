@@ -4,13 +4,14 @@ import alex.mojaki.s3upload.StreamTransferManager
 import cats.effect.{Blocker, ContextShift, IO, Resource, Sync}
 import cats.effect.concurrent.Ref
 import com.amazonaws.services.s3
+import com.amazonaws.services.s3.model.GetObjectRequest
 import dev.posco.hiona.Row
 import fs2.Stream
 import java.io.{BufferedInputStream, InputStream, OutputStream}
 import java.nio.file.Path
 import java.util.zip.{GZIPInputStream, GZIPOutputStream}
 
-import cats.implicits._
+//import cats.implicits._
 
 final class AWSIO(s3client: s3.AmazonS3) {
 
@@ -47,12 +48,24 @@ final class AWSIO(s3client: s3.AmazonS3) {
       .through(fs2.text.utf8Decode)
       .through(Row.decodeFromCSV[F, A](implicitly[Row[A]], skipHeader))
 
-  def putPath(s3Addr: S3Addr, path: Path): IO[Unit] =
-    IO {
+  def putPath(s3Addr: S3Addr, path: Path, blocker: Blocker)(implicit
+      ctx: ContextShift[IO]
+  ): IO[Unit] =
+    blocker.blockOn(IO {
       s3client.putObject(s3Addr.bucket, s3Addr.key, path.toFile)
 
       ()
-    }
+    })
+
+  def download(s3Addr: S3Addr, path: Path, blocker: Blocker)(implicit
+      ctx: ContextShift[IO]
+  ): IO[Unit] =
+    blocker.blockOn(IO {
+      val req = new GetObjectRequest(s3Addr.bucket, s3Addr.key)
+
+      s3client.getObject(req, path.toFile)
+      ()
+    })
 
   private def onFail[A, B](
       makeA: IO[A],
@@ -74,8 +87,9 @@ final class AWSIO(s3client: s3.AmazonS3) {
     */
   def tempWriter[A](
       output: S3Addr,
-      row: Row[A]
-  ): Resource[IO, Iterator[A] => IO[Unit]] = {
+      row: Row[A],
+      blocker: Blocker
+  )(implicit ctx: ContextShift[IO]): Resource[IO, Iterator[A] => IO[Unit]] = {
     val suffix =
       if (output.key.endsWith(".gz")) "csv.gz" else "csv"
     for {
@@ -83,7 +97,7 @@ final class AWSIO(s3client: s3.AmazonS3) {
       fn <- onFail[Unit, Iterator[A]](
         IO.unit,
         {
-          case (None, _)    => putPath(output, path)
+          case (None, _)    => putPath(output, path, blocker)
           case (Some(_), _) => IO.unit
         },
         _ => Row.writerRes(path)(row)
@@ -141,4 +155,15 @@ final class AWSIO(s3client: s3.AmazonS3) {
 
     onFail(mos, close, makeWriter)
   }
+}
+
+object AWSIO {
+
+  val awsS3: Resource[IO, s3.AmazonS3] =
+    Resource.make(IO {
+      s3.AmazonS3ClientBuilder.defaultClient()
+    })(awsS3 => IO(awsS3.shutdown()))
+
+  val resource: Resource[IO, AWSIO] =
+    awsS3.map(new AWSIO(_))
 }

@@ -21,6 +21,8 @@ import scala.collection.mutable.ArrayBuffer
 
 import shapeless._
 
+import cats.implicits._
+
 /**
   * typeclass for value A that are not allowed to have all empty strings
   * as values, and an efficient check to see if we are in the empty case
@@ -317,6 +319,11 @@ object Row extends Priority0Rows {
     */
   def fileWriter(path: Path): Resource[IO, PrintWriter] =
     toPrintWriter {
+      // make parents
+      val f = path.toFile
+      val parent = f.getParentFile
+      if (!parent.exists()) parent.mkdirs()
+
       val fos = new FileOutputStream(path.toFile)
       if (path.toString.endsWith(".gz")) new GZIPOutputStream(fos)
       else fos
@@ -372,29 +379,53 @@ object Row extends Priority0Rows {
     }
   }
 
-  def decode[F[_], A](implicit
-      ae: cats.ApplicativeError[F, Throwable],
-      row: Row[A]
-  ): Pipe[F, DRow, A] = { input =>
-    input.evalMap { drow =>
-      try ae.pure(row.unsafeFromStrings(0, drow))
-      catch {
-        case scala.util.control.NonFatal(err) =>
-          ae.raiseError[A](err)
-      }
-    }
+  def decode[F[_]: RaiseThrowable, A: Row]: Pipe[F, DRow, A] = { input =>
+    val row = implicitly[Row[A]]
+    val cols = row.columns
+
+    def loop(input: Stream[F, DRow]): Pull[F, A, Unit] =
+      input.pull.uncons
+        .flatMap {
+          case Some((drows, tail)) =>
+            try {
+              val bldr = List.newBuilder[A]
+              var idx = 0
+              val size = drows.size
+              while (idx < size) {
+                val drow = drows(idx)
+                if (
+                  drow.size != cols && ((drow.size == 1) && drow(
+                    0
+                  ).isEmpty) || (drow.size == 0)
+                ) {
+                  // occasionally there are sources with empty lines
+                  // just skip them
+                } else
+                  bldr += row.unsafeFromStrings(0, drow)
+                idx = idx + 1
+              }
+              Pull.output(Chunk.seq(bldr.result())).covary[F] *> loop(tail)
+            } catch {
+              case scala.util.control.NonFatal(err) =>
+                Pull.raiseError(err)
+            }
+          case None => Pull.done
+        }
+
+    loop(input).stream
   }
 
   /**
     * convert csv data into type A
     */
-  def decodeFromCSV[F[_], A](row: Row[A], skipHeader: Boolean = true)(implicit
-      ae: cats.ApplicativeError[F, Throwable]
+  def decodeFromCSV[F[_]: RaiseThrowable, A](
+      row: Row[A],
+      skipHeader: Boolean = true
   ): fs2.Pipe[F, String, A] =
     Row.parseCSV
       .andThen(if (skipHeader) { s => s.drop(1) }
       else { s => s })
-      .andThen(Row.decode[F, A](ae, row))
+      .andThen(Row.decode[F, A](implicitly, row))
 
   def parseCSV[F[_]: RaiseThrowable]: Pipe[F, String, DRow] =
     parse(DelimitedParser(DelimitedFormat.CSV))
