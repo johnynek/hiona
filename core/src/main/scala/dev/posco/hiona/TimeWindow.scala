@@ -1,8 +1,7 @@
 package dev.posco.hiona
 
-import cats.collections.PairingHeap
 import cats.kernel.CommutativeSemigroup
-import cats.{Eq, Order}
+import cats.{Eq, Monoid, Order}
 
 import cats.implicits._
 
@@ -17,94 +16,81 @@ sealed abstract class TimeWindow[W <: Duration, A] {
 
   def combine(
       that: TimeWindow[W, A]
-  )(implicit v: ValueOf[W], ord: Order[A]): TimeWindow[W, A]
+  )(implicit v: ValueOf[W], ord: Monoid[A]): TimeWindow[W, A]
 
-  def minimum: (Timestamp, A)
-  def maximum: (Timestamp, A)
+  def minimum: Timestamp
+  def maximum: Timestamp
   def size: Long
-
-  def toList(implicit ord: Order[A]): List[(Timestamp, A)]
 
   def +(
       tsA: (Timestamp, A)
-  )(implicit v: ValueOf[W], ord: Order[A]): TimeWindow[W, A] =
-    combine(TimeWindow.single(tsA))
+  )(implicit v: ValueOf[W], ord: Monoid[A]): TimeWindow[W, A] =
+    combine(TimeWindow.single(tsA._1, tsA._2))
 
-  /**
-    * make some aggregate value of the entire window. The B needs to have a commutative monoid
-    * should be commutative since we don't promise the ordering
-    * if you do need the order, use toList and apply your function
-    * to the result there
-    *
-    * An example would be to take the average over a window, the average value is
-    * commutative, so we can apply that here
-    */
-  def unorderedFoldMap[B: CommutativeSemigroup](fn: ((Timestamp, A)) => B): B
+  def combined(implicit mon: Monoid[A]): A
+
+  def timestamps: Iterable[Timestamp]
 }
 
 object TimeWindow {
   private case class Items[W <: Duration, A](
-      toHeap: PairingHeap[(Timestamp, A)],
-      maximum: (Timestamp, A)
+      toHeap: CombinedHeap[Timestamp, A],
+      maximum: Timestamp
   ) extends TimeWindow[W, A] {
-    def minimum: (Timestamp, A) =
+    def minimum: Timestamp =
       // the heap is never empty by construction
       toHeap.minimumOption.get
 
+    def combined(implicit m: Monoid[A]) = toHeap.unorderedFold
+
     def combine(
         that: TimeWindow[W, A]
-    )(implicit v: ValueOf[W], ord: Order[A]): TimeWindow[W, A] = {
+    )(implicit v: ValueOf[W], mon: Monoid[A]): TimeWindow[W, A] = {
       val newMax =
-        if (Order[Timestamp].lt(that.maximum._1, maximum._1)) maximum
+        if (that.maximum < maximum) maximum
         else that.maximum
 
-      val Items(thatHeap, _) = that
-      var resHeap = thatHeap.combine(toHeap)
-
       // inclusive minimimum time
-      val newMinTime = newMax._1 - v.value
-      while (Order[Timestamp].lt(resHeap.minimumOption.get._1, newMinTime))
-        resHeap = resHeap.remove
-
-      Items(resHeap, newMax)
+      val newMinTime = newMax - v.value
+      if (maximum < newMinTime) that
+      else if (that.maximum < newMinTime) this
+      else {
+        val Items(thatHeap, _) = that
+        val resHeap = thatHeap
+          .removeLessThan(newMinTime)
+          .combine(toHeap.removeLessThan(newMinTime))
+        Items(resHeap, newMax)
+      }
     }
 
     def size = toHeap.size
-
-    def toList(implicit ord: Order[A]): List[(Timestamp, A)] = toHeap.toList
-
-    def unorderedFoldMap[B: CommutativeSemigroup](
-        fn: ((Timestamp, A)) => B
-    ): B =
-      toHeap
-        .unorderedFoldMap[Option[B]](fn.andThen(Some(_)))
-        .getOrElse(fn(maximum))
+    def timestamps: Iterable[Timestamp] = toHeap.keys
   }
 
-  def single[W <: Duration, A](tsA: (Timestamp, A)): TimeWindow[W, A] =
-    Items(PairingHeap(tsA), tsA)
+  def single[W <: Duration, A](ts: Timestamp, a: A): TimeWindow[W, A] =
+    Items(CombinedHeap(ts, a), ts)
 
-  def fromList[W <: Duration, A: Order](
+  def fromList[W <: Duration, A: Monoid](
       items: List[(Timestamp, A)]
   )(implicit v: ValueOf[W]): Option[TimeWindow[W, A]] =
     items match {
       case Nil => None
       case nonempty @ (_ :: _) =>
-        val maxV @ (maxTime, _) = nonempty.iterator.maxBy(_._1)
+        val maxTime = nonempty.iterator.map(_._1).max
         // must be >= minTime
         val minTime = maxTime - v.value
-        val heap = items.foldLeft(PairingHeap.empty[(Timestamp, A)]) {
-          case (heap, pair @ (ts, _)) =>
-            if (Order[Timestamp].gteqv(ts, minTime)) heap.add(pair)
+        val heap = items.foldLeft(CombinedHeap.empty[Timestamp, A]) {
+          case (heap, (ts, a)) =>
+            if (Order[Timestamp].gteqv(ts, minTime)) heap.add(ts, a)
             else heap
         }
 
-        Some(Items(heap, maxV))
+        Some(Items(heap, maxTime))
     }
 
   implicit def semigroupForTimeWindow[W <: Duration, A](implicit
       v: ValueOf[W],
-      ord: Order[A]
+      ord: Monoid[A]
   ): CommutativeSemigroup[TimeWindow[W, A]] =
     new CommutativeSemigroup[TimeWindow[W, A]] {
       def combine(
@@ -114,14 +100,13 @@ object TimeWindow {
         left.combine(right)
     }
 
-  implicit def eqForTimeWindow[W <: Duration: ValueOf, A: Order]
+  implicit def eqTimeWindow[W <: Duration, A: Eq: Monoid]
       : Eq[TimeWindow[W, A]] =
     new Eq[TimeWindow[W, A]] {
-      val eqList: Eq[List[(Timestamp, A)]] = Eq[List[(Timestamp, A)]]
-      def eqv(left: TimeWindow[W, A], right: TimeWindow[W, A]): Boolean =
-        (left eq right) || {
-          (left.size == right.size) &&
-          eqList.eqv(left.toList, right.toList)
-        }
+      def eqv(a: TimeWindow[W, A], b: TimeWindow[W, A]) =
+        (a.minimum == b.minimum) &&
+          (a.maximum == b.maximum) &&
+          (a.size == b.size) &&
+          (Eq[A].eqv(a.combined, b.combined))
     }
 }

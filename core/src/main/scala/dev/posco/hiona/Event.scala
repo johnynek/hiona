@@ -141,34 +141,29 @@ object Event {
       */
     final def window[W <: Duration](implicit
         v: ValueOf[W],
-        o: Ordering[V]
-    ): Feature[K, Option[TimeWindow[W, V]]] = {
-      implicit val catsOrd = cats.Order.fromOrdering(o)
+        o: Monoid[V]
+    ): Feature[K, Option[TimeWindow[W, V]]] =
       ev.valueWithTime.mapValues {
-        case (v, ts) => Option(TimeWindow.single[W, V]((ts, v)))
+        case (v, ts) => Option(TimeWindow.single[W, V](ts, v))
       }.sum
-    }
 
     /**
       * Compute a sum over a specific window of time.
       */
     final def windowSum(
         dur: Duration
-    )(implicit o: Ordering[V], m: Monoid[V]): Feature[K, V] = {
-      implicit val catsOrd = cats.Order.fromOrdering(o)
+    )(implicit m: Monoid[V]): Feature[K, V] =
       window[dur.type].map {
-        case None => m.empty
-        case Some(win) =>
-          m.combineAll(win.toList.iterator.map { case (_, v) => v })
+        case None      => m.empty
+        case Some(win) => win.combined
       }
-    }
 
     /**
       * Does a sum from "now" until W in the future
       */
     final def sumForward(
         dur: Duration
-    )(implicit o: Ordering[V], m: Monoid[V]): Label[K, V] =
+    )(implicit m: Monoid[V]): Label[K, V] =
       Label(windowSum(dur)).lookForward(dur)
 
     final def mapValues[W](fn: V => W): Event[(K, W)] =

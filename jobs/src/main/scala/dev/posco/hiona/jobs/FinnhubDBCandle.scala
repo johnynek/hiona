@@ -1,12 +1,19 @@
 package dev.posco.hiona.jobs
 
 import cats.Monoid
-import cats.effect.{Async, IO, Resource}
+import cats.effect.{IO, Resource}
 import cats.implicits._
 import com.monovore.decline.{Command, Opts}
 import dev.posco.hiona._
 import dev.posco.hiona.db.DBSupport
-import dev.posco.hiona.jobs.Featurize._
+import dev.posco.hiona.jobs.Featurize.{
+  exchange_rates_sql,
+  latestExchange,
+  valueInUSD,
+  Currency,
+  ExchangeCode,
+  Symbol
+}
 import doobie.implicits._
 import doobie.util.fragment.Fragment
 
@@ -73,14 +80,6 @@ object FinnhubDBCandle extends aws.DBS3CliApp {
     def toValues: Values[Double] = Values(close, change, priceRange, volume)
   }
 
-  val src: Event.Source[Candle] = Event.source[Candle](
-    "finnhub.stock_candles",
-    Validator.pure(candle => Timestamp(candle.candleEndEpochMillis))
-  )
-
-  val latestCandle: Feature[Symbol, Option[Candle]] =
-    src.latestBy(_.symbol)
-
   // region Values
 
   /**
@@ -139,57 +138,12 @@ object FinnhubDBCandle extends aws.DBS3CliApp {
       log: Values[Double]
   )
 
-  val metaAndZeroHistory: Event[(MetaFeatures, ZeroHistoryFeatures)] =
-    src
-      .map(candle => (candle.currency, candle))
-      .postLookup(latestExchange)
-      .values
-      .withTime
-      .map {
-        case ((c, exch), ts) =>
-          val v = c.toValues
-          val zh = ZeroHistoryFeatures(
-            ts.unixMinuteOfDay,
-            ts.unixDayOfWeek,
-            turnoverUsd = exch match {
-              case None    => Double.NaN
-              case Some(e) => e.toUSD(c.close) * c.volume
-            },
-            lin = v,
-            log = v.map(d => math.log(d + 1e-6))
-          )
-          (MetaFeatures(ts, c.symbol, c.exchCode), zh)
-      }
-
   case class Window10Values(turnoverUsd: Double, volume: Double)
-  val turnoverVol10Feature: Feature[Symbol, Window10Values] =
-    metaAndZeroHistory
-      .map { case (m, z) => (m.symbol, (z.turnoverUsd, z.lin.volume)) }
-      .windowSum(Duration.minutes(10L))
-      .map { case (t, v) => Window10Values(t, v) }
-
-  val decayedFeatures
-      : Feature[Symbol, Decays[(Values[Moments2], Values[Moments2])]] =
-    Decays.feature(
-      metaAndZeroHistory
-        .map {
-          case (meta, zh) =>
-            (meta.symbol, (Values.moments(zh.lin), Values.moments(zh.log)))
-        }
-    )
 
   /**
     * A Target has the values that will be predicted
     */
   case class Target(close: Double, volume: Double)
-
-  val label: Label[Symbol, Target] = Label(latestCandle.map {
-    case None    => Target(Double.NaN, 0.0)
-    case Some(c) => Target(c.close, c.volume)
-  })
-
-  val turnoverVol10Label: Label[Symbol, Window10Values] =
-    Label(turnoverVol10Feature).lookForward(Duration.minutes(10L))
 
   /**
     * Bundles together all the Targets of the computation
@@ -215,57 +169,122 @@ object FinnhubDBCandle extends aws.DBS3CliApp {
   )
 
   /**
-    * the stream of Result objects that will be output
+    * The values in here should explicitly declare
+    * the dependencies as arguments to the constructor
     */
-  val labeled: LabeledEvent[Result] = {
-    val ev: Event[
-      (
-          Symbol,
-          (
-              (MetaFeatures, ZeroHistoryFeatures),
-              Decays[(Values[Moments2], Values[Moments2])]
-          )
-      )
-    ] =
+  final class ResultModule(
+      src: Event[Candle],
+      latestExchange: Feature[String, Option[Featurize.CurrencyExchange]]
+  ) {
+
+    val latestCandle: Feature[Symbol, Option[Candle]] =
+      src.latestBy(_.symbol)
+
+    val metaAndZeroHistory: Event[(MetaFeatures, ZeroHistoryFeatures)] =
+      src
+        .map(candle => (candle.currency, candle))
+        .postLookup(latestExchange)
+        .values
+        .withTime
+        .map {
+          case ((c, exch), ts) =>
+            val v = c.toValues
+            val zh = ZeroHistoryFeatures(
+              ts.unixMinuteOfDay,
+              ts.unixDayOfWeek,
+              turnoverUsd = exch match {
+                case None    => Double.NaN
+                case Some(e) => e.toUSD(c.close) * c.volume
+              },
+              lin = v,
+              log = v.map(d => math.log(d + 1e-6))
+            )
+            (MetaFeatures(ts, c.symbol, c.exchCode), zh)
+        }
+
+    val turnoverVol10Feature: Feature[Symbol, Window10Values] =
       metaAndZeroHistory
-        .map { case (meta, zh) => (meta.symbol, (meta, zh)) }
-        .postLookup(decayedFeatures)
+        .map { case (m, z) => (m.symbol, (z.turnoverUsd, z.lin.volume)) }
+        .windowSum(Duration.minutes(10L))
+        .map { case (t, v) => Window10Values(t, v) }
 
-    val min15 = Duration.minutes(15)
-    val min30 = Duration.minutes(30)
-
-    val lab15: Label[Symbol, Target] = label.lookForward(min15)
-    val lab30: Label[Symbol, Target] = label.lookForward(min30)
-
-    val allLabs: Label[
-      Symbol,
-      ((((Window10Values, Target), Target), Window10Values), Window10Values)
-    ] =
-      turnoverVol10Label
-        .zip(lab15)
-        .zip(lab30)
-        .zip(turnoverVol10Label.lookForward(min15))
-        .zip(turnoverVol10Label.lookForward(min30))
-
-    LabeledEvent(ev, allLabs)
-      .map {
-        case (_, (((meta, zh), decayPair), ((((w0, t15), t30), w15), w30))) =>
-          val linM = decayPair.map(_._1)
-          val logM = decayPair.map(_._2)
-          val linZ = linM.map { v =>
-            v.zip(zh.lin).map { case (m, d) => m.zscore(d) }
+    val decayedFeatures
+        : Feature[Symbol, Decays[(Values[Moments2], Values[Moments2])]] =
+      Decays.feature(
+        metaAndZeroHistory
+          .map {
+            case (meta, zh) =>
+              (meta.symbol, (Values.moments(zh.lin), Values.moments(zh.log)))
           }
-          val logZ = logM.map { v =>
-            v.zip(zh.log).map { case (m, d) => m.zscore(d) }
-          }
+      )
 
-          val gainMins15 = (t15.close / zh.lin.close) - 1.0
-          val gainMins30 = (t30.close / zh.lin.close) - 1.0
-          val targets = Targets(w0, t15, t30, gainMins15, gainMins30, w15, w30)
+    val label: Label[Symbol, Target] = Label(latestCandle.map {
+      case None    => Target(Double.NaN, 0.0)
+      case Some(c) => Target(c.close, c.volume)
+    })
 
-          Result(meta, targets, zh, linM, logM, linZ, logZ)
-      }
+    val turnoverVol10Label: Label[Symbol, Window10Values] =
+      Label(turnoverVol10Feature).lookForward(Duration.minutes(10L))
+
+    /**
+      * the stream of Result objects that will be output
+      */
+    val labeled: LabeledEvent[Result] = {
+      val ev: Event[
+        (
+            Symbol,
+            (
+                (MetaFeatures, ZeroHistoryFeatures),
+                Decays[(Values[Moments2], Values[Moments2])]
+            )
+        )
+      ] =
+        metaAndZeroHistory
+          .map { case (meta, zh) => (meta.symbol, (meta, zh)) }
+          .postLookup(decayedFeatures)
+
+      val min15 = Duration.minutes(15)
+      val min30 = Duration.minutes(30)
+
+      val lab15: Label[Symbol, Target] = label.lookForward(min15)
+      val lab30: Label[Symbol, Target] = label.lookForward(min30)
+
+      val allLabs: Label[
+        Symbol,
+        ((((Window10Values, Target), Target), Window10Values), Window10Values)
+      ] =
+        turnoverVol10Label
+          .zip(lab15)
+          .zip(lab30)
+          .zip(turnoverVol10Label.lookForward(min15))
+          .zip(turnoverVol10Label.lookForward(min30))
+
+      LabeledEvent(ev, allLabs)
+        .map {
+          case (_, (((meta, zh), decayPair), ((((w0, t15), t30), w15), w30))) =>
+            val linM = decayPair.map(_._1)
+            val logM = decayPair.map(_._2)
+            val linZ = linM.map { v =>
+              v.zip(zh.lin).map { case (m, d) => m.zscore(d) }
+            }
+            val logZ = logM.map { v =>
+              v.zip(zh.log).map { case (m, d) => m.zscore(d) }
+            }
+
+            val gainMins15 = (t15.close / zh.lin.close) - 1.0
+            val gainMins30 = (t30.close / zh.lin.close) - 1.0
+            val targets =
+              Targets(w0, t15, t30, gainMins15, gainMins30, w15, w30)
+
+            Result(meta, targets, zh, linM, logM, linZ, logZ)
+        }
+    }
   }
+
+  val src: Event.Source[Candle] = Event.source[Candle](
+    "finnhub.stock_candles",
+    Validator.pure(candle => Timestamp(candle.candleEndEpochMillis))
+  )
 
   /**
     * This is what binds the the Event.Source to particular
@@ -310,7 +329,8 @@ object FinnhubDBCandle extends aws.DBS3CliApp {
       }
   }
 
-  def eventOutput: Output = Output.labeledEvent[Result](labeled)
+  val srcResult = new ResultModule(src, latestExchange)
+  def eventOutput: Output = Output.labeledEvent[Result](srcResult.labeled)
 
   val transactor: Resource[IO, doobie.Transactor[IO]] =
     Resource.liftF(

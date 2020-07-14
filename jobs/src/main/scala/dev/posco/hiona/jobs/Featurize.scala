@@ -40,6 +40,12 @@ object Featurize {
       .map(ce => (ce.base_currency, ce))
       .latest
 
+  val mockExchange: Feature[Currency, Option[CurrencyExchange]] =
+    Feature.fromFn {
+      case "USD" => Some(CurrencyExchange("USD", 0L, 1.0))
+      case _     => None
+    }
+
   val exchange_rates_sql = sql"""
           SELECT
             base_currency,
