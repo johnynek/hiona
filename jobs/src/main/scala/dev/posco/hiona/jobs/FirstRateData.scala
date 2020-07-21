@@ -4,7 +4,15 @@ import cats.ApplicativeError
 import cats.data.NonEmptyList
 import cats.effect.{Blocker, ContextShift, ExitCode, IO, IOApp, Resource}
 import dev.posco.hiona.aws.{AWSIO, S3Addr}
-import dev.posco.hiona.{Duration, Fs2Tools, Row, SeqPartitioner, Timestamp}
+import dev.posco.hiona.{
+  Duration,
+  Event,
+  Fs2Tools,
+  Row,
+  SeqPartitioner,
+  Timestamp,
+  Validator
+}
 import fs2.Stream
 import java.nio.file.Path
 import java.text.SimpleDateFormat
@@ -150,6 +158,12 @@ object FirstRateData {
         close = input.close,
         volume = input.volume
       )
+
+    val validator: Validator[Output] =
+      Validator.pure[Output](_.candleEndExclusiveMs)
+
+    val src: Event.Source[FirstRateData.Output] =
+      Event.source("first_rate_data_1min", validator)
   }
 
   def parseInput[F[_]](implicit
