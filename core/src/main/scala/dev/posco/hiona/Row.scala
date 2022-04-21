@@ -39,9 +39,9 @@ import shapeless._
 import cats.implicits._
 
 /**
-  * typeclass for value A that are not allowed to have all empty strings
-  * as values, and an efficient check to see if we are in the empty case
-  * This exists to support optional values
+  * typeclass for value A that are not allowed to have all empty strings as
+  * values, and an efficient check to see if we are in the empty case This
+  * exists to support optional values
   */
 sealed trait NonEmptyRow[A] {
   def columns: Int
@@ -136,9 +136,9 @@ sealed trait Priority2NonEmptyRow {
 }
 
 /**
-  * This is the typeclass-pattern which gives a serializer/deserializer for a type A
-  * into and out of an Array[Strings]. This will be encoded into a CSV (or potentially TSV if we
-  * needed, but that is currently not implemented)
+  * This is the typeclass-pattern which gives a serializer/deserializer for a
+  * type A into and out of an Array[Strings]. This will be encoded into a CSV
+  * (or potentially TSV if we needed, but that is currently not implemented)
   */
 sealed trait Row[A] {
   // how many columns do we need to write A out
@@ -293,10 +293,11 @@ object Row extends Priority0Rows {
   }
 
   /**
-    * Optional data must not be empty to begin with. That is true for numbers and booleans
-    * we could also support tuples/case-classes if needed, but currently that does not
-    * work, only Option[Int], Option[Long], ... will work (notably, Option[String] won't work
-    * since we can't tell Some("") from None).
+    * Optional data must not be empty to begin with. That is true for numbers
+    * and booleans we could also support tuples/case-classes if needed, but
+    * currently that does not work, only Option[Int], Option[Long], ... will
+    * work (notably, Option[String] won't work since we can't tell Some("") from
+    * None).
     */
   implicit def optionRow[A](implicit
       rowA: Row[A],
@@ -327,8 +328,8 @@ object Row extends Priority0Rows {
     }(pw => IO(pw.close()))
 
   /**
-    * Helper function to make a Resource for a PrintWriter. The Resource
-    * will close the PrintWriter when done.
+    * Helper function to make a Resource for a PrintWriter. The Resource will
+    * close the PrintWriter when done.
     */
   def fileWriter(path: Path): Resource[IO, PrintWriter] =
     toPrintWriter {
@@ -348,8 +349,8 @@ object Row extends Priority0Rows {
       .flatMap(pw => Resource.liftF(writer[A](pw)))
 
   /**
-    * use a PrintWriter for an output function. This does not
-    * close the PrintWriter, that is the caller's responsibility
+    * use a PrintWriter for an output function. This does not close the
+    * PrintWriter, that is the caller's responsibility
     */
   def writer[A: Row](pw: PrintWriter): IO[Iterator[A] => IO[Unit]] = {
     val format = DelimitedFormat.CSV
@@ -508,16 +509,6 @@ object Row extends Priority0Rows {
 
     { strings => loop(dp, strings).stream }
   }
-
-  def csvToStream[F[_]: Sync: ContextShift, A: Row](
-      path: Path,
-      skipHeader: Boolean,
-      blocker: Blocker
-  ): Stream[F, A] =
-    Fs2Tools
-      .fromPath[F](path, 1 << 16, blocker)
-      .through(fs2.text.utf8Decode)
-      .through(decodeFromCSV[F, A](implicitly[Row[A]], skipHeader))
 
   case class Coproduct1Row[A](rowA: Row[A]) extends Row[A :+: CNil] {
     val columns = rowA.columns
@@ -745,9 +736,10 @@ sealed trait Priority0Rows extends Priority1Rows {
 }
 
 /**
-  * This is using the fact that scala prefers implicit values in the direct class to superclasses
-  * to prioritize which implicits we choose. Here we want to make instances of Row for genericRow and the hlist
-  * (heterogenous lists, which are basically tuples that can be any size).
+  * This is using the fact that scala prefers implicit values in the direct
+  * class to superclasses to prioritize which implicits we choose. Here we want
+  * to make instances of Row for genericRow and the hlist (heterogenous lists,
+  * which are basically tuples that can be any size).
   */
 sealed trait Priority1Rows extends Priority2Rows {
   implicit def hconsRow[A, B <: HList](implicit

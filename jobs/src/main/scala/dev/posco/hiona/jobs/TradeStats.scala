@@ -23,7 +23,7 @@ import cats.{Monoid, Order}
 import com.monovore.decline.{Argument, Command, Opts}
 import com.twitter.algebird.{Last, Max, Min, Moments}
 import dev.posco.hiona.aws.{AWSIO, S3Addr}
-import dev.posco.hiona.{Duration, Fs2Tools, Row, ShapelessMonoid, Timestamp}
+import dev.posco.hiona.{Duration, Fs2Tools, Row, ShapelessMonoid, PipeCodec, Timestamp}
 import fs2.{Pull, Stream}
 import java.nio.file.Path
 
@@ -251,8 +251,10 @@ object TradeStats extends IOApp {
   object Input {
     sealed abstract class Input1 extends Input
     case class PathIn(path: Path) extends Input1 {
-      def getStream(blocker: Blocker): Stream[IO, Trade0] =
-        Row.csvToStream[IO, Trade0](path, skipHeader = true, blocker)
+      def getStream(blocker: Blocker): Stream[IO, Trade0] = {
+        implicit val codec = PipeCodec.csv[Trade0]()
+        PipeCodec.stream[IO, Trade0](path, blocker)
+      }
     }
 
     case class S3In(s3a: S3Addr) extends Input1 {

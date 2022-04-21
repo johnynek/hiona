@@ -85,7 +85,14 @@ object Event {
     * @param validator the validator to check each input value and extract the timestamp
     */
   def source[A: Row](name: String, validator: Validator[A]): Event.Source[A] =
-    Source(name, implicitly[Row[A]], validator)
+    Source(name, PipeCodec.csv[A](), validator)
+
+  /**
+    * @param name a unique name for a given source. To run, this name has to be connected to an input path
+    * @param validator the validator to check each input value and extract the timestamp
+    */
+  def genericSource[A: PipeCodec](name: String, validator: Validator[A]): Event.Source[A] =
+    Source(name, implicitly[PipeCodec[A]], validator)
 
   def empty[A]: Event[A] = Empty
 
@@ -206,7 +213,7 @@ object Event {
   }
 
   case object Empty extends Event[Nothing]
-  case class Source[A](name: String, row: Row[A], validator: Validator[A])
+  case class Source[A](name: String, codec: PipeCodec[A], validator: Validator[A])
       extends Event[A]
 
   object Source {

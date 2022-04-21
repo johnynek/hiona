@@ -21,8 +21,9 @@ import cats.effect.concurrent.Ref
 import cats.effect.{Blocker, ContextShift, IO, Resource, Sync}
 import com.amazonaws.services.s3
 import com.amazonaws.services.s3.model.GetObjectRequest
-import dev.posco.hiona.Row
+import dev.posco.hiona.{Row, PipeCodec}
 import fs2.Stream
+
 import java.io.{BufferedInputStream, InputStream, OutputStream}
 import java.nio.file.Path
 import java.util.zip.{GZIPInputStream, GZIPOutputStream}
@@ -128,7 +129,7 @@ final class AWSIO(s3client: s3.AmazonS3) {
     */
   def multiPartOutput[A](
       s3Addr: S3Addr,
-      row: Row[A]
+      codec: PipeCodec[A]
   ): Resource[IO, Iterator[A] => IO[Unit]] = {
     val mos = IO {
       val m = new StreamTransferManager(s3Addr.bucket, s3Addr.key, s3client)
@@ -165,7 +166,7 @@ final class AWSIO(s3client: s3.AmazonS3) {
       case (_, os) =>
         for {
           pw <- Row.toPrintWriter(os)
-          wfn <- Resource.liftF(Row.writer(pw)(row))
+          wfn <- Resource.liftF(codec.writer(pw))
         } yield wfn
     }
 
