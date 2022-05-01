@@ -13,11 +13,13 @@ object Dependencies {
 
   lazy val algebird = "com.twitter" %% "algebird-core" % "0.13.7"
   lazy val awsLambdaCore1 = "com.amazonaws" % "aws-lambda-java-core" % "1.2.0"
-  lazy val awsLambdaService = "com.amazonaws" % "aws-java-sdk-lambda" % "1.11.783"
+  lazy val awsLambdaService =
+    "com.amazonaws" % "aws-java-sdk-lambda" % "1.11.783"
   lazy val awsEcsService = "com.amazonaws" % "aws-java-sdk-ecs" % "1.11.809"
   lazy val awsEcrService = "com.amazonaws" % "aws-java-sdk-ecr" % "1.11.809"
   lazy val awsS3v1 = aws1 % "aws-java-sdk-s3" % "1.11.766"
-  lazy val awsSecretsManager = "com.amazonaws" % "aws-java-sdk-secretsmanager" % "1.11.774"
+  lazy val awsSecretsManager =
+    "com.amazonaws" % "aws-java-sdk-secretsmanager" % "1.11.774"
   lazy val cats = typelevel %% "cats-core" % "2.1.1"
   lazy val catsCollections = typelevel %% "cats-collections-core" % "0.9.0"
   lazy val catsEffect = typelevel %% "cats-effect" % "2.1.2"

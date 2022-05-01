@@ -1,3 +1,19 @@
+/*
+ * Copyright 2022 devposco
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 package dev.posco.hiona
 
 import cats.effect.{Blocker, ContextShift, IO, Resource, Sync}
@@ -10,15 +26,14 @@ import java.io.{
   PrintWriter
 }
 import java.nio.file.Path
+import java.util.zip.GZIPOutputStream
 import net.tixxit.delimited.{
   DelimitedError,
   DelimitedFormat,
   DelimitedParser,
   Row => DRow
 }
-import java.util.zip.GZIPOutputStream
 import scala.collection.mutable.ArrayBuffer
-
 import shapeless._
 
 import cats.implicits._
@@ -130,7 +145,7 @@ sealed trait Row[A] {
   def columns: Int
   // the names of the columns. should be the same length as columns
   def columnNames(offset: Int): List[String]
-  //(offset until (offset + columns)).map { c => s"_$c" }.toList
+  // (offset until (offset + columns)).map { c => s"_$c" }.toList
   // this writes A into an Array starting at a given offset
   def writeToStrings(a: A, offset: Int, dest: Array[String]): Unit
   // read A from a net.tixxit.delimited.Row (which is a wrapper for Array[String].
@@ -289,9 +304,7 @@ object Row extends Priority0Rows {
   ): Row[Option[A]] =
     OptionRow(rowA, ner)
 
-  /**
-    * create a temp path that can be used while the resource is active
-    */
+  /** create a temp path that can be used while the resource is active */
   def tempPath(prefix: String, suffix: String): Resource[IO, Path] =
     Resource
       .make(IO {
@@ -329,9 +342,7 @@ object Row extends Priority0Rows {
       else fos
     }
 
-  /**
-    * Make a Resource for a function that can write out items into a given path
-    */
+  /** Make a Resource for a function that can write out items into a given path */
   def writerRes[A: Row](path: Path): Resource[IO, Iterator[A] => IO[Unit]] =
     fileWriter(path)
       .flatMap(pw => Resource.liftF(writer[A](pw)))
@@ -415,9 +426,7 @@ object Row extends Priority0Rows {
     loop(input).stream
   }
 
-  /**
-    * convert csv data into type A
-    */
+  /** convert csv data into type A */
   def decodeFromCSV[F[_]: RaiseThrowable, A](
       row: Row[A],
       skipHeader: Boolean = true

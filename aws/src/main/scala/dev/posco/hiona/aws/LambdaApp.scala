@@ -1,18 +1,33 @@
+/*
+ * Copyright 2022 devposco
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 package dev.posco.hiona.aws
 
 import cats.data.{Validated, ValidatedNel}
+import cats.effect.ExitCode
 import cats.effect.{Blocker, ContextShift, IO, Resource}
 import com.amazonaws.services.lambda.runtime.Context
 import com.amazonaws.services.s3
 import com.monovore.decline.{Argument, Opts}
 import dev.posco.hiona.IOEnv
-import java.util.concurrent.Executors
-import io.circe.{Decoder, HCursor, Json}
-import scala.concurrent.ExecutionContext
-import doobie.Transactor
-
 import dev.posco.hiona._
-import cats.effect.ExitCode
+import doobie.Transactor
+import io.circe.{Decoder, HCursor, Json}
+import java.util.concurrent.Executors
+import scala.concurrent.ExecutionContext
 
 import cats.implicits._
 
@@ -75,8 +90,8 @@ class LambdaApp0(output: Output) extends LambdaApp[Unit](Opts.unit, _ => output)
 class S3App extends GenApp {
   type Ref = S3Addr
 
-  val s3Client = s3.AmazonS3ClientBuilder.defaultClient()
-  val awsIO = new AWSIO(s3Client)
+  lazy val s3Client = s3.AmazonS3ClientBuilder.defaultClient()
+  lazy val awsIO = new AWSIO(s3Client)
 
   /**
     *  we only want one of these for the whole life of the lambda

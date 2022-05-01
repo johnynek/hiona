@@ -4,6 +4,7 @@ project/target/
 project/metals.sbt
 data/
 .bloop/
+.bsp/
 .metals/
 *.jar
 aws_config/out

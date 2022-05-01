@@ -1,6 +1,23 @@
+/*
+ * Copyright 2022 devposco
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 package dev.posco.hiona
 
 import cats.Monoid
+
 import cats.implicits._
 
 /**
@@ -19,15 +36,11 @@ sealed abstract class Event[+A] {
   final def concatMap[B](fn: A => Iterable[B]): Event[B] =
     Event.ConcatMapped(this, fn)
 
-  /**
-    * For each event, attach the timestamp it occurs at
-    */
+  /** For each event, attach the timestamp it occurs at */
   final def withTime: Event[(A, Timestamp)] =
     Event.WithTime(this, implicitly[(A, Timestamp) =:= (A, Timestamp)])
 
-  /**
-    * Merge two event streams together
-    */
+  /** Merge two event streams together */
   final def ++[A1 >: A](that: Event[A1]): Event[A1] =
     Event.Concat(this, that)
 
@@ -52,8 +65,7 @@ sealed abstract class Event[+A] {
   final def through[B](fn: Event.Pipe[A, B]): Event[B] =
     fn(this)
 
-  /** attach a key from the event
-    */
+  /** attach a key from the event */
   final def keyBy[K](fn: A => K): Event[(K, A)] =
     map(Event.KeyBy(fn))
 
@@ -84,13 +96,11 @@ object Event {
   implicit class InvariantEventMethods[A](private val self: Event[A])
       extends AnyVal {
 
-    /** shortcut for keyBy(fn).latest
-      */
+    /** shortcut for keyBy(fn).latest */
     def latestBy[K](fn: A => K): Feature[K, Option[A]] =
       self.keyBy(fn).latest
 
-    /** shortcut for keyBy(fn).sum
-      */
+    /** shortcut for keyBy(fn).sum */
     def sumBy[K](fn: A => K)(implicit m: Monoid[A]): Feature[K, A] =
       self.keyBy(fn).sum
   }
@@ -147,9 +157,7 @@ object Event {
         case (v, ts) => Option(TimeWindow.single[W, V](ts, v))
       }.sum
 
-    /**
-      * Compute a sum over a specific window of time.
-      */
+    /** Compute a sum over a specific window of time. */
     final def windowSum(
         dur: Duration
     )(implicit m: Monoid[V]): Feature[K, V] =
@@ -158,9 +166,7 @@ object Event {
         case Some(win) => win.combined
       }
 
-    /**
-      * Does a sum from "now" until W in the future
-      */
+    /** Does a sum from "now" until W in the future */
     final def sumForward(
         dur: Duration
     )(implicit m: Monoid[V]): Label[K, V] =
@@ -294,9 +300,7 @@ object Event {
       .getOrElse(Empty)
   }
 
-  /**
-    * return an event that just signals when the keys change
-    */
+  /** return an event that just signals when the keys change */
   def triggersOf[A](ev: Event[(A, Any)]): Event[(A, Unit)] =
     unitValues(triggersList(ev))
 
@@ -376,9 +380,7 @@ object Event {
 
 }
 
-/**
-  * A type to prevent "boolean blindness" to specify before or after ordering
-  */
+/** A type to prevent "boolean blindness" to specify before or after ordering */
 sealed abstract class LookupOrder(val isBefore: Boolean) {
   def isAfter: Boolean = !isBefore
 }

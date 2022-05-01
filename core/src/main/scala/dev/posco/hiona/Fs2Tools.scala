@@ -1,3 +1,19 @@
+/*
+ * Copyright 2022 devposco
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 package dev.posco.hiona
 
 import cats.Applicative
@@ -5,8 +21,8 @@ import cats.arrow.FunctionK
 import cats.collections.Heap
 import cats.effect.{Blocker, ContextShift, IO, LiftIO, Resource, Sync}
 import fs2.{Pipe, Pull, Stream}
-import java.nio.file.Path
 import java.io.{BufferedInputStream, FileInputStream, InputStream}
+import java.nio.file.Path
 import java.util.zip.GZIPInputStream
 
 import cats.implicits._
@@ -41,9 +57,7 @@ object Fs2Tools {
           .flatMap(Stream.chunk(_))
       }
 
-  /**
-    * Like write stream, but returns an empty stream that only represents the effect
-    */
+  /** Like write stream, but returns an empty stream that only represents the effect */
   def sinkStream[F[_]: Applicative, A](
       res: Resource[F, Iterator[A] => F[Unit]],
       chunkSize: Int = 1024
@@ -154,9 +168,7 @@ object Fs2Tools {
       closeAfterUse = true
     )
 
-  /**
-    * if the file ends with .gz, then use GZipInputStream to decode
-    */
+  /** if the file ends with .gz, then use GZipInputStream to decode */
   def openFile[F[_]: Sync](path: Path): F[InputStream] =
     Sync[F].delay {
       val fis = new FileInputStream(path.toFile)
