@@ -1,25 +1,40 @@
+/*
+ * Copyright 2022 devposco
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 package dev.posco.hiona.jobs
 
 import cats.Monoid
 import cats.effect.{IO, Resource}
-import cats.implicits._
 import com.monovore.decline.{Command, Opts}
 import dev.posco.hiona._
 import dev.posco.hiona.db.DBSupport
 import dev.posco.hiona.jobs.Featurize.{
-  exchange_rates_sql,
-  latestExchange,
-  valueInUSD,
   Currency,
   ExchangeCode,
-  Symbol
+  Symbol,
+  exchange_rates_sql,
+  latestExchange,
+  valueInUSD
 }
-import doobie.implicits._
 import doobie.util.fragment.Fragment
 
-/**
-  * Specify and evaluate a computation graph
-  */
+import cats.implicits._
+import doobie.implicits._
+
+/** Specify and evaluate a computation graph */
 object FinnhubDBCandle extends aws.DBS3CliApp {
 
   // TODO: maybe gain names that are suffixed target names (...+ '.gain' - can "_" become "."?)
@@ -127,9 +142,7 @@ object FinnhubDBCandle extends aws.DBS3CliApp {
 
   case class MetaFeatures(ts: Timestamp, symbol: Symbol, exchCode: ExchangeCode)
 
-  /**
-    * ZeroHistoryFeatures are independent of earlier values and are hence simple to compute
-    */
+  /** ZeroHistoryFeatures are independent of earlier values and are hence simple to compute */
   case class ZeroHistoryFeatures(
       minuteOfDay: Int,
       dayOfWeek: Int,
@@ -140,14 +153,10 @@ object FinnhubDBCandle extends aws.DBS3CliApp {
 
   case class Window10Values(turnoverUsd: Double, volume: Double)
 
-  /**
-    * A Target has the values that will be predicted
-    */
+  /** A Target has the values that will be predicted */
   case class Target(close: Double, volume: Double)
 
-  /**
-    * Bundles together all the Targets of the computation
-    */
+  /** Bundles together all the Targets of the computation */
   case class Targets(
       entryWindow: Window10Values,
       mins15: Target,
@@ -226,9 +235,7 @@ object FinnhubDBCandle extends aws.DBS3CliApp {
     val turnoverVol10Label: Label[Symbol, Window10Values] =
       Label(turnoverVol10Feature).lookForward(Duration.minutes(10L))
 
-    /**
-      * the stream of Result objects that will be output
-      */
+    /** the stream of Result objects that will be output */
     val labeled: LabeledEvent[Result] = {
       val ev: Event[
         (

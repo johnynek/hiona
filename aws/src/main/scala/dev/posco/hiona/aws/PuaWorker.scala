@@ -1,3 +1,19 @@
+/*
+ * Copyright 2022 devposco
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 package dev.posco.hiona.aws
 
 import cats.Applicative
@@ -5,22 +21,20 @@ import cats.effect.{IO, Timer}
 import com.amazonaws.services.lambda.runtime.Context
 import doobie.ConnectionIO
 import io.circe.{Encoder, Json}
-import org.postgresql.util.PSQLException
 import java.sql.SQLTransientException
+import org.postgresql.util.PSQLException
 import scala.concurrent.duration.FiniteDuration
 
-import io.circe.syntax._
 import cats.implicits._
+import io.circe.syntax._
 
-import PuaAws.Call
-import PuaAws.Or
 import PuaAws.Action._
+import PuaAws.Call
 import PuaAws.Call.{empty => emptyCall, notifications}
+import PuaAws.Or
 import PuaWorker.State
 
-/**
-  * This represents the Lambda that manages the DB state for Pua
-  */
+/** This represents the Lambda that manages the DB state for Pua */
 abstract class PuaWorker
     extends PureLambda[PuaWorker.State, PuaAws.Action, Json] {
 
@@ -42,7 +56,7 @@ abstract class PuaWorker
             _ <- dbControl.removeWaiter(tc)
           } yield notifications(calls)
         case None =>
-          //println(s"$tc could not read")
+          // println(s"$tc could not read")
           // we have to wait and callback.
           dbControl
             .addWaiter(
@@ -54,8 +68,7 @@ abstract class PuaWorker
   }
 
   /**
-    *
-   * if the slot isn't complete, wait, else fire off the given callback
+    * if the slot isn't complete, wait, else fire off the given callback
     * we can't hold the transaction while we are blocking on the call here
     * in the future, we could set up possibly an alias to configure async
     * calls to the target, but that seems to change the calling semantics,
@@ -81,7 +94,7 @@ abstract class PuaWorker
             _ <- st.dbControl.removeWaiter(tc)
           } yield notifications(calls)
         case None =>
-          //println(s"$tc could not read")
+          // println(s"$tc could not read")
           // we have to wait and callback.
           st.dbControl
             .addWaiter(tc, LambdaFunctionName(context.getInvokedFunctionArn()))
@@ -178,7 +191,7 @@ abstract class PuaWorker
 
           write <* dbControl.removeWaiter(ul)
         case None =>
-          //println(s"$ul could not read")
+          // println(s"$ul could not read")
           // we are not done, continue to wait
           dbControl
             .addWaiter(
@@ -190,7 +203,7 @@ abstract class PuaWorker
   }
 
   def run(action: PuaAws.Action, st: State, context: Context): IO[Json] = {
-    val rng = new java.util.Random(context.getAwsRequestId().hashCode)
+    val rng = new java.util.Random(context.getAwsRequestId().hashCode.toLong)
     val nextDouble: IO[Double] = IO(rng.nextDouble)
 
     def nextSleep(retry: Int): IO[Unit] =

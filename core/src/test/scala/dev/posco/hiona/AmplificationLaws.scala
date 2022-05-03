@@ -1,3 +1,19 @@
+/*
+ * Copyright 2022 devposco
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 package dev.posco.hiona
 
 import cats.Defer
@@ -67,7 +83,7 @@ class AmplificationLaws extends munit.ScalaCheckSuite {
     Prop.forAll(genAmplification, genWithBigInt, Gen.choose(0, Int.MaxValue)) {
       case (a0, (a1, b), c) =>
         (a0 + a1)(b) == (a0(b) || a1(b)) &&
-          (a0 + a1)(c) == (a0(c) || a1(c))
+        (a0 + a1)(c) == (a0(c) || a1(c))
     }
   }
 
@@ -88,8 +104,8 @@ class AmplificationLaws extends munit.ScalaCheckSuite {
 
     Prop.forAll(genAmplification) { a =>
       a.atMostOne == ((a == Amplification.Zero) ||
-      (a == Amplification.One) ||
-      (a == Amplification.ZeroOrOne))
+        (a == Amplification.One) ||
+        (a == Amplification.ZeroOrOne))
     }
   }
 

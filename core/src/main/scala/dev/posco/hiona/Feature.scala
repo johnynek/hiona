@@ -1,6 +1,23 @@
+/*
+ * Copyright 2022 devposco
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 package dev.posco.hiona
 
 import cats.Monoid
+
 import cats.implicits._
 
 /**
@@ -25,9 +42,7 @@ sealed abstract class Feature[K, V] {
   final def mapWithKeyTime[W](fn: (K, V, Timestamp) => W): Feature[K, W] =
     Feature.Mapped(this, fn)
 
-  /**
-    * get an event each time this feature changes value.
-    */
+  /** get an event each time this feature changes value. */
   final def triggers: Event[(K, Unit)] =
     Feature.triggersOf(this)
 
@@ -63,15 +78,11 @@ object Feature {
     def apply(k: K, a: Any, ts: Any): V = fn(k)
   }
 
-  /**
-    * A Feature that always has a single value
-    */
+  /** A Feature that always has a single value */
   def const[K, V](v: V): Feature[K, V] =
     fromFn(ConstFn(v))
 
-  /**
-    * Built a feature purely from a function of the key and timestamp
-    */
+  /** Built a feature purely from a function of the key and timestamp */
   def fromFnWithTime[K, V](fn: (K, Timestamp) => V): Feature[K, V] =
     Event.empty[(K, Unit)].sum.mapWithKeyTime(KeyTimeMapFn(fn))
 

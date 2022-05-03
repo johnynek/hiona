@@ -1,8 +1,25 @@
+/*
+ * Copyright 2022 devposco
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 package dev.posco.hiona.db
 
 import cats.{MonadError, Monoid}
 import dev.posco.hiona._
 import doobie._
+
 import doobie.implicits._
 
 object DBSupport {
@@ -43,10 +60,10 @@ object DBSupport {
     * parameter type fixes A, then for query we can infer A. This is
     * useful because the query is generally made with sql"...".query
     *
-   * Note, we fix the Query0[A] type rather than accepting a doobie.Fragment
+    * Note, we fix the Query0[A] type rather than accepting a doobie.Fragment
     * to encourage safer reuse of queries (since Fragments are untyped).
     *
-   * Finally, doobie logging for an SQL query is controlled by
+    * Finally, doobie logging for an SQL query is controlled by
     * doobie.util.log.LogHandler at the call-site of .query on the fragment
     * By accepting the Query here, we make it clear the logging is controlled
     * outside of this call (in the user code that sets up the source).

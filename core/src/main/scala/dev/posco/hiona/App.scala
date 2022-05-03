@@ -1,3 +1,19 @@
+/*
+ * Copyright 2022 devposco
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 package dev.posco.hiona
 
 import cats.Semigroupal
@@ -230,7 +246,7 @@ abstract class GenApp { self =>
       val limitFn = limit match {
         case Some(i) =>
           new FunctionK[StreamRes, StreamRes] {
-            def apply[A](s: Stream[IO, (Timestamp, A)]) = s.take(i)
+            def apply[A](s: Stream[IO, (Timestamp, A)]) = s.take(i.toLong)
           }
         case None =>
           FunctionK.id[StreamRes]
@@ -255,9 +271,10 @@ abstract class GenApp { self =>
     new Argument[Duration] {
       def defaultMetavar = "duration"
       def read(s: String): ValidatedNel[String, Duration] =
-        try Validated.valid(
-          Duration(scala.concurrent.duration.Duration(s).toMillis)
-        )
+        try
+          Validated.valid(
+            Duration(scala.concurrent.duration.Duration(s).toMillis)
+          )
         catch {
           case (_: NumberFormatException) =>
             Validated.invalidNel(
@@ -476,9 +493,9 @@ abstract class GenApp { self =>
       }
 
       val both = s1.zip(s2)
-      val bothLimit = limitIn.fold(both)(both.take(_)).zipWithIndex
+      val bothLimit = limitIn.fold(both)(l => both.take(l.toLong)).zipWithIndex
       val diffs = bothLimit.filter { case ((a, b), _) => a != b }
-      val diffLimit = limit.fold(diffs)(diffs.take(_))
+      val diffLimit = limit.fold(diffs)(l => diffs.take(l.toLong))
 
       import com.softwaremill.diffx.{ConsoleColorConfig => CCC}
       implicit val cc = output match {

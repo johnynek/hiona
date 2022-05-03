@@ -1,25 +1,30 @@
+/*
+ * Copyright 2022 devposco
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 package dev.posco.hiona.aws
 
-import cats.{Monad, MonadError}
 import cats.effect.{Blocker, ContextShift, IO, Resource}
+import cats.{Monad, MonadError}
 import doobie._
 import io.circe.{Decoder, Encoder, Json}
 
 import cats.implicits._
 import doobie.implicits._
 
-/*
- * uncomment this to turn on logging (but this
- * may be the wrong place now, sorry... I don't
- * )
-object ImpLog {
-  implicit val han = doobie.util.log.LogHandler.jdkLogHandler
-}
-
-import ImpLog.han
- */
-
-import PuaAws.{Or, Error => Err}
+import PuaAws.{Error => Err, Or}
 
 class PostgresDBControl(transactor: Transactor[IO]) extends DBControl {
 
@@ -121,11 +126,11 @@ class PostgresDBControl(transactor: Transactor[IO]) extends DBControl {
   ): ConnectionIO[Unit] =
     act.waitId match {
       case Some(_) =>
-        //println(s"$act already in the table")
+        // println(s"$act already in the table")
         // already in the table
         Monad[ConnectionIO].unit
       case None =>
-        //println(s"$act needs to be added in the table")
+        // println(s"$act needs to be added in the table")
         val empty = ""
         val name = function.asString
         for {
@@ -133,7 +138,7 @@ class PostgresDBControl(transactor: Transactor[IO]) extends DBControl {
             sql"""insert into waiters (function_name, function_arg) values ($name, $empty)""".update
               .withUniqueGeneratedKeys[Long]("waitid")
           actWithId = act.withWaitId(waitId)
-          //_ = println(s"now with id: $actWithId")
+          // _ = println(s"now with id: $actWithId")
           json = Encoder[PuaAws.Action].apply(actWithId).noSpaces
           _ <-
             sql"""update waiters set function_arg = $json where waitid = $waitId""".update.run
@@ -161,7 +166,7 @@ class PostgresDBControl(transactor: Transactor[IO]) extends DBControl {
       slotId: Long,
       result: Or[Err, Json]
   ): ConnectionIO[List[(LambdaFunctionName, Json)]] = {
-    //println(s"completeSlot($slotId, $result)")
+    // println(s"completeSlot($slotId, $result)")
     val updateSlot: ConnectionIO[Unit] =
       result match {
         case Or.First(json) =>
