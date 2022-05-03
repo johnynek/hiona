@@ -107,7 +107,7 @@ object FinnhubTicks {
       Ordering.by { cw: CandleWindow[W] => (cw.endTimestamp, cw.volume) }
   }
 
-  val src: Event.Source[Tick] = Event.source[Tick](
+  val src: Event.Source[Tick] = Event.csvSource[Tick](
     "finnhub.stock_ticks",
     Validator.pure[Tick](_.timestamp)
   )

@@ -28,13 +28,13 @@ object ExampleDBJob extends aws.DBS3CliApp {
 
   case class Candle(_symbol: String, timestamp: String, open: String)
 
-  val src: Event.Source[Candle] = Event.source[Candle](
+  val src: Event.Source[Candle] = Event.csvSource[Candle](
     "finnhub.stock_candles",
     Validator.fromEpochSecondsStr(_.timestamp)
   )
 
   val valueInUSD: Event.Source[CurrencyExchange] =
-    Event.source[CurrencyExchange](
+    Event.csvSource[CurrencyExchange](
       "finnhub.exchange_rates",
       Validator.pure(ce => Timestamp(ce.timestamp_epoch_millis))
     )

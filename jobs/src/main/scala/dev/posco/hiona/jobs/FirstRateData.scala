@@ -177,7 +177,7 @@ object FirstRateData {
       Validator.pure[Output](_.candleEndExclusiveMs)
 
     val src: Event.Source[FirstRateData.Output] =
-      Event.source("first_rate_data_1min", validator)
+      Event.csvSource("first_rate_data_1min", validator)
   }
 
   def parseInput[F[_]](implicit

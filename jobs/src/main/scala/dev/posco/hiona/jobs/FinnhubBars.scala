@@ -44,7 +44,7 @@ object FinnhubBars {
     Validator.pure[Bar](b => Timestamp(b.timestampSeconds * 1000L))
 
   val src: Event.Source[Bar] =
-    Event.source("finnhub_bar", v)
+    Event.csvSource("finnhub_bar", v)
 
   val latestBar: Feature[Symbol, Option[Bar]] =
     src.latestBy(_.symbol)

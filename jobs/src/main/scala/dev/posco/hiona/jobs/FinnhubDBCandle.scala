@@ -288,7 +288,7 @@ object FinnhubDBCandle extends aws.DBS3CliApp {
     }
   }
 
-  val src: Event.Source[Candle] = Event.source[Candle](
+  val src: Event.Source[Candle] = Event.csvSource[Candle](
     "finnhub.stock_candles",
     Validator.pure(candle => Timestamp(candle.candleEndEpochMillis))
   )

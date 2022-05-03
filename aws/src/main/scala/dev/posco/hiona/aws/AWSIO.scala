@@ -21,9 +21,8 @@ import cats.effect.concurrent.Ref
 import cats.effect.{Blocker, ContextShift, IO, Resource, Sync}
 import com.amazonaws.services.s3
 import com.amazonaws.services.s3.model.GetObjectRequest
-import dev.posco.hiona.{Row, PipeCodec}
+import dev.posco.hiona.{PipeCodec, Row}
 import fs2.Stream
-
 import java.io.{BufferedInputStream, InputStream, OutputStream}
 import java.nio.file.Path
 import java.util.zip.{GZIPInputStream, GZIPOutputStream}
@@ -166,7 +165,7 @@ final class AWSIO(s3client: s3.AmazonS3) {
       case (_, os) =>
         for {
           pw <- Row.toPrintWriter(os)
-          wfn <- Resource.liftF(codec.writer(pw))
+          wfn <- Resource.liftF(codec.encode(pw))
         } yield wfn
     }
 

@@ -160,9 +160,11 @@ object InputFactory {
       ev: Event.Source[T],
       path: Path,
       blocker: Blocker
-  ): InputFactory[F] = {
-    fromStream(ev, Fs2Tools.fromPath[F](path, 1 << 16, blocker).through(ev.codec.pipe))
-  }
+  ): InputFactory[F] =
+    fromStream(
+      ev,
+      Fs2Tools.fromPath[F](path, 1 << 16, blocker).through(ev.codec.decode)
+    )
 
   def fromStream[F[_], T](ev: Event.Source[T], stream: Stream[F, T])(implicit
       ae: ApplicativeError[F, Throwable]

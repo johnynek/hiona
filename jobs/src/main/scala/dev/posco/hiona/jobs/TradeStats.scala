@@ -23,7 +23,14 @@ import cats.{Monoid, Order}
 import com.monovore.decline.{Argument, Command, Opts}
 import com.twitter.algebird.{Last, Max, Min, Moments}
 import dev.posco.hiona.aws.{AWSIO, S3Addr}
-import dev.posco.hiona.{Duration, Fs2Tools, Row, ShapelessMonoid, PipeCodec, Timestamp}
+import dev.posco.hiona.{
+  Duration,
+  Fs2Tools,
+  PipeCodec,
+  Row,
+  ShapelessMonoid,
+  Timestamp
+}
 import fs2.{Pull, Stream}
 import java.nio.file.Path
 

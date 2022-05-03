@@ -41,7 +41,7 @@ class EmitterTests extends munit.ScalaCheckSuite {
     Engine.run(in, ev).map(_._2).compile.toList
 
   test("basic map/event processing") {
-    val src = Event.source[(Long, Int)](
+    val src = Event.csvSource[(Long, Int)](
       "numsrc",
       new Validator[(Long, Int)] {
         def validate(v: (Long, Int)) = Right(Timestamp(v._1))
@@ -63,7 +63,7 @@ class EmitterTests extends munit.ScalaCheckSuite {
   }
 
   test("preLookup test") {
-    val src = Event.source[(Long, Int)](
+    val src = Event.csvSource[(Long, Int)](
       "numsrc",
       new Validator[(Long, Int)] {
         def validate(v: (Long, Int)) = Right(Timestamp(v._1))
@@ -89,7 +89,7 @@ class EmitterTests extends munit.ScalaCheckSuite {
   }
 
   test("postLookup test") {
-    val src = Event.source[(Long, Int)](
+    val src = Event.csvSource[(Long, Int)](
       "numsrc",
       new Validator[(Long, Int)] {
         def validate(v: (Long, Int)) = Right(Timestamp(v._1))
@@ -115,7 +115,7 @@ class EmitterTests extends munit.ScalaCheckSuite {
   }
 
   test("simple LabeledEvent test") {
-    val src = Event.source[(Long, Int)](
+    val src = Event.csvSource[(Long, Int)](
       "numsrc",
       new Validator[(Long, Int)] {
         def validate(v: (Long, Int)) = Right(Timestamp(v._1))
@@ -149,7 +149,7 @@ class EmitterTests extends munit.ScalaCheckSuite {
   }
 
   test("simple zipped LabeledEvent test") {
-    val src = Event.source[(Long, Int)](
+    val src = Event.csvSource[(Long, Int)](
       "numsrc",
       new Validator[(Long, Int)] {
         def validate(v: (Long, Int)) = Right(Timestamp(v._1))

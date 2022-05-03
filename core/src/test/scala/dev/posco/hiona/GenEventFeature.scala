@@ -568,7 +568,7 @@ object GenEventFeature {
     for {
       name <- genNewName(genName)
       validator <- lift(validatorFor(t1))
-      src: Event.Source[t1.Type] = Event.source[t1.Type](name, validator)(
+      src: Event.Source[t1.Type] = Event.csvSource[t1.Type](name, validator)(
         t1.evidence.row
       )
       _ <- addSource[t1.Type](t1.evidence.result, src)

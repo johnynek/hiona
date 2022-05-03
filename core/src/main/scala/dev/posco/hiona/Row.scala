@@ -16,7 +16,7 @@
 
 package dev.posco.hiona
 
-import cats.effect.{Blocker, ContextShift, IO, Resource, Sync}
+import cats.effect.{IO, Resource}
 import fs2.{Chunk, Pipe, Pull, RaiseThrowable, Stream}
 import java.io.{
   BufferedWriter,

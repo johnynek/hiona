@@ -45,7 +45,7 @@ object Featurize {
   }
 
   val valueInUSD: Event.Source[CurrencyExchange] =
-    Event.source[CurrencyExchange](
+    Event.csvSource[CurrencyExchange](
       "finnhub.exchange_rates",
       Validator.pure(ce => Timestamp(ce.timestamp_epoch_millis))
     )

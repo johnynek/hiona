@@ -67,13 +67,13 @@ object App extends GenApp {
   ): Stream[IO, A] =
     Fs2Tools
       .fromPath[IO](input, 1 << 16, blocker)
-      .through(codec.pipe)
+      .through(codec.decode)
 
   override def sink[A](
       output: Path,
       codec: PipeCodec[A]
   ): Pipe[IO, A, Nothing] =
-    Fs2Tools.sinkStream(codec.writer(output))
+    Fs2Tools.sinkStream(codec.encode(output))
 }
 
 sealed abstract class Output {
@@ -482,8 +482,10 @@ abstract class GenApp { self =>
 
       val row: Row[args.Type] = args.row
       val decoder = PipeCodec.csv[args.Type]()(row)
-      val s1: Stream[IO, args.Type] = read(input1, decoder, blocker).through(pipe)
-      val s2: Stream[IO, args.Type] = read(input2, decoder, blocker).through(pipe)
+      val s1: Stream[IO, args.Type] =
+        read(input1, decoder, blocker).through(pipe)
+      val s2: Stream[IO, args.Type] =
+        read(input2, decoder, blocker).through(pipe)
 
       def toList[A](a: A, row: Row[A]): List[String] = {
         val ary = new Array[String](row.columns)

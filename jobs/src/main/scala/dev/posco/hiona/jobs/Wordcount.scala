@@ -23,7 +23,8 @@ import cats.implicits._
 object Wordcount {
   case class Data(word: String, ts: Timestamp)
 
-  val ev: Event.Source[Data] = Event.source("data", Validator.pure[Data](_.ts))
+  val ev: Event.Source[Data] =
+    Event.csvSource("data", Validator.pure[Data](_.ts))
 
   val countFeature: Feature[String, Long] = ev.map(d => (d.word, 1L)).sum
 

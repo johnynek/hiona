@@ -35,7 +35,7 @@ class EngineBenchmars {
   var strs: Vector[(String, Int)] = Vector.empty
 
   val strsSrc: Event.Source[(String, Int)] =
-    Event.source(
+    Event.csvSource(
       "strs",
       Validator.pure { case (_, ts) => Timestamp(ts.toLong) }
     )

@@ -138,11 +138,11 @@ class S3App extends GenApp {
     }
 
   def read[A](input: S3Addr, codec: PipeCodec[A], blocker: Blocker)(implicit
-                                                                    ctx: ContextShift[IO]
+      ctx: ContextShift[IO]
   ): fs2.Stream[IO, A] =
     awsIO
       .readStream[IO](input, 1 << 16, blocker)
-      .through(codec.pipe)
+      .through(codec.decode)
 
   def inputFactory[E[_]: Emittable, A](
       inputs: Iterable[(String, S3Addr)],
