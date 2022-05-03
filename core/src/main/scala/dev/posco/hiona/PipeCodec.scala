@@ -39,7 +39,8 @@ final class CsvCodec[A: Row](skipHeader: Boolean) extends PipeCodec[A] {
     fs2.text.utf8Decode andThen
       Row.decodeFromCSV[F, A](implicitly[Row[A]], skipHeader)
 
-  override def encode(pw: PrintWriter): IO[Iterator[A] => IO[Unit]] = Row.writer(pw)
+  override def encode(pw: PrintWriter): IO[Iterator[A] => IO[Unit]] =
+    Row.writer(pw)
 
   override def encode(output: Path): Resource[IO, Iterator[A] => IO[Unit]] =
     Row
