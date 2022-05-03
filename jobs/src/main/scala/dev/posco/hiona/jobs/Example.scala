@@ -77,14 +77,14 @@ object Example {
     )
 
   val hkStockData: Event.Source[StockData] =
-    Event.source("hk-stocks", dateValidator)
+    Event.csvSource("hk-stocks", dateValidator)
 
   val barEndSrc: Event.Source[StockData] = {
     // to signal the end of bars we emit timestamps 1 ms after the end
     // of a bar, so we know for sure that the bar would have been seen if it exists
     val barEndValidator: Validator[StockData] =
       dateValidator.shiftLater(Duration.millisecond)
-    Event.source("bar-end", barEndValidator)
+    Event.csvSource("bar-end", barEndValidator)
   }
 
   // all symbols we have ever seen

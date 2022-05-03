@@ -20,11 +20,13 @@ import cats.ApplicativeError
 import cats.data.NonEmptyList
 import cats.effect.{Blocker, ContextShift, ExitCode, IO, IOApp, Resource}
 import com.monovore.decline.{Command, Opts}
+import dev.posco.hiona.SeqPartitioner.{Partitioner, Writer}
 import dev.posco.hiona.aws.{AWSIO, S3Addr}
 import dev.posco.hiona.{
   Duration,
   Event,
   Fs2Tools,
+  PipeCodec,
   Row,
   SeqPartitioner,
   Timestamp,
@@ -40,8 +42,6 @@ import org.slf4j.LoggerFactory
 import scala.util.Try
 
 import cats.implicits._
-
-import SeqPartitioner.{Partitioner, Writer}
 
 object FirstRateData {
 
@@ -177,7 +177,7 @@ object FirstRateData {
       Validator.pure[Output](_.candleEndExclusiveMs)
 
     val src: Event.Source[FirstRateData.Output] =
-      Event.source("first_rate_data_1min", validator)
+      Event.csvSource("first_rate_data_1min", validator)
   }
 
   def parseInput[F[_]](implicit
@@ -268,7 +268,7 @@ object FirstRateData {
     val partRes = { parts: List[String] =>
       val fullKey = parts.foldLeft(base)(_ / _) / "candle1min.csv.gz"
 
-      awsIO.multiPartOutput(fullKey, implicitly[Row[Output]])
+      awsIO.multiPartOutput(fullKey, PipeCodec.csv[Output]())
     }
 
     frdPart(partRes)

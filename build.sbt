@@ -119,6 +119,7 @@ lazy val core = project
       diffx,
       fs2,
       fs2io,
+      circeFs2,
       shapeless,
       slf4jApi
     ),

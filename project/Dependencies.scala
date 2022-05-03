@@ -27,6 +27,7 @@ object Dependencies {
   lazy val circeGeneric = "io.circe" %% "circe-generic" % V.circe
   lazy val circeJawn = "io.circe" %% "circe-jawn" % V.circe
   lazy val circeParser = "io.circe" %% "circe-parser" % V.circe
+  lazy val circeFs2 = "io.circe" %% "circe-fs2" % V.circe
   lazy val commonsCodec = "commons-codec" % "commons-codec" % "1.14"
   lazy val decline = "com.monovore" %% "decline" % "1.0.0"
   lazy val delimited = "net.tixxit" %% "delimited-core" % "0.10.0"

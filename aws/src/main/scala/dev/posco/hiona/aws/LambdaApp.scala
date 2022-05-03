@@ -137,13 +137,12 @@ class S3App extends GenApp {
         }
     }
 
-  def read[A](input: S3Addr, row: Row[A], blocker: Blocker)(implicit
+  def read[A](input: S3Addr, codec: PipeCodec[A], blocker: Blocker)(implicit
       ctx: ContextShift[IO]
   ): fs2.Stream[IO, A] =
     awsIO
       .readStream[IO](input, 1 << 16, blocker)
-      .through(fs2.text.utf8Decode)
-      .through(Row.decodeFromCSV[IO, A](row, skipHeader = true))
+      .through(codec.decode)
 
   def inputFactory[E[_]: Emittable, A](
       inputs: Iterable[(String, S3Addr)],
@@ -153,16 +152,16 @@ class S3App extends GenApp {
     Resource.pure[IO, InputFactory[IO]](InputFactory.fromMany(inputs, e) {
       (src, s3path) =>
         def go[T](src: Event.Source[T]) =
-          InputFactory.fromStream[IO, T](src, read(s3path, src.row, blocker))
+          InputFactory.fromStream[IO, T](src, read(s3path, src.codec, blocker))
 
         go(src)
     })
 
-  def sink[A](
+  override def sink[A](
       output: S3Addr,
-      row: Row[A]
+      codec: PipeCodec[A]
   ): fs2.Pipe[IO, A, Nothing] =
-    Fs2Tools.sinkStream(awsIO.multiPartOutput(output, row))
+    Fs2Tools.sinkStream(awsIO.multiPartOutput(output, codec))
 }
 
 abstract class DBS3App extends S3App {

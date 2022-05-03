@@ -153,18 +153,18 @@ object InputFactory {
       blocker: Blocker
   ): InputFactory[F] =
     fromMany[F, E, A, Path](paths, ev) { (ev0, path) =>
-      fromPath(ev0, path, blocker, skipHeader = true)
+      fromPath(ev0, path, blocker)
     }
 
   def fromPath[F[_]: Sync: ContextShift, T](
       ev: Event.Source[T],
       path: Path,
-      blocker: Blocker,
-      skipHeader: Boolean = true
-  ): InputFactory[F] = {
-    implicit val ir = ev.row
-    fromStream(ev, Row.csvToStream[F, T](path, skipHeader, blocker))
-  }
+      blocker: Blocker
+  ): InputFactory[F] =
+    fromStream(
+      ev,
+      Fs2Tools.fromPath[F](path, 1 << 16, blocker).through(ev.codec.decode)
+    )
 
   def fromStream[F[_], T](ev: Event.Source[T], stream: Stream[F, T])(implicit
       ae: ApplicativeError[F, Throwable]
