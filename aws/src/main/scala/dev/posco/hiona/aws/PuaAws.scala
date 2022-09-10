@@ -1,3 +1,19 @@
+/*
+ * Copyright 2022 devposco
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 package dev.posco.hiona.aws
 
 import cats.data.{NonEmptyList, WriterT}
@@ -67,7 +83,7 @@ class PuaAws(
       .dbCall(PuaAws.Action.AllocSlots(slots))
 
   def pollSlot[A: Decoder](slotId: Long): IO[Option[A]] =
-    //println(s"in pollSlot($slotId)")
+    // println(s"in pollSlot($slotId)")
     invoke
       .dbCall(PuaAws.Action.ReadSlot(slotId))
       // .attempt
@@ -94,7 +110,7 @@ class PuaAws(
 
     val buildSlots = start(popt)
 
-    //println(s"pua = ${pua.asJson.spaces4}\n\n")
+    // println(s"pua = ${pua.asJson.spaces4}\n\n")
 
     { a: A =>
       val ajson = a.asJson
@@ -103,12 +119,12 @@ class PuaAws(
 
       for {
         (fn, slot) <- allSlots.run(doAllocation)
-        //_ = println(s"writing $slot = ${ajson.toString.take(30)}...")
+        // _ = println(s"writing $slot = ${ajson.toString.take(30)}...")
         (calls, resSlot) <- fn(slot).run
         // the following can race, due to handleCall being async
         _ <- calls.toList.traverse_(invoke.handleCall)
         _ <- completeSlot(slot, ajson)
-        //_ = println(s"result slot = $resSlot")
+        // _ = println(s"result slot = $resSlot")
       } yield resSlot
     }
   }
@@ -125,7 +141,7 @@ class PuaAws(
             .flatMap {
               case Some(b) => IO.pure(b)
               case None    =>
-                //println(s"$slotId not ready yet")
+                // println(s"$slotId not ready yet")
                 timer.sleep(poll) *> recur
             }
         }

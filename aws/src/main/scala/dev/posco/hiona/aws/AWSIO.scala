@@ -1,11 +1,27 @@
+/*
+ * Copyright 2022 devposco
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 package dev.posco.hiona.aws
 
 import alex.mojaki.s3upload.StreamTransferManager
-import cats.effect.{Blocker, ContextShift, IO, Resource, Sync}
 import cats.effect.concurrent.Ref
+import cats.effect.{Blocker, ContextShift, IO, Resource, Sync}
 import com.amazonaws.services.s3
 import com.amazonaws.services.s3.model.GetObjectRequest
-import dev.posco.hiona.Row
+import dev.posco.hiona.{PipeCodec, Row}
 import fs2.Stream
 import java.io.{BufferedInputStream, InputStream, OutputStream}
 import java.nio.file.Path
@@ -112,7 +128,7 @@ final class AWSIO(s3client: s3.AmazonS3) {
     */
   def multiPartOutput[A](
       s3Addr: S3Addr,
-      row: Row[A]
+      codec: PipeCodec[A]
   ): Resource[IO, Iterator[A] => IO[Unit]] = {
     val mos = IO {
       val m = new StreamTransferManager(s3Addr.bucket, s3Addr.key, s3client)
@@ -149,7 +165,7 @@ final class AWSIO(s3client: s3.AmazonS3) {
       case (_, os) =>
         for {
           pw <- Row.toPrintWriter(os)
-          wfn <- Resource.liftF(Row.writer(pw)(row))
+          wfn <- Resource.liftF(codec.encode(pw))
         } yield wfn
     }
 

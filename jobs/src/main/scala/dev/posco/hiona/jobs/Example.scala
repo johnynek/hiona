@@ -1,10 +1,26 @@
+/*
+ * Copyright 2022 devposco
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 package dev.posco.hiona.jobs
 
-import dev.posco.hiona._
-
-import java.util.{Calendar, TimeZone}
-import cats.implicits._
 import cats.Monoid
+import dev.posco.hiona._
+import java.util.{Calendar, TimeZone}
+
+import cats.implicits._
 
 object Example {
 
@@ -61,14 +77,14 @@ object Example {
     )
 
   val hkStockData: Event.Source[StockData] =
-    Event.source("hk-stocks", dateValidator)
+    Event.csvSource("hk-stocks", dateValidator)
 
   val barEndSrc: Event.Source[StockData] = {
     // to signal the end of bars we emit timestamps 1 ms after the end
     // of a bar, so we know for sure that the bar would have been seen if it exists
     val barEndValidator: Validator[StockData] =
       dateValidator.shiftLater(Duration.millisecond)
-    Event.source("bar-end", barEndValidator)
+    Event.csvSource("bar-end", barEndValidator)
   }
 
   // all symbols we have ever seen

@@ -1,6 +1,22 @@
+/*
+ * Copyright 2022 devposco
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 package dev.posco.hiona
 
-import cats.effect.{Blocker, ContextShift, IO, Resource, Sync}
+import cats.effect.{IO, Resource}
 import fs2.{Chunk, Pipe, Pull, RaiseThrowable, Stream}
 import java.io.{
   BufferedWriter,
@@ -10,23 +26,22 @@ import java.io.{
   PrintWriter
 }
 import java.nio.file.Path
+import java.util.zip.GZIPOutputStream
 import net.tixxit.delimited.{
   DelimitedError,
   DelimitedFormat,
   DelimitedParser,
   Row => DRow
 }
-import java.util.zip.GZIPOutputStream
 import scala.collection.mutable.ArrayBuffer
-
 import shapeless._
 
 import cats.implicits._
 
 /**
-  * typeclass for value A that are not allowed to have all empty strings
-  * as values, and an efficient check to see if we are in the empty case
-  * This exists to support optional values
+  * typeclass for value A that are not allowed to have all empty strings as
+  * values, and an efficient check to see if we are in the empty case This
+  * exists to support optional values
   */
 sealed trait NonEmptyRow[A] {
   def columns: Int
@@ -121,16 +136,16 @@ sealed trait Priority2NonEmptyRow {
 }
 
 /**
-  * This is the typeclass-pattern which gives a serializer/deserializer for a type A
-  * into and out of an Array[Strings]. This will be encoded into a CSV (or potentially TSV if we
-  * needed, but that is currently not implemented)
+  * This is the typeclass-pattern which gives a serializer/deserializer for a
+  * type A into and out of an Array[Strings]. This will be encoded into a CSV
+  * (or potentially TSV if we needed, but that is currently not implemented)
   */
 sealed trait Row[A] {
   // how many columns do we need to write A out
   def columns: Int
   // the names of the columns. should be the same length as columns
   def columnNames(offset: Int): List[String]
-  //(offset until (offset + columns)).map { c => s"_$c" }.toList
+  // (offset until (offset + columns)).map { c => s"_$c" }.toList
   // this writes A into an Array starting at a given offset
   def writeToStrings(a: A, offset: Int, dest: Array[String]): Unit
   // read A from a net.tixxit.delimited.Row (which is a wrapper for Array[String].
@@ -278,10 +293,11 @@ object Row extends Priority0Rows {
   }
 
   /**
-    * Optional data must not be empty to begin with. That is true for numbers and booleans
-    * we could also support tuples/case-classes if needed, but currently that does not
-    * work, only Option[Int], Option[Long], ... will work (notably, Option[String] won't work
-    * since we can't tell Some("") from None).
+    * Optional data must not be empty to begin with. That is true for numbers
+    * and booleans we could also support tuples/case-classes if needed, but
+    * currently that does not work, only Option[Int], Option[Long], ... will
+    * work (notably, Option[String] won't work since we can't tell Some("") from
+    * None).
     */
   implicit def optionRow[A](implicit
       rowA: Row[A],
@@ -289,9 +305,7 @@ object Row extends Priority0Rows {
   ): Row[Option[A]] =
     OptionRow(rowA, ner)
 
-  /**
-    * create a temp path that can be used while the resource is active
-    */
+  /** create a temp path that can be used while the resource is active */
   def tempPath(prefix: String, suffix: String): Resource[IO, Path] =
     Resource
       .make(IO {
@@ -314,8 +328,8 @@ object Row extends Priority0Rows {
     }(pw => IO(pw.close()))
 
   /**
-    * Helper function to make a Resource for a PrintWriter. The Resource
-    * will close the PrintWriter when done.
+    * Helper function to make a Resource for a PrintWriter. The Resource will
+    * close the PrintWriter when done.
     */
   def fileWriter(path: Path): Resource[IO, PrintWriter] =
     toPrintWriter {
@@ -329,16 +343,14 @@ object Row extends Priority0Rows {
       else fos
     }
 
-  /**
-    * Make a Resource for a function that can write out items into a given path
-    */
+  /** Make a Resource for a function that can write out items into a given path */
   def writerRes[A: Row](path: Path): Resource[IO, Iterator[A] => IO[Unit]] =
     fileWriter(path)
       .flatMap(pw => Resource.liftF(writer[A](pw)))
 
   /**
-    * use a PrintWriter for an output function. This does not
-    * close the PrintWriter, that is the caller's responsibility
+    * use a PrintWriter for an output function. This does not close the
+    * PrintWriter, that is the caller's responsibility
     */
   def writer[A: Row](pw: PrintWriter): IO[Iterator[A] => IO[Unit]] = {
     val format = DelimitedFormat.CSV
@@ -415,9 +427,7 @@ object Row extends Priority0Rows {
     loop(input).stream
   }
 
-  /**
-    * convert csv data into type A
-    */
+  /** convert csv data into type A */
   def decodeFromCSV[F[_]: RaiseThrowable, A](
       row: Row[A],
       skipHeader: Boolean = true
@@ -499,16 +509,6 @@ object Row extends Priority0Rows {
 
     { strings => loop(dp, strings).stream }
   }
-
-  def csvToStream[F[_]: Sync: ContextShift, A: Row](
-      path: Path,
-      skipHeader: Boolean,
-      blocker: Blocker
-  ): Stream[F, A] =
-    Fs2Tools
-      .fromPath[F](path, 1 << 16, blocker)
-      .through(fs2.text.utf8Decode)
-      .through(decodeFromCSV[F, A](implicitly[Row[A]], skipHeader))
 
   case class Coproduct1Row[A](rowA: Row[A]) extends Row[A :+: CNil] {
     val columns = rowA.columns
@@ -736,9 +736,10 @@ sealed trait Priority0Rows extends Priority1Rows {
 }
 
 /**
-  * This is using the fact that scala prefers implicit values in the direct class to superclasses
-  * to prioritize which implicits we choose. Here we want to make instances of Row for genericRow and the hlist
-  * (heterogenous lists, which are basically tuples that can be any size).
+  * This is using the fact that scala prefers implicit values in the direct
+  * class to superclasses to prioritize which implicits we choose. Here we want
+  * to make instances of Row for genericRow and the hlist (heterogenous lists,
+  * which are basically tuples that can be any size).
   */
 sealed trait Priority1Rows extends Priority2Rows {
   implicit def hconsRow[A, B <: HList](implicit

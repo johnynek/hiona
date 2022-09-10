@@ -1,3 +1,19 @@
+/*
+ * Copyright 2022 devposco
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 package dev.posco.hiona.aws
 
 import cats.Defer
@@ -9,8 +25,8 @@ import doobie._
 import doobie.enum.TransactionIsolation.TransactionSerializable
 import io.circe.Json
 import org.scalacheck.Prop
-import scala.concurrent.duration.FiniteDuration
 import scala.concurrent.Await
+import scala.concurrent.duration.FiniteDuration
 
 import cats.implicits._
 import doobie.implicits._
@@ -38,7 +54,7 @@ object H2DBControl {
     val xa0 = Transactor.fromDriverManager[IO](
       classOf[org.h2.Driver].getName,
       "jdbc:h2:mem:test;DB_CLOSE_DELAY=-1;LOCK_MODE=1",
-      //"jdbc:h2:~/test;LOCK_MODE=1",
+      // "jdbc:h2:~/test;LOCK_MODE=1",
       "sa", // user
       "", // password
       blocker
@@ -85,7 +101,7 @@ object H2DBControl {
       Iterator
         .continually(rng.nextInt.toString)
         .dropWhile(nm => dir0.contains(LambdaFunctionName(nm)))
-        .next
+        .next()
 
     val dbLam = lambdaName()
     val callerLam = lambdaName()
@@ -163,7 +179,7 @@ object H2DBControl {
           new com.amazonaws.services.lambda.runtime.LambdaLogger {
             def log(str: Array[Byte]): Unit =
               () // println(new String(str, "UTF-8"))
-            def log(str: String): Unit = () //println(str)
+            def log(str: String): Unit = () // println(str)
           }
         def getMemoryLimitInMB(): Int = ???
         def getRemainingTimeInMillis(): Int = ???
@@ -206,12 +222,11 @@ object H2DBControl {
     val setWorker = workerRef.set(syncFn)
     val setCaller = callerRef.set { j: Json =>
       IO.fromEither(
-          j.as[Or[PuaAws.Action.CheckTimeouts.type, PuaAws.Call]]
-        )
-        .flatMap(
-          caller
-            .run(_, callerState, mockContext(callerLam))
-        )
+        j.as[Or[PuaAws.Action.CheckTimeouts.type, PuaAws.Call]]
+      ).flatMap(
+        caller
+          .run(_, callerState, mockContext(callerLam))
+      )
     }
 
     val doneRef = Ref.unsafe[IO, Boolean](false)

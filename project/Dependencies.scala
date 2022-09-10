@@ -13,11 +13,13 @@ object Dependencies {
 
   lazy val algebird = "com.twitter" %% "algebird-core" % "0.13.7"
   lazy val awsLambdaCore1 = "com.amazonaws" % "aws-lambda-java-core" % "1.2.0"
-  lazy val awsLambdaService = "com.amazonaws" % "aws-java-sdk-lambda" % "1.11.783"
+  lazy val awsLambdaService =
+    "com.amazonaws" % "aws-java-sdk-lambda" % "1.11.783"
   lazy val awsEcsService = "com.amazonaws" % "aws-java-sdk-ecs" % "1.11.809"
   lazy val awsEcrService = "com.amazonaws" % "aws-java-sdk-ecr" % "1.11.809"
   lazy val awsS3v1 = aws1 % "aws-java-sdk-s3" % "1.11.766"
-  lazy val awsSecretsManager = "com.amazonaws" % "aws-java-sdk-secretsmanager" % "1.11.774"
+  lazy val awsSecretsManager =
+    "com.amazonaws" % "aws-java-sdk-secretsmanager" % "1.11.774"
   lazy val cats = typelevel %% "cats-core" % "2.1.1"
   lazy val catsCollections = typelevel %% "cats-collections-core" % "0.9.0"
   lazy val catsEffect = typelevel %% "cats-effect" % "2.1.2"
@@ -25,6 +27,7 @@ object Dependencies {
   lazy val circeGeneric = "io.circe" %% "circe-generic" % V.circe
   lazy val circeJawn = "io.circe" %% "circe-jawn" % V.circe
   lazy val circeParser = "io.circe" %% "circe-parser" % V.circe
+  lazy val circeFs2 = "io.circe" %% "circe-fs2" % V.circe
   lazy val commonsCodec = "commons-codec" % "commons-codec" % "1.14"
   lazy val decline = "com.monovore" %% "decline" % "1.0.0"
   lazy val delimited = "net.tixxit" %% "delimited-core" % "0.10.0"

@@ -1,3 +1,19 @@
+/*
+ * Copyright 2022 devposco
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 package dev.posco.hiona
 
 import cats.Semigroupal
@@ -46,18 +62,18 @@ object App extends GenApp {
       InputFactory.fromPaths(inputs, e, blocker)
     )
 
-  def read[A](input: Ref, row: Row[A], blocker: Blocker)(implicit
-      ctx: ContextShift[IO]
-  ): Stream[IO, A] = {
-    implicit val ir = row
-    Row.csvToStream[IO, A](input, skipHeader = true, blocker)
-  }
+  override def read[A](input: Ref, codec: PipeCodec[A], blocker: Blocker)(
+      implicit ctx: ContextShift[IO]
+  ): Stream[IO, A] =
+    Fs2Tools
+      .fromPath[IO](input, 1 << 16, blocker)
+      .through(codec.decode)
 
-  def sink[A](
+  override def sink[A](
       output: Path,
-      row: Row[A]
+      codec: PipeCodec[A]
   ): Pipe[IO, A, Nothing] =
-    Fs2Tools.sinkStream(Row.writerRes[A](output)(row))
+    Fs2Tools.sinkStream(codec.encode(output))
 }
 
 sealed abstract class Output {
@@ -86,9 +102,9 @@ abstract class GenApp { self =>
   type Ref
   implicit def argumentForRef: Argument[Ref]
 
-  def sink[A](output: Ref, row: Row[A]): Pipe[IO, A, Nothing]
+  def sink[A](output: Ref, codec: PipeCodec[A]): Pipe[IO, A, Nothing]
 
-  def read[A](input: Ref, row: Row[A], blocker: Blocker)(implicit
+  def read[A](input: Ref, codec: PipeCodec[A], blocker: Blocker)(implicit
       ctx: ContextShift[IO]
   ): Stream[IO, A]
 
@@ -119,7 +135,7 @@ abstract class GenApp { self =>
   ): IO[Unit] =
     inputFactory(inputs, args.value, blocker)
       .use { input =>
-        val row: Row[args.Type] = args.row
+        val codec = PipeCodec.csv[args.Type]()(args.row)
 
         val stream: Stream[IO, (Timestamp, args.Type)] =
           Engine.run(input.through(pipe).through(onInput), args.value)
@@ -127,7 +143,7 @@ abstract class GenApp { self =>
         val result: Stream[IO, args.Type] =
           onOutput(stream.through(pipe)).map(_._2)
 
-        result.through(sink(output, row)).compile.drain
+        result.through(sink(output, codec)).compile.drain
       }
 
   implicit def named[A: Argument]: Argument[(String, A)] =
@@ -230,7 +246,7 @@ abstract class GenApp { self =>
       val limitFn = limit match {
         case Some(i) =>
           new FunctionK[StreamRes, StreamRes] {
-            def apply[A](s: Stream[IO, (Timestamp, A)]) = s.take(i)
+            def apply[A](s: Stream[IO, (Timestamp, A)]) = s.take(i.toLong)
           }
         case None =>
           FunctionK.id[StreamRes]
@@ -255,9 +271,10 @@ abstract class GenApp { self =>
     new Argument[Duration] {
       def defaultMetavar = "duration"
       def read(s: String): ValidatedNel[String, Duration] =
-        try Validated.valid(
-          Duration(scala.concurrent.duration.Duration(s).toMillis)
-        )
+        try
+          Validated.valid(
+            Duration(scala.concurrent.duration.Duration(s).toMillis)
+          )
         catch {
           case (_: NumberFormatException) =>
             Validated.invalidNel(
@@ -423,7 +440,7 @@ abstract class GenApp { self =>
                 case Point.Sourced(_, a, _, _) => a.asInstanceOf[A]
               }
               aitStream = Stream.fromIterator[IO](ait)
-              _ <- aitStream.through(sink(output, ev.row)).compile.drain
+              _ <- aitStream.through(sink(output, ev.codec)).compile.drain
             } yield ()
           }
       }
@@ -464,10 +481,11 @@ abstract class GenApp { self =>
     ): IO[ExitCode] = {
 
       val row: Row[args.Type] = args.row
+      val decoder = PipeCodec.csv[args.Type]()(row)
       val s1: Stream[IO, args.Type] =
-        read(input1, row, blocker).through(pipe)
+        read(input1, decoder, blocker).through(pipe)
       val s2: Stream[IO, args.Type] =
-        read(input2, row, blocker).through(pipe)
+        read(input2, decoder, blocker).through(pipe)
 
       def toList[A](a: A, row: Row[A]): List[String] = {
         val ary = new Array[String](row.columns)
@@ -476,9 +494,9 @@ abstract class GenApp { self =>
       }
 
       val both = s1.zip(s2)
-      val bothLimit = limitIn.fold(both)(both.take(_)).zipWithIndex
+      val bothLimit = limitIn.fold(both)(l => both.take(l.toLong)).zipWithIndex
       val diffs = bothLimit.filter { case ((a, b), _) => a != b }
-      val diffLimit = limit.fold(diffs)(diffs.take(_))
+      val diffLimit = limit.fold(diffs)(l => diffs.take(l.toLong))
 
       import com.softwaremill.diffx.{ConsoleColorConfig => CCC}
       implicit val cc = output match {
@@ -514,7 +532,7 @@ abstract class GenApp { self =>
       }
 
       val outPipe = output match {
-        case Some(path) => sink(path, implicitly[Row[String]])
+        case Some(path) => sink(path, PipeCodec.csv[String]())
         case None =>
           stream: Stream[IO, String] => stream.lines(System.out).drain
       }

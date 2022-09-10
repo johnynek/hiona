@@ -1,12 +1,26 @@
+/*
+ * Copyright 2022 devposco
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 package dev.posco.hiona.jobs
 
 import cats.Monoid
 import dev.posco.hiona._
 import dev.posco.hiona.jobs.Featurize._
 
-/**
-  * Consider FinnhubDBCandle instead
-  */
+/** Consider FinnhubDBCandle instead */
 object FinnhubBars {
   case class Bar(
       symbol: Symbol,
@@ -30,7 +44,7 @@ object FinnhubBars {
     Validator.pure[Bar](b => Timestamp(b.timestampSeconds * 1000L))
 
   val src: Event.Source[Bar] =
-    Event.source("finnhub_bar", v)
+    Event.csvSource("finnhub_bar", v)
 
   val latestBar: Feature[Symbol, Option[Bar]] =
     src.latestBy(_.symbol)

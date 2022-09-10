@@ -1,8 +1,23 @@
+/*
+ * Copyright 2022 devposco
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 package dev.posco.hiona.aws
 
 import cats.data.NonEmptyList
 import cats.effect.{Blocker, ContextShift, ExitCode, IO, IOApp, Resource}
-import com.amazonaws.services.ecs.{model, AmazonECS, AmazonECSClientBuilder}
 import com.amazonaws.services.ecs.model.{
   AwsVpcConfiguration,
   ContainerOverride,
@@ -11,12 +26,13 @@ import com.amazonaws.services.ecs.model.{
   RunTaskRequest,
   TaskOverride
 }
+import com.amazonaws.services.ecs.{AmazonECS, AmazonECSClientBuilder, model}
 import com.monovore.decline.{Command, Opts}
+import scala.jdk.CollectionConverters._
+
+import cats.implicits._
 
 import LambdaDeploy.Vpc
-
-import scala.jdk.CollectionConverters._
-import cats.implicits._
 
 final class ECSDeploy(ecs: AmazonECS, blocker: Blocker)(implicit
     contextShift: ContextShift[IO]

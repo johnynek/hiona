@@ -1,3 +1,19 @@
+/*
+ * Copyright 2022 devposco
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 package dev.posco.hiona
 
 import cats.ApplicativeError
@@ -137,18 +153,18 @@ object InputFactory {
       blocker: Blocker
   ): InputFactory[F] =
     fromMany[F, E, A, Path](paths, ev) { (ev0, path) =>
-      fromPath(ev0, path, blocker, skipHeader = true)
+      fromPath(ev0, path, blocker)
     }
 
   def fromPath[F[_]: Sync: ContextShift, T](
       ev: Event.Source[T],
       path: Path,
-      blocker: Blocker,
-      skipHeader: Boolean = true
-  ): InputFactory[F] = {
-    implicit val ir = ev.row
-    fromStream(ev, Row.csvToStream[F, T](path, skipHeader, blocker))
-  }
+      blocker: Blocker
+  ): InputFactory[F] =
+    fromStream(
+      ev,
+      Fs2Tools.fromPath[F](path, 1 << 16, blocker).through(ev.codec.decode)
+    )
 
   def fromStream[F[_], T](ev: Event.Source[T], stream: Stream[F, T])(implicit
       ae: ApplicativeError[F, Throwable]

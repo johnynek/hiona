@@ -1,34 +1,55 @@
+/*
+ * Copyright 2022 devposco
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 package dev.posco.hiona.jobs
 
-import cats.{Monoid, Order}
 import cats.collections.Heap
 import cats.data.{NonEmptyList, Validated, ValidatedNel}
 import cats.effect.{Blocker, ExitCode, IO, IOApp}
+import cats.{Monoid, Order}
 import com.monovore.decline.{Argument, Command, Opts}
 import com.twitter.algebird.{Last, Max, Min, Moments}
 import dev.posco.hiona.aws.{AWSIO, S3Addr}
-import dev.posco.hiona.{Duration, Fs2Tools, Row, ShapelessMonoid, Timestamp}
+import dev.posco.hiona.{
+  Duration,
+  Fs2Tools,
+  PipeCodec,
+  Row,
+  ShapelessMonoid,
+  Timestamp
+}
 import fs2.{Pull, Stream}
 import java.nio.file.Path
 
 import cats.implicits._
 
 /**
+  * To run this:
   *
- * To run this:
-  *
- * run:
+  * run:
   *   java -cp path/to/assembly.jar dev.posco.hiona.jobs.TradeStates
   *
- * this will print a help which gives the commands and required flags.
+  * this will print a help which gives the commands and required flags.
   *
- * As an example:
+  * As an example:
   *  aws s3 ls  --recursive  s3://predictionmachine-data/foresight/train_eval_sweeps/20200703T012002-585682 \
   *    | sed 's#.* #--input s3://predictionmachine-data/#' \
   *    | grep '.csv' \
   *    | xargs ./tradestats.sh balances --starting_balance 1500000 --threshold 0.8 --min_trade 1000
   *
- *
   *  where ./tradestats.sh is just:
   *  #!/bin/bash
   *  java -cp jobs/target/scala-2.13/hiona-jobs-assembly-0.1.0-SNAPSHOT.jar dev.posco.hiona.jobs.TradeStats "$@"
@@ -47,8 +68,7 @@ object TradeStats extends IOApp {
       StatRes(mean = m.mean, stddev = m.stddev)
   }
 
-  /** a row of output summarizing statistics for a particular model scoreThreshold
-    */
+  /** a row of output summarizing statistics for a particular model scoreThreshold */
   case class Output(
       scoreThreshold: Double,
       minTs: Timestamp,
@@ -101,12 +121,13 @@ object TradeStats extends IOApp {
     }
   }
 
-  /** This is the input describing type to read the CSV.
+  /**
+    * This is the input describing type to read the CSV.
     *
-   *  The name is meant to support versioning (maybe later we would make some files that had
+    *  The name is meant to support versioning (maybe later we would make some files that had
     *  different fields).
     *
-   * symbol,ts,dt_us_eastern,y_pred,gains,entry_turnover_usd,exit_turnover_usd,trade_usd,profit_usd
+    * symbol,ts,dt_us_eastern,y_pred,gains,entry_turnover_usd,exit_turnover_usd,trade_usd,profit_usd
     * RYTM   1585842000000 2020-04-02 11:40:00-04:00  0.614486  0.012195              134974             450094      13497    164.603481
     */
   case class Trade0(
@@ -153,7 +174,7 @@ object TradeStats extends IOApp {
   /**
     * This is a Pipe (a function from Stream to Stream) to compute a log of Transactions and Balances
     *
-   * We start with an initial Balance and a minimum amount we would trade and build up a stream
+    * We start with an initial Balance and a minimum amount we would trade and build up a stream
     * that has both transactions (Enter/EXit events) as well as Balance events
     */
   def buildBalances(
@@ -237,8 +258,10 @@ object TradeStats extends IOApp {
   object Input {
     sealed abstract class Input1 extends Input
     case class PathIn(path: Path) extends Input1 {
-      def getStream(blocker: Blocker): Stream[IO, Trade0] =
-        Row.csvToStream[IO, Trade0](path, skipHeader = true, blocker)
+      def getStream(blocker: Blocker): Stream[IO, Trade0] = {
+        implicit val codec = PipeCodec.csv[Trade0]()
+        PipeCodec.stream[IO, Trade0](path, blocker)
+      }
     }
 
     case class S3In(s3a: S3Addr) extends Input1 {

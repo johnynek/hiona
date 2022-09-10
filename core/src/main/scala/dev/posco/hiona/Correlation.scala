@@ -1,3 +1,19 @@
+/*
+ * Copyright 2022 devposco
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 package dev.posco.hiona
 
 import com.twitter.algebird.{Group, MonoidAggregator}
@@ -35,11 +51,11 @@ object Correlation {
     * Given two streams of doubles (weightN, an) and (weightK, ak) of form (weighted count,
     * mean), calculates the mean of the combined stream.
     *
-   * Uses a more stable online algorithm which should be suitable for
+    * Uses a more stable online algorithm which should be suitable for
     * large numbers of records similar to:
     * http://en.wikipedia.org/wiki/Algorithms_for_calculating_variance#Parallel_algorithm
     *
-   * This differs from the implementation in MomentsGroup.scala only in that here, the counts are weighted, and are
+    * This differs from the implementation in MomentsGroup.scala only in that here, the counts are weighted, and are
     * thus doubles instead of longs
     */
   def getCombinedMean(
@@ -66,11 +82,10 @@ object Correlation {
   * A class to calculate covariance and the first two central moments of a sequence of pairs of Doubles, from which the
   * pearson correlation coeifficient can be calculated.
   *
- * m{i}x denotes the ith central moment of the first projection of the pair.
+  * m{i}x denotes the ith central moment of the first projection of the pair.
   * m{i}y denotes the ith central moment of the second projection of the pair.
   * c2 the covariance equivalent of the second central moment, i.e. c2 = Sum_(x,y) (x - m1x)*(y - m1y).
-  *
- */
+  */
 case class Correlation(
     c2: Double,
     m2x: Double,
@@ -97,10 +112,7 @@ case class Correlation(
 
   def covariance: Double = c2 / totalWeight
 
-  /**
-    *
-   * @return Pearson's correlation coefficient
-    */
+  /** @return Pearson's correlation coefficient */
   def correlation: Double =
     // correlation is defined as: covariance / (varianceLeft * varianceRight)
     // however, dividing by "count" cancels out, and leaves us with the following formula, which relies on fewer
@@ -145,7 +157,7 @@ object CorrelationGroup extends Group[Correlation] {
     *   Technical Report SAND2008-6212, Sandia National Laboratories
     * https://prod-ng.sandia.gov/techlib-noauth/access-control.cgi/2008/086212.pdf
     *
-   * Extending this to weights can be found in
+    * Extending this to weights can be found in
     * Schubert, Erich; Gertz, Michael (9 July 2018). Numerically stable parallel computation of (co-)variance.
     *   ACM. p. 10. doi:10.1145/3221269.3223036. ISBN 9781450365055.
     *   http://dl.acm.org/citation.cfm?id=3221269.3223036

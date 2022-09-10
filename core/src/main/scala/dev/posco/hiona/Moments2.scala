@@ -1,10 +1,24 @@
+/*
+ * Copyright 2022 devposco
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 package dev.posco.hiona
 
 import cats.Monoid
 
-/**
-  * The first two moments computed in a stable way.
-  */
+/** The first two moments computed in a stable way. */
 final case class Moments2(count: Double, mean: Double, mom2: Double) {
   def +(that: Moments2): Moments2 = {
     val c1 = count + that.count
@@ -21,23 +35,17 @@ final case class Moments2(count: Double, mean: Double, mom2: Double) {
     }
   }
 
-  /**
-    * (v - mean) / stddev
-    */
+  /** (v - mean) / stddev */
   @inline def zscore(v: Double): Double = {
     val diff = v - mean
     if (diff == 0.0) 0.0
     else diff / stddev
   }
 
-  /**
-    * population variance (not sample)
-    */
+  /** population variance (not sample) */
   @inline def variance: Double = mom2 / count
 
-  /**
-    * population stddev (not sample)
-    */
+  /** population stddev (not sample) */
   @inline def stddev: Double = math.sqrt(variance)
 }
 

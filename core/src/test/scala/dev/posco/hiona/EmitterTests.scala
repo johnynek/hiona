@@ -1,3 +1,19 @@
+/*
+ * Copyright 2022 devposco
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 package dev.posco.hiona
 
 import cats.effect.{ContextShift, IO}
@@ -25,7 +41,7 @@ class EmitterTests extends munit.ScalaCheckSuite {
     Engine.run(in, ev).map(_._2).compile.toList
 
   test("basic map/event processing") {
-    val src = Event.source[(Long, Int)](
+    val src = Event.csvSource[(Long, Int)](
       "numsrc",
       new Validator[(Long, Int)] {
         def validate(v: (Long, Int)) = Right(Timestamp(v._1))
@@ -47,7 +63,7 @@ class EmitterTests extends munit.ScalaCheckSuite {
   }
 
   test("preLookup test") {
-    val src = Event.source[(Long, Int)](
+    val src = Event.csvSource[(Long, Int)](
       "numsrc",
       new Validator[(Long, Int)] {
         def validate(v: (Long, Int)) = Right(Timestamp(v._1))
@@ -73,7 +89,7 @@ class EmitterTests extends munit.ScalaCheckSuite {
   }
 
   test("postLookup test") {
-    val src = Event.source[(Long, Int)](
+    val src = Event.csvSource[(Long, Int)](
       "numsrc",
       new Validator[(Long, Int)] {
         def validate(v: (Long, Int)) = Right(Timestamp(v._1))
@@ -99,7 +115,7 @@ class EmitterTests extends munit.ScalaCheckSuite {
   }
 
   test("simple LabeledEvent test") {
-    val src = Event.source[(Long, Int)](
+    val src = Event.csvSource[(Long, Int)](
       "numsrc",
       new Validator[(Long, Int)] {
         def validate(v: (Long, Int)) = Right(Timestamp(v._1))
@@ -133,7 +149,7 @@ class EmitterTests extends munit.ScalaCheckSuite {
   }
 
   test("simple zipped LabeledEvent test") {
-    val src = Event.source[(Long, Int)](
+    val src = Event.csvSource[(Long, Int)](
       "numsrc",
       new Validator[(Long, Int)] {
         def validate(v: (Long, Int)) = Right(Timestamp(v._1))

@@ -1,7 +1,23 @@
+/*
+ * Copyright 2022 devposco
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 package dev.posco.hiona
 
-import cats.Order
 import cats.Monoid
+import cats.Order
 import cats.kernel.CommutativeMonoid
 import scala.annotation.tailrec
 
@@ -12,12 +28,12 @@ import scala.annotation.tailrec
   *
   * This is based on cats-collection PairingHeap (which Oscar Boykin wrote)
   *
- * See:
+  * See:
   * https://en.wikipedia.org/wiki/Pairing_heap
   * in particular:
   * https://en.wikipedia.org/wiki/Pairing_heap#Summary_of_running_times
   *
- * Additionally, it supports an efficient O(1) combine operation
+  * Additionally, it supports an efficient O(1) combine operation
   */
 sealed abstract class CombinedHeap[A, B] {
 
@@ -65,7 +81,7 @@ sealed abstract class CombinedHeap[A, B] {
   /**
     * Returns min value on the heap, if it exists
     *
-   * O(1)
+    * O(1)
     */
   def minimumOption: Option[A]
 
@@ -98,9 +114,7 @@ sealed abstract class CombinedHeap[A, B] {
     */
   def nonEmpty: Boolean = !isEmpty
 
-  /**
-    * Merge two heaps, this is O(1) work
-    */
+  /** Merge two heaps, this is O(1) work */
   def combine(
       that: CombinedHeap[A, B]
   )(implicit order: Order[A], mon: Monoid[B]): CombinedHeap[A, B]
@@ -159,9 +173,7 @@ object CombinedHeap {
 
   def apply[A, B](a: A, b: B): CombinedHeap[A, B] = Tree(a, b, Nil)
 
-  /**
-    * This is thought to be O(log N) where N is the size of the final heap
-    */
+  /** This is thought to be O(log N) where N is the size of the final heap */
   def combineAll[A: Order, B: Monoid](
       it: Iterable[CombinedHeap[A, B]]
   ): CombinedHeap[A, B] =
@@ -195,9 +207,7 @@ object CombinedHeap {
       }
     }
 
-  /**
-    * build a heap from a list of items, O(N)
-    */
+  /** build a heap from a list of items, O(N) */
   def fromIterable[A, B](
       as: Iterable[(A, B)]
   )(implicit order: Order[A], mon: Monoid[B]): CombinedHeap[A, B] = {
