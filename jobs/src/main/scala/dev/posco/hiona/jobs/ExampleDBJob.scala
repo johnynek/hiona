@@ -78,10 +78,10 @@ object ExampleDBJob extends aws.DBS3CliApp {
 
   def eventOutput: Output = Output.event(symbolCount)
 
-  val transactor = Resource.liftF(
+  val transactor = Resource.eval(
     Databases
       .pmdbProdTransactor[IO]
-      .apply(blocker, contextShift)
+      .apply()
   )
 }
 

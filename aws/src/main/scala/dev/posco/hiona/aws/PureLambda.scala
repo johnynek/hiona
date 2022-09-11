@@ -17,6 +17,7 @@
 package dev.posco.hiona.aws
 
 import cats.effect.IO
+import cats.effect.unsafe.IORuntime
 import com.amazonaws.services.lambda.runtime.{Context, RequestStreamHandler}
 import io.circe.jawn.CirceSupportParser.parseFromChannel
 import io.circe.{Decoder, Encoder}
@@ -33,7 +34,7 @@ abstract class PureLambda[Ctx, A, B](implicit
   // this is done once
   def setup: IO[Ctx]
 
-  private lazy val readCtx: Ctx = setup.unsafeRunSync()
+  private lazy val readCtx: Ctx = setup.unsafeRunSync()(IORuntime.global)
 
   def run(arg: A, ctx: Ctx, context: Context): IO[B]
 
@@ -55,7 +56,7 @@ abstract class PureLambda[Ctx, A, B](implicit
     // keep this lazy so lambdas with no input can skip it
     val input: IO[A] =
       IO(Channels.newChannel(inputStream))
-        .flatMap(c => IO.suspend(IO.fromTry(parseFromChannel(c))))
+        .flatMap(c => IO.defer(IO.fromTry(parseFromChannel(c))))
         .flatMap(_.as[A] match {
           case Right(a)  => IO.pure(a)
           case Left(err) => IO.raiseError(err)
@@ -70,7 +71,7 @@ abstract class PureLambda[Ctx, A, B](implicit
         _ <- IO(outputStream.write(bjsonBytes))
       } yield ()
 
-    try ioUnit.unsafeRunSync()
+    try ioUnit.unsafeRunSync()(IORuntime.global)
     finally {
       inputStream.close()
       outputStream.close()

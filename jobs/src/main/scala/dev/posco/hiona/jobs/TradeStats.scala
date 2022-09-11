@@ -18,7 +18,8 @@ package dev.posco.hiona.jobs
 
 import cats.collections.Heap
 import cats.data.{NonEmptyList, Validated, ValidatedNel}
-import cats.effect.{Blocker, ExitCode, IO, IOApp}
+import cats.effect.Resource
+import cats.effect.{ExitCode, IO, IOApp}
 import cats.{Monoid, Order}
 import com.monovore.decline.{Argument, Command, Opts}
 import com.twitter.algebird.{Last, Max, Min, Moments}
@@ -202,10 +203,14 @@ object TradeStats extends IOApp {
         ts: Timestamp,
         exits: Heap[Exit],
         acc: Double
-    ): Pull[IO, Exit, (Double, Heap[Exit])] =
+    ): Pull[IO, Either[Exit, Nothing], (Double, Heap[Exit])] =
       exits.minimumOption match {
         case Some(min) if min.timestamp <= ts =>
-          Pull.output1(min) >> emitExits(ts, exits.remove, acc + min.amountUsd)
+          Pull.output1(Left(min)) >> emitExits(
+            ts,
+            exits.remove,
+            acc + min.amountUsd
+          )
         case _ => Pull.pure((acc, exits))
       }
 
@@ -234,7 +239,7 @@ object TradeStats extends IOApp {
 
             for {
               (inc, nextExits) <-
-                emitExits(b1.timestamp, exits, 0.0).mapOutput(Left(_))
+                emitExits(b1.timestamp, exits, 0.0)
               b2 = b1.add(inc)
               _ <- Pull.output1(Right(b2))
               nextExits1 <- opt match {
@@ -252,32 +257,32 @@ object TradeStats extends IOApp {
   }
 
   sealed abstract class Input {
-    def getStream(blocker: Blocker): Stream[IO, Trade0]
+    def getStream(): Stream[IO, Trade0]
   }
 
   object Input {
     sealed abstract class Input1 extends Input
     case class PathIn(path: Path) extends Input1 {
-      def getStream(blocker: Blocker): Stream[IO, Trade0] = {
+      def getStream(): Stream[IO, Trade0] = {
         implicit val codec = PipeCodec.csv[Trade0]()
-        PipeCodec.stream[IO, Trade0](path, blocker)
+        PipeCodec.stream[IO, Trade0](path)
       }
     }
 
     case class S3In(s3a: S3Addr) extends Input1 {
-      def getStream(blocker: Blocker): Stream[IO, Trade0] =
+      def getStream(): Stream[IO, Trade0] =
         Stream
           .resource(AWSIO.awsS3)
           .flatMap { s3 =>
             val awsio = new AWSIO(s3)
             awsio
-              .readCsv[IO, Trade0](s3a, 1 << 16, skipHeader = true, blocker)
+              .readCsv[IO, Trade0](s3a, 1 << 16, skipHeader = true)
           }
     }
 
     case class Many(inputs: NonEmptyList[Input1]) extends Input {
-      def getStream(blocker: Blocker): Stream[IO, Trade0] = {
-        val streams = inputs.map(_.getStream(blocker))
+      def getStream(): Stream[IO, Trade0] = {
+        val streams = inputs.map(_.getStream())
         implicit val ordTrade = Order.by { t: Trade0 => t.ts }
         Fs2Tools.sortMerge(streams.toList)
       }
@@ -358,11 +363,11 @@ object TradeStats extends IOApp {
     }
 
   def run(args: List[String]) =
-    Blocker[IO].use { blocker =>
+    Resource.unit[IO].use { _ =>
       command.parse(args) match {
         case Right(Balances(in, initBalance, minTrade, thresh)) =>
           // Here are all the input trades
-          val strm: Stream[IO, Trade0] = in.getStream(blocker)
+          val strm: Stream[IO, Trade0] = in.getStream()
 
           // we are keeping only the ones at or above the threshold
           val good = strm.filter(t => t.yPred >= thresh)
@@ -417,7 +422,7 @@ object TradeStats extends IOApp {
             }
 
           val results: IO[Map[Int, Stats]] =
-            in.getStream(blocker)
+            in.getStream()
               .prefetchN(10)
               .through(buildStats)
               .compile

@@ -18,7 +18,8 @@ package dev.posco.hiona.aws
 
 import cats.data.{Validated, ValidatedNel}
 import cats.effect.ExitCode
-import cats.effect.{Blocker, ContextShift, IO, Resource}
+import cats.effect.unsafe.IORuntime
+import cats.effect.{IO, Resource}
 import com.amazonaws.services.lambda.runtime.Context
 import com.amazonaws.services.s3
 import com.monovore.decline.{Argument, Opts}
@@ -63,10 +64,8 @@ class LambdaApp[A](opts: Opts[A], appOutput: A => Output)
       s3App: S3App,
       context: Context
   ): IO[Json] =
-    IO.suspend {
+    IO.defer {
       val logger = context.getLogger()
-
-      implicit val ctx = s3App.contextShift
 
       for {
         stringOutput <-
@@ -79,7 +78,7 @@ class LambdaApp[A](opts: Opts[A], appOutput: A => Output)
           new Exception(s"couldn't parse args\n$msg")
         })
         _ = logger.log(s"INFO: about to run")
-        _ <- cmd.run(appOutput(arg), s3App.blocker)
+        _ <- cmd.run(appOutput(arg))
         _ = logger.log(s"INFO: finished run")
       } yield Json.fromString("done")
     }
@@ -93,26 +92,21 @@ class S3App extends GenApp {
   lazy val s3Client = s3.AmazonS3ClientBuilder.defaultClient()
   lazy val awsIO = new AWSIO(s3Client)
 
-  /**
-    *  we only want one of these for the whole life of the lambda
-    *
-    *  These are used to handle blocking IO, so we don't want to
-    *  use the CPU-scaled execution context for those
-    */
-  val blocker: Blocker =
-    Blocker.liftExecutionContext(
-      ExecutionContext.fromExecutor(
-        Executors.newCachedThreadPool { (r: Runnable) =>
-          val t = new Thread(r)
-          // we always wait for all these
-          // threads, so we can consider them daemon threads
-          t.setDaemon(true)
-          t
-        }
-      )
-    )
-  val contextShift: ContextShift[IO] =
-    IO.contextShift(scala.concurrent.ExecutionContext.global)
+  val runtime: IORuntime = IORuntime.apply(
+    compute = cats.effect.unsafe.IORuntime.global.compute,
+    blocking = ExecutionContext.fromExecutor(
+      Executors.newCachedThreadPool { (r: Runnable) =>
+        val t = new Thread(r)
+        // we always wait for all these
+        // threads, so we can consider them daemon threads
+        t.setDaemon(true)
+        t
+      }
+    ),
+    scheduler = IORuntime.global.scheduler,
+    shutdown = IORuntime.global.shutdown,
+    config = IORuntime.global.config
+  )
 
   implicit def argumentForRef: Argument[S3Addr] =
     new Argument[S3Addr] {
@@ -137,22 +131,19 @@ class S3App extends GenApp {
         }
     }
 
-  def read[A](input: S3Addr, codec: PipeCodec[A], blocker: Blocker)(implicit
-      ctx: ContextShift[IO]
-  ): fs2.Stream[IO, A] =
+  def read[A](input: S3Addr, codec: PipeCodec[A]): fs2.Stream[IO, A] =
     awsIO
-      .readStream[IO](input, 1 << 16, blocker)
+      .readStream[IO](input, 1 << 16)
       .through(codec.decode)
 
   def inputFactory[E[_]: Emittable, A](
       inputs: Iterable[(String, S3Addr)],
-      e: E[A],
-      blocker: Blocker
-  )(implicit ctx: ContextShift[IO]): Resource[IO, InputFactory[IO]] =
+      e: E[A]
+  ): Resource[IO, InputFactory[IO]] =
     Resource.pure[IO, InputFactory[IO]](InputFactory.fromMany(inputs, e) {
       (src, s3path) =>
         def go[T](src: Event.Source[T]) =
-          InputFactory.fromStream[IO, T](src, read(s3path, src.codec, blocker))
+          InputFactory.fromStream[IO, T](src, read(s3path, src.codec))
 
         go(src)
     })
@@ -178,27 +169,25 @@ abstract class DBS3App extends S3App {
   final lazy val dbInputFactory: Resource[IO, InputFactory[IO]] =
     for {
       t <- transactor
-      dbsf <- Resource.liftF(dbSupportFactory)
+      dbsf <- Resource.eval(dbSupportFactory)
     } yield dbsf.build(t)
 
   override def inputFactory[E[_]: Emittable, A](
       inputs: Iterable[(String, S3Addr)],
-      e: E[A],
-      blocker: Blocker
-  )(implicit ctx: ContextShift[IO]): Resource[IO, InputFactory[IO]] =
-    (dbInputFactory, super.inputFactory(inputs, e, blocker)).mapN(_.combine(_))
+      e: E[A]
+  ): Resource[IO, InputFactory[IO]] =
+    (dbInputFactory, super.inputFactory(inputs, e)).mapN(_.combine(_))
 }
 
 abstract class DBS3CliApp extends DBS3App {
   def eventOutput: Output
 
   def runIO(args: List[String]): IO[ExitCode] =
-    IO.suspend {
+    IO.defer {
       IOEnv.read.flatMap { env =>
         command.parse(args, env) match {
           case Right(cmd) =>
-            implicit val ictx = contextShift
-            cmd.run(eventOutput, blocker)
+            cmd.run(eventOutput)
           case Left(err) =>
             IO {
               System.err.println(err)
@@ -209,19 +198,19 @@ abstract class DBS3CliApp extends DBS3App {
     }
 
   final def main(args: Array[String]): Unit =
-    System.exit(runIO(args.toList).unsafeRunSync().code)
+    System.exit(runIO(args.toList).unsafeRunSync()(runtime).code)
 }
 
 abstract class DBLambdaApp0(
     appOutput: Output,
     dbsf: IO[db.DBSupport.Factory],
-    trans: (Blocker, ContextShift[IO]) => IO[Transactor[IO]]
+    trans: () => IO[Transactor[IO]]
 ) extends LambdaApp0(appOutput) {
   override def setup =
     IO {
       new aws.DBS3App {
         def dbSupportFactory = dbsf
-        val transactor = Resource.liftF(trans(blocker, contextShift))
+        val transactor = Resource.eval(trans())
       }
     }
 }

@@ -16,7 +16,8 @@
 
 package dev.posco.hiona.db
 
-import cats.{MonadError, Monoid}
+import cats.Monoid
+import cats.effect.MonadCancelThrow
 import dev.posco.hiona._
 import doobie._
 
@@ -26,7 +27,7 @@ object DBSupport {
 
   sealed abstract class Factory {
     def build[F[_]](xa: Transactor[F])(implicit
-        me: MonadError[F, Throwable]
+        me: MonadCancelThrow[F]
     ): InputFactory[F]
 
     def combine(that: Factory): Factory =
@@ -50,7 +51,7 @@ object DBSupport {
   private case class CombineFactory(facts: List[Factory]) extends Factory {
     def build[F[_]](
         xa: Transactor[F]
-    )(implicit me: MonadError[F, Throwable]): InputFactory[F] =
+    )(implicit me: MonadCancelThrow[F]): InputFactory[F] =
       InputFactory.merge(facts.map(_.build(xa)))
   }
 
@@ -72,7 +73,7 @@ object DBSupport {
     new Factory { self =>
       def build[F[_]](
           xa: Transactor[F]
-      )(implicit me: MonadError[F, Throwable]): InputFactory[F] =
+      )(implicit me: MonadCancelThrow[F]): InputFactory[F] =
         inputFactory[F, A](src, query, xa)
     }
 
@@ -80,6 +81,6 @@ object DBSupport {
       src: Event.Source[A],
       query: Query0[A],
       xa: Transactor[F]
-  )(implicit me: MonadError[F, Throwable]): InputFactory[F] =
+  )(implicit me: MonadCancelThrow[F]): InputFactory[F] =
     InputFactory.fromStream(src, query.stream.transact(xa))
 }

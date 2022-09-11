@@ -16,7 +16,8 @@
 
 package dev.posco.hiona
 
-import cats.effect.{ContextShift, IO}
+import cats.effect.IO
+import cats.effect.unsafe.IORuntime
 import fs2.Stream
 import org.scalacheck.Prop
 
@@ -30,9 +31,7 @@ class EmitterTests extends munit.ScalaCheckSuite {
         100
       ) // a bit slow, but locally, this passes with 10000
 
-  implicit val ec = scala.concurrent.ExecutionContext.global
-
-  implicit val ctx: ContextShift[IO] = IO.contextShift(ec)
+  implicit val runtime: IORuntime = IORuntime.global
 
   def result[E[_]: Emittable, A](
       in: InputFactory[IO],

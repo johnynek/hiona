@@ -18,7 +18,7 @@ package dev.posco.hiona
 
 import cats.ApplicativeError
 import cats.data.{NonEmptyList, Validated}
-import cats.effect.{Blocker, ContextShift, Sync}
+import cats.effect.Sync
 import fs2.Stream
 import java.nio.file.Path
 
@@ -147,23 +147,21 @@ object InputFactory {
     merge(factories)
   }
 
-  def fromPaths[F[_]: Sync: ContextShift, E[_]: Emittable, A](
+  def fromPaths[F[_]: Sync, E[_]: Emittable, A](
       paths: Iterable[(String, Path)],
-      ev: E[A],
-      blocker: Blocker
+      ev: E[A]
   ): InputFactory[F] =
     fromMany[F, E, A, Path](paths, ev) { (ev0, path) =>
-      fromPath(ev0, path, blocker)
+      fromPath(ev0, path)
     }
 
-  def fromPath[F[_]: Sync: ContextShift, T](
+  def fromPath[F[_]: Sync, T](
       ev: Event.Source[T],
-      path: Path,
-      blocker: Blocker
+      path: Path
   ): InputFactory[F] =
     fromStream(
       ev,
-      Fs2Tools.fromPath[F](path, 1 << 16, blocker).through(ev.codec.decode)
+      Fs2Tools.fromPath[F](path, 1 << 16).through(ev.codec.decode)
     )
 
   def fromStream[F[_], T](ev: Event.Source[T], stream: Stream[F, T])(implicit

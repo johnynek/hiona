@@ -16,8 +16,9 @@
 
 package dev.posco.hiona.aws
 
-import cats.effect.{Blocker, ContextShift, Sync}
+import cats.effect.{Async, Sync}
 import com.amazonaws.services.s3
+import fs2.io.file.{Files, Flags}
 import java.nio.file.Path
 import org.apache.commons.codec.binary.Base32
 import org.slf4j.LoggerFactory
@@ -36,28 +37,27 @@ object ContentStore {
     root / prefix / rest
   }
 
-  def put[F[_]: Sync: ContextShift](
+  def put[F[_]: Async: Files](
       s3client: s3.AmazonS3,
       root: S3Addr,
-      p: Path,
-      blocker: Blocker
+      p: Path
   ): F[S3Addr] = {
     val F = Sync[F]
 
     val getSize: F[Long] =
-      blocker.delay[F, Long](p.toFile.length())
+      Sync[F].blocking(p.toFile.length())
 
     val target: F[S3Addr] =
       Sync[F].delay(logger.info("computing hash for {}", p)) *>
-        fs2.io.file
-          .readAll(p, blocker, 1 << 16)
+        Files[F]
+          .readAll(fs2.io.file.Path.fromNioPath(p), 1 << 16, Flags.Read)
           .through(fs2.hash.sha256[F])
           .compile
           .to(fs2.Chunk)
           .map(hashToS3Addr(root, _))
 
     def remoteSize(s3Addr: S3Addr): F[Option[Long]] =
-      blocker.delay[F, Option[Long]] {
+      Sync[F].blocking {
         logger.info("fetching remote size of {}", s3Addr)
         try {
           val size = s3client
@@ -74,7 +74,7 @@ object ContentStore {
       }
 
     def writeTo(p: Path, s3a: S3Addr, size: Long): F[Unit] =
-      blocker.delay[F, Unit] {
+      Sync[F].blocking {
         logger.info("start upload of {} to {}", p, s3a)
         val start = System.nanoTime()
         s3client.putObject(s3a.bucket, s3a.key, p.toFile())

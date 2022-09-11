@@ -346,7 +346,7 @@ object Row extends Priority0Rows {
   /** Make a Resource for a function that can write out items into a given path */
   def writerRes[A: Row](path: Path): Resource[IO, Iterator[A] => IO[Unit]] =
     fileWriter(path)
-      .flatMap(pw => Resource.liftF(writer[A](pw)))
+      .flatMap(pw => Resource.eval(writer[A](pw)))
 
   /**
     * use a PrintWriter for an output function. This does not close the
@@ -443,7 +443,7 @@ object Row extends Priority0Rows {
   /**
     * Parse a stream of strings into drows
     *
-    * you may want fs2.text.utf8Decode to convert bytes to Strings
+    * you may want fs2.text.utf8.decode to convert bytes to Strings
     */
   def parse[F[_]: RaiseThrowable](
       dp: DelimitedParser
@@ -494,7 +494,7 @@ object Row extends Priority0Rows {
 
               if (err == null)
                 Pull
-                  .output(Chunk.buffer(buf))
+                  .output(Chunk.indexedSeq(buf))
                   .flatMap(_ => loop(thisDp, nextStream))
               else Pull.raiseError(err)
             }
@@ -503,7 +503,7 @@ object Row extends Priority0Rows {
               dp.parseChunk(None)._2
             val buf = new ArrayBuffer[DRow](rows.size)
             val err = fill(buf, rows)
-            if (err == null) Pull.output(Chunk.buffer(buf))
+            if (err == null) Pull.output(Chunk.indexedSeq(buf))
             else Pull.raiseError(err)
         }
 

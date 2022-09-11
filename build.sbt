@@ -13,7 +13,7 @@ ThisBuild / developers := List(
 ThisBuild / tlSonatypeUseLegacyHost := true
 
 val Scala212 = "2.12.15"
-val Scala213 = "2.13.3"
+val Scala213 = "2.13.8"
 ThisBuild / crossScalaVersions := Seq(
   Scala213
 ) // Ready to support other Scala versions

@@ -165,7 +165,7 @@ object PuaGens {
         in.asArray match {
           case Some(Seq(i1, i2)) =>
             (f1(i1), f2(i2)).mapN((o1, o2) => Json.fromValues(List(o1, o2)))
-          case None =>
+          case _ =>
             IO.raiseError(new Exception(s"expected array of two things: $in"))
         }
       }

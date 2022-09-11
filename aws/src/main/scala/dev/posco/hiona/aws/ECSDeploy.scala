@@ -17,7 +17,7 @@
 package dev.posco.hiona.aws
 
 import cats.data.NonEmptyList
-import cats.effect.{Blocker, ContextShift, ExitCode, IO, IOApp, Resource}
+import cats.effect.{ExitCode, IO, IOApp, Resource}
 import com.amazonaws.services.ecs.model.{
   AwsVpcConfiguration,
   ContainerOverride,
@@ -34,13 +34,8 @@ import cats.implicits._
 
 import LambdaDeploy.Vpc
 
-final class ECSDeploy(ecs: AmazonECS, blocker: Blocker)(implicit
-    contextShift: ContextShift[IO]
-) {
+final class ECSDeploy(ecs: AmazonECS) {
   import ECSDeploy._
-
-  private def block[A](a: => A): IO[A] =
-    blocker.blockOn(IO(a))
 
   def run(
       cluster: Cluster,
@@ -76,7 +71,7 @@ final class ECSDeploy(ecs: AmazonECS, blocker: Blocker)(implicit
       .withPlatformVersion("1.4.0")
       .withLaunchType("FARGATE")
 
-    block(ecs.runTask(req))
+    IO.blocking(ecs.runTask(req))
       .flatMap { resp =>
         resp.getTasks.iterator.asScala.toList match {
           case t0 :: Nil =>
@@ -98,7 +93,7 @@ final class ECSDeploy(ecs: AmazonECS, blocker: Blocker)(implicit
   }
 
   def getImages(taskDef: TaskDef): IO[NonEmptyList[ImageName]] = {
-    val resp = block(
+    val resp = IO.blocking(
       ecs.describeTaskDefinition(
         new model.DescribeTaskDefinitionRequest()
           .withTaskDefinition(taskDef.asString)
@@ -217,8 +212,8 @@ object ECSDeployApp extends IOApp {
             case Some(args) =>
               readEnvJson
                 .flatMap { env =>
-                  (ECSDeploy.awsEcs, Blocker[IO])
-                    .mapN(new ECSDeploy(_, _))
+                  ECSDeploy.awsEcs
+                    .map(new ECSDeploy(_))
                     .use { ecs =>
                       for {
                         image <- ecs.getSingleImage(task)

@@ -16,10 +16,9 @@
 
 package dev.posco.hiona
 
-import cats.Applicative
 import cats.arrow.FunctionK
 import cats.collections.Heap
-import cats.effect.{Blocker, ContextShift, IO, LiftIO, Resource, Sync}
+import cats.effect.{IO, LiftIO, MonadCancel, Resource, Sync}
 import fs2.{Pipe, Pull, Stream}
 import java.io.{BufferedInputStream, FileInputStream, InputStream}
 import java.nio.file.Path
@@ -45,10 +44,10 @@ object Fs2Tools {
     * Write a stream out with a given resource function and echo the results back
     * into the stream
     */
-  def tapStream[F[_]: Applicative, A](
+  def tapStream[F[_], A](
       input: Stream[F, A],
       res: Resource[F, Iterable[A] => F[Unit]]
-  ): Stream[F, A] =
+  )(implicit F: MonadCancel[F, _]): Stream[F, A] =
     Stream
       .resource(res)
       .flatMap { writeFn =>
@@ -58,18 +57,19 @@ object Fs2Tools {
       }
 
   /** Like write stream, but returns an empty stream that only represents the effect */
-  def sinkStream[F[_]: Applicative, A](
+  def sinkStream[F[_], A](
       res: Resource[F, Iterator[A] => F[Unit]],
       chunkSize: Int = 1024
-  ): Pipe[F, A, fs2.INothing] = { stream: Stream[F, A] =>
-    Stream
-      .resource(res)
-      .flatMap { writeFn =>
-        stream
-          .chunkMin(chunkSize)
-          .evalMapChunk(chunk => writeFn(chunk.iterator))
-          .drain
-      }
+  )(implicit F: MonadCancel[F, _]): Pipe[F, A, fs2.INothing] = {
+    stream: Stream[F, A] =>
+      Stream
+        .resource(res)
+        .flatMap { writeFn =>
+          stream
+            .chunkMin(chunkSize)
+            .evalMapChunk(chunk => writeFn(chunk.iterator))
+            .drain
+        }
   }
 
   def sortMerge[F[_], A: Ordering](
@@ -156,15 +156,10 @@ object Fs2Tools {
     }
   }
 
-  def fromPath[F[_]: Sync: ContextShift](
-      path: Path,
-      chunkSize: Int,
-      blocker: Blocker
-  ): Stream[F, Byte] =
+  def fromPath[F[_]: Sync](path: Path, chunkSize: Int): Stream[F, Byte] =
     fs2.io.readInputStream(
       openFile(path),
       chunkSize,
-      blocker,
       closeAfterUse = true
     )
 

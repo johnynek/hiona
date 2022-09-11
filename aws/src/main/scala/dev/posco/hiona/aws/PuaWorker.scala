@@ -17,7 +17,8 @@
 package dev.posco.hiona.aws
 
 import cats.Applicative
-import cats.effect.{IO, Timer}
+import cats.effect.IO
+import cats.effect.Temporal
 import com.amazonaws.services.lambda.runtime.Context
 import doobie.ConnectionIO
 import io.circe.{Encoder, Json}
@@ -211,7 +212,7 @@ abstract class PuaWorker
         d <- nextDouble
         dr = retry * 100.0 * d
         dur = FiniteDuration(dr.toLong, "ms")
-        _ <- st.timer.sleep(dur)
+        _ <- Temporal[IO].sleep(dur)
       } yield ()
 
     def encode[A <: PuaAws.Action](a: A)(
@@ -288,8 +289,7 @@ abstract class PuaWorker
 
 object PuaWorker {
   final case class State(
-      dbControl: DBControl,
-      timer: Timer[IO]
+      dbControl: DBControl
   )
 }
 

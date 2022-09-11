@@ -16,7 +16,7 @@
 
 package dev.posco.hiona.aws
 
-import cats.effect.{Async, Blocker, ContextShift}
+import cats.effect.Async
 import doobie._
 
 import cats.implicits._
@@ -45,9 +45,8 @@ object RDSTransactor {
       region: String,
       secretName: String,
       dbName: DatabaseName,
-      blocker: Blocker,
       hostPort: Option[HostPort] = None
-  )(implicit ctx: ContextShift[F]): F[Transactor[F]] =
+  ): F[Transactor[F]] =
     Secrets
       .makeClient[F](region)
       .use(client => Secrets.getJsonSecret(client, secretName))
@@ -71,8 +70,7 @@ object RDSTransactor {
             classOf[org.postgresql.Driver].getName, // driver classname
             s"jdbc:postgresql://$h:$p/$db", // connect URL (driver-specific)
             uname,
-            password,
-            blocker
+            password
           )
       }
 }

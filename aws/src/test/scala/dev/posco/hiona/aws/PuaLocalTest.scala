@@ -17,15 +17,16 @@
 package dev.posco.hiona.aws
 
 import cats.effect.IO
-import cats.effect.concurrent.Ref
+import cats.effect.Ref
+import cats.effect.unsafe.IORuntime
 import io.circe.{Decoder, Encoder, Json}
-import org.scalacheck.{Arbitrary, Gen, Prop}
+import org.scalacheck.{Gen, Prop}
 
 import cats.implicits._
 
 class PuaLocalTest extends munit.ScalaCheckSuite {
 
-  implicit val ctx = IO.contextShift(scala.concurrent.ExecutionContext.global)
+  implicit val runtime = IORuntime.global
 
   override def scalaCheckTestParameters =
     super.scalaCheckTestParameters
@@ -33,7 +34,7 @@ class PuaLocalTest extends munit.ScalaCheckSuite {
         20
       ) // a bit slow, but locally, this passes with more
 
-  def check[A: Encoder: Arbitrary, B: Decoder](
+  def check[A: Encoder, B: Decoder](
       pua: Pua,
       dir: PuaLocal.Directory,
       as: List[A]
@@ -121,7 +122,7 @@ class PuaLocalTest extends munit.ScalaCheckSuite {
               .addFn(
                 "mapper",
                 { m: Map[String, Int] =>
-                  IO.suspend {
+                  IO.defer {
                     val task = m("mapper")
                     val lines = inputs(task)
                     def toRed(i: Any) = {
@@ -148,7 +149,7 @@ class PuaLocalTest extends munit.ScalaCheckSuite {
               .addFn(
                 "reducer",
                 { m: Map[String, Int] =>
-                  IO.suspend {
+                  IO.defer {
                     val task = m("reducer")
                     val allLocations: List[(Int, Int)] =
                       (0 until mapperCount).map((_, task)).toList

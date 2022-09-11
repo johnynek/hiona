@@ -16,7 +16,7 @@
 
 package dev.posco.hiona.aws
 
-import cats.effect.{Blocker, ContextShift, IO, Resource}
+import cats.effect.{IO, Resource}
 import cats.{Monad, MonadError}
 import doobie._
 import io.circe.{Decoder, Encoder, Json}
@@ -201,16 +201,15 @@ object PostgresDBControl {
   def apply(
       db: String,
       uname: String,
-      password: String,
-      blocker: Blocker
-  )(implicit ctx: ContextShift[IO]): Resource[IO, PostgresDBControl] = {
+      password: String
+  ): Resource[IO, PostgresDBControl] = {
 
     import doobie.hikari._
 
     val setSer = for {
       _ <- FC.setAutoCommit(false)
       _ <- HC.setTransactionIsolation(
-        doobie.enum.TransactionIsolation.TransactionSerializable
+        doobie.enumerated.TransactionIsolation.TransactionSerializable
       )
     } yield ()
 
@@ -221,8 +220,7 @@ object PostgresDBControl {
         s"jdbc:postgresql://127.0.0.1/$db", // connect URL (driver-specific)
         uname,
         password,
-        ce,
-        blocker
+        ce
       )
     } yield new PostgresDBControl(Transactor.before.set(xtor, setSer))
   }

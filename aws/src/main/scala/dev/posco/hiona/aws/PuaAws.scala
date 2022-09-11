@@ -17,7 +17,8 @@
 package dev.posco.hiona.aws
 
 import cats.data.{NonEmptyList, WriterT}
-import cats.effect.{IO, Timer}
+import cats.effect.IO
+import cats.effect.Temporal
 import cats.{Applicative, Defer, Functor, Monad, MonadError, Monoid}
 import io.circe.{Decoder, DecodingFailure, Encoder, HCursor, Json}
 import scala.concurrent.duration.FiniteDuration
@@ -130,7 +131,7 @@ class PuaAws(
   }
 
   def toIOFnPoll[A: Encoder, B: Decoder](pua: Pua, poll: FiniteDuration)(
-      implicit timer: Timer[IO]
+      implicit timer: Temporal[IO]
   ): A => IO[B] = {
     val toSlot = toIOFn[A](pua)
 

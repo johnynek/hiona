@@ -27,7 +27,7 @@ class EngineBenchmars {
 
   implicit val ec = scala.concurrent.ExecutionContext.global
 
-  implicit val ctx = IO.contextShift(ec)
+  implicit val runtime = cats.effect.unsafe.IORuntime.global
 
   @Param(Array("1000", "10000"))
   var size: Int = 0
