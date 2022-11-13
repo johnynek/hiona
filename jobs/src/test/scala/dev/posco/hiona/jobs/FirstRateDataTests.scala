@@ -16,6 +16,7 @@
 
 package dev.posco.hiona.jobs
 
+import cats.effect.unsafe.IORuntime
 import dev.posco.hiona.Timestamp
 import org.scalacheck.{Gen, Prop}
 import scala.util.Success
@@ -52,7 +53,9 @@ class FirstRateDataTests extends munit.ScalaCheckSuite {
     examples.foreach {
       case (name, sym) =>
         assertEquals(
-          FirstRateData.symbolFromPath(null, name).unsafeRunSync(),
+          FirstRateData
+            .symbolFromPath(null, name)
+            .unsafeRunSync()(IORuntime.global),
           Option(sym)
         )
     }

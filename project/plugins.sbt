@@ -1,6 +1,6 @@
 addSbtPlugin("com.eed3si9n" % "sbt-assembly" % "0.14.10")
 addSbtPlugin("org.scalameta" % "sbt-scalafmt" % "2.4.6")
-addSbtPlugin("org.scoverage" % "sbt-scoverage" % "1.9.3")
+addSbtPlugin("org.scoverage" % "sbt-scoverage" % "2.0.2")
 addSbtPlugin("org.typelevel" % "sbt-typelevel" % "0.4.9")
 addSbtPlugin("org.typelevel" % "sbt-typelevel-site" % "0.4.9")
 addSbtPlugin("org.typelevel" % "sbt-typelevel-github-actions" % "0.4.9")

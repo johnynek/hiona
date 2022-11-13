@@ -75,7 +75,7 @@ class TimeWindowLaws extends munit.ScalaCheckSuite {
       }
   }
 
-  def genList[W <: Duration: ValueOf, A: Monoid](
+  def genList[W <: Duration: ValueOf, A](
       genA: Gen[A]
   ): Gen[List[(Timestamp, A)]] =
     genPair[W, A](genA)

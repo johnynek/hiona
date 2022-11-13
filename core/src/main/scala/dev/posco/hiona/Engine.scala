@@ -17,7 +17,7 @@
 package dev.posco.hiona
 
 import cats.Monoid
-import cats.effect.concurrent.Ref
+import cats.effect.Ref
 import cats.effect.{IO, LiftIO}
 import fs2.{Chunk, Pull, Stream}
 
@@ -224,7 +224,7 @@ object Engine {
     // have the same complete types
     final class Cache1[K[_], V[_]](map: MMap[K[_], V[_]]) {
       def apply[A](k: K[A])(iov: => IO[V[A]]): IO[V[A]] =
-        IO.suspend {
+        IO.defer {
           map.get(k) match {
             case Some(v) => IO.pure(v.asInstanceOf[V[A]])
             case None    => iov.flatMap(v => IO(map.update(k, v)).as(v))
@@ -242,7 +242,7 @@ object Engine {
     // have the same complete types
     final class Cache2[K[_, _], V[_, _]](map: MMap[K[_, _], V[_, _]]) {
       def apply[A, B](k: K[A, B])(iov: => IO[V[A, B]]): IO[V[A, B]] =
-        IO.suspend {
+        IO.defer {
           map.get(k) match {
             case Some(v) => IO.pure(v.asInstanceOf[V[A, B]])
             case None    => iov.flatMap(v => IO(map.update(k, v)).as(v))

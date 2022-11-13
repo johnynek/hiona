@@ -6,8 +6,8 @@ object Dependencies {
 
   object V {
     val munit = "0.7.7"
-    val circe = "0.13.0"
-    val fs2 = "2.4.2"
+    val circe = "0.14.0"
+    val fs2 = "3.2.5"
     val slf4j = "1.7.30"
   }
 
@@ -20,9 +20,9 @@ object Dependencies {
   lazy val awsS3v1 = aws1 % "aws-java-sdk-s3" % "1.11.766"
   lazy val awsSecretsManager =
     "com.amazonaws" % "aws-java-sdk-secretsmanager" % "1.11.774"
-  lazy val cats = typelevel %% "cats-core" % "2.1.1"
+  lazy val cats = typelevel %% "cats-core" % "2.8.0"
   lazy val catsCollections = typelevel %% "cats-collections-core" % "0.9.0"
-  lazy val catsEffect = typelevel %% "cats-effect" % "2.1.2"
+  lazy val catsEffect = typelevel %% "cats-effect" % "3.3.13"
   lazy val circeCore = "io.circe" %% "circe-core" % V.circe
   lazy val circeGeneric = "io.circe" %% "circe-generic" % V.circe
   lazy val circeJawn = "io.circe" %% "circe-jawn" % V.circe
@@ -32,8 +32,8 @@ object Dependencies {
   lazy val decline = "com.monovore" %% "decline" % "1.0.0"
   lazy val delimited = "net.tixxit" %% "delimited-core" % "0.10.0"
   lazy val diffx = "com.softwaremill.diffx" %% "diffx-core" % "0.3.28"
-  lazy val doobie = "org.tpolecat" %% "doobie-core" % "0.9.0"
-  lazy val doobieHikari = "org.tpolecat" %% "doobie-hikari" % "0.9.0"
+  lazy val doobie = "org.tpolecat" %% "doobie-core" % "1.0.0-RC2"
+  lazy val doobieHikari = "org.tpolecat" %% "doobie-hikari" % "1.0.0-RC2"
   lazy val fs2 = "co.fs2" %% "fs2-core" % V.fs2
   lazy val fs2io = "co.fs2" %% "fs2-io" % V.fs2
   lazy val h2 = "com.h2database" % "h2" % "1.4.200"

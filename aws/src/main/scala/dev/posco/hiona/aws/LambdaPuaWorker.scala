@@ -16,7 +16,8 @@
 
 package dev.posco.hiona.aws
 
-import cats.effect.{Blocker, ContextShift, ExitCode, IO, IOApp, Resource, Timer}
+import cats.effect.Temporal
+import cats.effect.{ExitCode, IO, IOApp, Resource}
 import com.amazonaws.services.lambda.AWSLambda
 import com.amazonaws.services.lambda.model.Runtime
 import com.amazonaws.services.lambda.runtime.Context
@@ -97,15 +98,13 @@ object LambdaPuaWorkerState {
         .map(LambdaFunctionName(_))
     }
 
-  def makeFunctions(awsLambda: AWSLambda, blocker: Blocker)(implicit
-      ctx: ContextShift[IO]
-  ): (
+  def makeFunctions(awsLambda: AWSLambda): (
       LambdaFunctionName => Json => IO[Json],
       LambdaFunctionName => Json => IO[Unit]
   ) = {
-    val syncFn = { nm: LambdaFunctionName => awsLambda.makeLambda(nm, blocker) }
+    val syncFn = { nm: LambdaFunctionName => awsLambda.makeLambda(nm) }
     val asyncFn = { nm: LambdaFunctionName =>
-      awsLambda.makeLambdaAsync(nm, blocker)
+      awsLambda.makeLambdaAsync(nm)
     }
 
     (syncFn, asyncFn)
@@ -115,46 +114,32 @@ object LambdaPuaWorkerState {
       puaDB: DatabaseName,
       region: String,
       dbSecret: String
-  ): Resource[IO, PuaWorker.State] = {
-
-    val ec = scala.concurrent.ExecutionContext.global
-    implicit val ctx = IO.contextShift(ec)
-    val timer = IO.timer(ec)
+  ): Resource[IO, PuaWorker.State] =
     for {
-      blocker <- Blocker[IO]
-      trans <- Resource.liftF(
+      trans <- Resource.eval(
         RDSTransactor
-          .build[IO](region, dbSecret, puaDB, blocker)
+          .build[IO](region, dbSecret, puaDB)
       )
       pg = new PostgresDBControl(trans)
-    } yield PuaWorker.State(pg, timer)
-  }
+    } yield PuaWorker.State(pg)
 
-  def callerState(dbFn: LambdaFunctionName): Resource[IO, PuaCaller.State] = {
-    val ec = scala.concurrent.ExecutionContext.global
-    implicit val ctx = IO.contextShift(ec)
+  def callerState(dbFn: LambdaFunctionName): Resource[IO, PuaCaller.State] =
     for {
-      blocker <- Blocker[IO]
       awsLambda <- LambdaDeploy.awsLambda
-      (sync, async) = makeFunctions(awsLambda, blocker)
+      (sync, async) = makeFunctions(awsLambda)
     } yield PuaCaller.State(dbFn, sync, async)
-  }
 
   def puaAws(
       puaDB: LambdaFunctionName,
       puaCaller: LambdaFunctionName,
-      aws: AWSLambda,
-      blocker: Blocker
-  )(implicit
-      ctx: ContextShift[IO]
+      aws: AWSLambda
   ): PuaAws = {
-    val (sync, async) = makeFunctions(aws, blocker)
+    val (sync, async) = makeFunctions(aws)
     new PuaAws(PuaAws.Invoke.fromSyncAsyncNames(sync, async, puaDB, puaCaller))
   }
 
-  def command(aws: AWSLambda, awsS3: s3.AmazonS3, blocker: Blocker)(implicit
-      ctx: ContextShift[IO],
-      timer: Timer[IO]
+  def command(aws: AWSLambda, awsS3: s3.AmazonS3)(implicit
+      timer: Temporal[IO]
   ): Command[IO[Unit]] = {
     val puaOpt: Opts[IO[Pua]] =
       LambdaDeploy.Payload
@@ -197,7 +182,7 @@ object LambdaPuaWorkerState {
         .withDefault(defaultCallLambdaName)
 
     val paws: Opts[PuaAws] =
-      (puaDBName, puaCallName).mapN(puaAws(_, _, aws, blocker))
+      (puaDBName, puaCallName).mapN(puaAws(_, _, aws))
 
     val poll: Opts[Option[FiniteDuration]] = {
       val block = (
@@ -268,7 +253,7 @@ object LambdaPuaWorkerState {
       }
 
     val lambdaDeploy: IO[LambdaDeploy] =
-      UniqueName.build[IO].map(new LambdaDeploy(aws, awsS3, _, blocker))
+      UniqueName.build[IO].map(new LambdaDeploy(aws, awsS3, _))
 
     val create =
       Command("create", "create the main pua AWS worker") {
@@ -344,10 +329,9 @@ object LambdaPuaWorkerState {
 object LambdaPuaClientApp extends IOApp {
   def run(args: List[String]): IO[ExitCode] = {
     val cmdRes = for {
-      blocker <- Blocker[IO]
       aws <- LambdaDeploy.awsLambda
       awsS3 <- AWSIO.awsS3
-    } yield LambdaPuaWorkerState.command(aws, awsS3, blocker)
+    } yield LambdaPuaWorkerState.command(aws, awsS3)
 
     cmdRes.use { cmd =>
       IOEnv.read.flatMap { env =>
@@ -365,22 +349,18 @@ object LambdaPuaClientApp extends IOApp {
 }
 
 /** This is a simple test lambda that invokes another lambda */
-class ApplyLambda
-    extends PureLambda[(AWSLambda, Blocker), (String, Json), Json] {
-
-  implicit private val ctxIO: ContextShift[IO] =
-    IO.contextShift(scala.concurrent.ExecutionContext.global)
+class ApplyLambda extends PureLambda[AWSLambda, (String, Json), Json] {
 
   def setup =
-    (LambdaDeploy.awsLambda, Blocker[IO]).mapN((_, _)).allocated.map(_._1)
+    LambdaDeploy.awsLambda.allocated.map(_._1)
 
   def run(
       in: (String, Json),
-      state: (AWSLambda, Blocker),
+      state: AWSLambda,
       context: Context
   ): IO[Json] = {
     val (nm, arg) = in
-    val fn = state._1.makeLambda(LambdaFunctionName(nm), state._2)
+    val fn = state.makeLambda(LambdaFunctionName(nm))
     fn(arg)
   }
 }

@@ -17,8 +17,7 @@
 package dev.posco.hiona.aws
 
 import cats.data.NonEmptyList
-import cats.effect.concurrent.{Deferred, Ref}
-import cats.effect.{ContextShift, IO}
+import cats.effect.{Deferred, IO, Ref}
 import cats.{Applicative, Monad}
 import io.circe.{Decoder, Encoder, Json}
 
@@ -31,8 +30,7 @@ final class PuaLocal(
     ],
     run: LambdaFunctionName => (Json => IO[Json]),
     optimizeStart: Boolean = true
-)(implicit ctx: ContextShift[IO])
-    extends SlotEnv {
+) extends SlotEnv {
   type SlotId = Long
 
   /**
@@ -40,9 +38,9 @@ final class PuaLocal(
     * slots
     */
   type Slots[A] = IO[A]
-  def applicativeSlots: Applicative[Slots] = cats.effect.Effect[IO]
+  def applicativeSlots: Applicative[Slots] = Applicative[IO]
   type Eff[A] = IO[A]
-  def monadEff: Monad[Slots] = cats.effect.Effect[IO]
+  def monadEff: Monad[Slots] = Monad[IO]
 
   private def readSlot(s: SlotId): IO[Json] =
     for {
@@ -182,7 +180,7 @@ final class PuaLocal(
 object PuaLocal {
   def build(
       runFn: LambdaFunctionName => (Json => IO[Json])
-  )(implicit ctx: ContextShift[IO]): IO[PuaLocal] =
+  ): IO[PuaLocal] =
     Ref
       .of[
         IO,
@@ -194,7 +192,7 @@ object PuaLocal {
 
   def buildUnoptimized(
       runFn: LambdaFunctionName => (Json => IO[Json])
-  )(implicit ctx: ContextShift[IO]): IO[PuaLocal] =
+  ): IO[PuaLocal] =
     Ref
       .of[
         IO,

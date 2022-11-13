@@ -17,7 +17,7 @@
 package dev.posco.hiona.aws
 
 import cats.data.{Validated, ValidatedNel}
-import cats.effect.{Blocker, ContextShift, ExitCode, IO, IOApp, Resource, Timer}
+import cats.effect.{Async, ExitCode, IO, IOApp, Resource, Temporal}
 import com.amazonaws.PredefinedClientConfigurations
 import com.amazonaws.services.lambda.model.{
   CreateFunctionRequest,
@@ -47,16 +47,12 @@ import cats.implicits._
 class LambdaDeploy(
     awsLambda: AWSLambda,
     awsS3: s3.AmazonS3,
-    unique: UniqueName[IO],
-    blocker: Blocker
-)(implicit ctx: ContextShift[IO], timer: Timer[IO]) {
+    unique: UniqueName[IO]
+)(implicit ctx: Async[IO]) {
 
   import LambdaDeploy._
 
   private[this] val logger = LoggerFactory.getLogger(getClass)
-
-  private def block[A](a: => A): IO[A] =
-    blocker.blockOn(IO(a))
 
   def createLambda(
       casRoot: S3Addr,
@@ -64,8 +60,8 @@ class LambdaDeploy(
   ): IO[LambdaFunctionName] = {
     logger.info("creating ephemeral lambda for {}", funcArgs.coord)
 
-    val s3AddrIO =
-      ContentStore.put[IO](awsS3, casRoot, funcArgs.coord.jarPath, blocker)
+    val s3AddrIO: IO[S3Addr] =
+      ContentStore.put[IO](awsS3, casRoot, funcArgs.coord.jarPath)
 
     for {
       s3addr <- s3AddrIO
@@ -77,7 +73,7 @@ class LambdaDeploy(
           s3addr
         )
       }
-      _ <- block(awsLambda.createFunction(fa1.toRequest(s3addr)))
+      _ <- IO.blocking(awsLambda.createFunction(fa1.toRequest(s3addr)))
     } yield name
   }
 
@@ -90,7 +86,7 @@ class LambdaDeploy(
       createLambda(casRoot, funcArgs)
         .flatMap { nm =>
           awsLambda
-            .waitNonPending(nm, blocker)
+            .waitNonPending(nm)
             .as(nm)
         }
 
@@ -104,7 +100,7 @@ class LambdaDeploy(
       .withFunctionName(name)
 
     IO(logger.info("deleting ephemeral function {}", name)) *>
-      block(awsLambda.deleteFunction(dr))
+      IO.blocking(awsLambda.deleteFunction(dr))
         .flatMap { resp =>
           val code = resp.getSdkHttpMetadata().getHttpStatusCode()
           checkCode(code) {
@@ -121,8 +117,8 @@ class LambdaDeploy(
   ): IO[Unit] =
     for {
       name <- createLambda(casRoot, funcArgs)
-      _ <- awsLambda.waitNonPending(name, blocker)
-      _ <- awsLambda.makeLambdaAsync(name, blocker).apply(in)
+      _ <- awsLambda.waitNonPending(name)
+      _ <- awsLambda.makeLambdaAsync(name).apply(in)
     } yield ()
 
   def invokeRemoteSync(
@@ -131,7 +127,7 @@ class LambdaDeploy(
       in: Json
   ): IO[Json] =
     lambdaResource(casRoot, funcArgs)
-      .use(name => awsLambda.makeLambda(name, blocker).apply(in))
+      .use(name => awsLambda.makeLambda(name).apply(in))
 
   def invokeRemoteKind(
       casRoot: S3Addr,
@@ -157,14 +153,14 @@ class LambdaDeploy(
     kind match {
       case LambdaDeploy.InvocationKind.Sync =>
         awsLambda
-          .makeLambda(name, blocker)
+          .makeLambda(name)
           .apply(in)
           .flatMap { json =>
             IO(println(json.spaces2))
           }
       case LambdaDeploy.InvocationKind.Async =>
         awsLambda
-          .makeLambdaAsync(name, blocker)
+          .makeLambdaAsync(name)
           .apply(in)
     }
 
@@ -201,7 +197,7 @@ class LambdaDeploy(
         for {
           fa <- funcArgs
           name <- createLambda(s3root, fa)
-          _ <- if (wait) awsLambda.waitNonPending(name, blocker) else IO.unit
+          _ <- if (wait) awsLambda.waitNonPending(name) else IO.unit
           _ <- IO(println(s"created: $name"))
         } yield ()
       }
@@ -463,30 +459,25 @@ object LambdaDeploy {
   implicit class LambdaMethods(private val awsLambda: AWSLambda)
       extends AnyVal {
 
-    def getState(name: LambdaFunctionName, blocker: Blocker)(implicit
-        ctx: ContextShift[IO]
-    ): IO[FnState] =
-      blocker
-        .blockOn(IO {
-          val arg = new GetFunctionConfigurationRequest()
-            .withFunctionName(name.asString)
-          awsLambda.getFunctionConfiguration(arg)
-        })
-        .flatMap { conf =>
-          FnState.fromString(conf.getState) match {
-            case Some(fn) => IO.pure(fn)
-            case None =>
-              IO.raiseError(new Exception(s"unknown function state in: $conf"))
-          }
+    def getState(name: LambdaFunctionName): IO[FnState] =
+      IO.blocking {
+        val arg = new GetFunctionConfigurationRequest()
+          .withFunctionName(name.asString)
+        awsLambda.getFunctionConfiguration(arg)
+      }.flatMap { conf =>
+        FnState.fromString(conf.getState) match {
+          case Some(fn) => IO.pure(fn)
+          case None =>
+            IO.raiseError(new Exception(s"unknown function state in: $conf"))
         }
+      }
 
     def waitNonPending(
         name: LambdaFunctionName,
-        blocker: Blocker,
         retries: Int = 10,
         nextSleep: FiniteDuration = FiniteDuration(10, "s")
-    )(implicit ctx: ContextShift[IO], timer: Timer[IO]): IO[FnState] =
-      getState(name, blocker)
+    )(implicit timer: Temporal[IO]): IO[FnState] =
+      getState(name)
         .flatMap {
           case FnState.Pending =>
             if (retries <= 0) {
@@ -506,7 +497,6 @@ object LambdaDeploy {
               val nextNext = (nextSleep * 15L) / 10L
               IO.sleep(nextSleep) *> waitNonPending(
                 name,
-                blocker,
                 retries - 1,
                 nextNext
               )
@@ -515,22 +505,16 @@ object LambdaDeploy {
           case nonPending => IO.pure(nonPending)
         }
 
-    def makeLambda(name: LambdaFunctionName, blocker: Blocker)(implicit
-        ctx: ContextShift[IO]
-    ): Json => IO[Json] =
+    def makeLambda(name: LambdaFunctionName): Json => IO[Json] =
       makeLambdaInternal(
         name,
-        blocker,
         InvocationKind.Sync,
         bb => IO.fromTry(CirceSupportParser.parseFromByteBuffer(bb))
       )
 
-    def makeLambdaAsync(name: LambdaFunctionName, blocker: Blocker)(implicit
-        ctx: ContextShift[IO]
-    ): Json => IO[Unit] =
+    def makeLambdaAsync(name: LambdaFunctionName): Json => IO[Unit] =
       makeLambdaInternal(
         name,
-        blocker,
         InvocationKind.Async,
         _ =>
           IO(
@@ -543,11 +527,8 @@ object LambdaDeploy {
 
     private def makeLambdaInternal[A](
         name: LambdaFunctionName,
-        blocker: Blocker,
         kind: InvocationKind,
         onPayload: ByteBuffer => IO[A]
-    )(implicit
-        ctx: ContextShift[IO]
     ): Json => IO[A] = { payload: Json =>
       val ir = new InvokeRequest()
         .withFunctionName(name.asString)
@@ -562,7 +543,7 @@ object LambdaDeploy {
         ir
       )
 
-      val invoke = blocker.blockOn(IO(awsLambda.invoke(ir)))
+      val invoke = IO.blocking(awsLambda.invoke(ir))
 
       invoke
         .flatMap { resp =>
@@ -637,7 +618,7 @@ object LambdaDeploy {
     }
     case class FromPath(path: Path) extends Payload {
       def toJson =
-        IO.suspend {
+        IO.defer {
           IO.fromTry(CirceSupportParser.parseFromFile(path.toFile))
         }
     }
@@ -681,9 +662,8 @@ object LambdaDeployApp extends IOApp {
     (
       LambdaDeploy.awsLambda,
       AWSIO.awsS3,
-      Resource.liftF(UniqueName.build[IO]),
-      Blocker[IO]
-    ).mapN(new LambdaDeploy(_, _, _, _))
+      Resource.eval(UniqueName.build[IO])
+    ).mapN(new LambdaDeploy(_, _, _))
       .use { ld =>
         IOEnv.read.flatMap { env =>
           ld.cmd.parse(args, env) match {

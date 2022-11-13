@@ -18,7 +18,7 @@ package dev.posco.hiona.jobs
 
 import cats.ApplicativeError
 import cats.data.NonEmptyList
-import cats.effect.{Blocker, ContextShift, ExitCode, IO, IOApp, Resource}
+import cats.effect.{ExitCode, IO, IOApp, Resource}
 import com.monovore.decline.{Command, Opts}
 import dev.posco.hiona.SeqPartitioner.{Partitioner, Writer}
 import dev.posco.hiona.aws.{AWSIO, S3Addr}
@@ -50,10 +50,7 @@ object FirstRateData {
   private def openZipFileInternal(
       path: Path,
       names: Option[List[String]],
-      chunkSize: Int,
-      blocker: Blocker
-  )(implicit
-      ctx: ContextShift[IO]
+      chunkSize: Int
   ): Resource[IO, List[(String, Stream[IO, Byte])]] =
     Resource
       .make(IO(new ZipFile(path.toFile)))(zf => IO(zf.close()))
@@ -63,13 +60,12 @@ object FirstRateData {
             ze.getName,
             fs2.io.readInputStream(
               IO(zipFile.getInputStream(ze)),
-              chunkSize,
-              blocker
+              chunkSize
             )
           )
 
         def entries: IO[List[ZipEntry]] =
-          IO.suspend {
+          IO.defer {
             val ents = zipFile.entries()
 
             def nextOpt(): Option[ZipEntry] =
@@ -85,7 +81,7 @@ object FirstRateData {
             loop(Nil)
           }
 
-        Resource.liftF(names match {
+        Resource.eval(names match {
           case None => entries.map(_.map(streamFromEntry))
           case Some(nms) =>
             IO(
@@ -109,20 +105,18 @@ object FirstRateData {
         })
       }
 
-  def openZipFile(path: Path, chunkSize: Int, blocker: Blocker)(implicit
-      ctx: ContextShift[IO]
+  def openZipFile(
+      path: Path,
+      chunkSize: Int
   ): Resource[IO, List[(String, Stream[IO, Byte])]] =
-    openZipFileInternal(path, None, chunkSize, blocker)
+    openZipFileInternal(path, None, chunkSize)
 
   def openZipFileNames(
       path: Path,
       names: List[String],
-      chunkSize: Int,
-      blocker: Blocker
-  )(implicit
-      ctx: ContextShift[IO]
+      chunkSize: Int
   ): Resource[IO, List[(String, Stream[IO, Byte])]] =
-    openZipFileInternal(path, Some(names), chunkSize, blocker)
+    openZipFileInternal(path, Some(names), chunkSize)
 
   private[this] val tz: TimeZone = TimeZone.getTimeZone("America/New York")
 
@@ -183,7 +177,7 @@ object FirstRateData {
   def parseInput[F[_]](implicit
       ae: ApplicativeError[F, Throwable]
   ): fs2.Pipe[F, Byte, Input] =
-    fs2.text.utf8Decode.andThen(
+    fs2.text.utf8.decode.andThen(
       Row
         .decodeFromCSV[F, Input](implicitly[Row[Input]], skipHeader = false)
     )
@@ -197,11 +191,10 @@ object FirstRateData {
   def sortMerge(
       path: Path,
       names: List[(String, String)],
-      chunkSize: Int,
-      blocker: Blocker
-  )(implicit ctx: ContextShift[IO]): Stream[IO, Output] =
+      chunkSize: Int
+  ): Stream[IO, Output] =
     Stream
-      .resource(openZipFileNames(path, names.map(_._1), chunkSize, blocker))
+      .resource(openZipFileNames(path, names.map(_._1), chunkSize))
       .flatMap { list =>
         val nameMap = names.toMap
         val rlist: List[Stream[IO, Output]] =
@@ -307,18 +300,17 @@ object FirstRateData {
       part: Partitioner[A],
       pathToKey: (Path, String) => IO[Option[K]],
       decoder: K => fs2.Pipe[IO, Byte, A],
-      chunkSize: Int,
-      blocker: Blocker
-  )(implicit ctx: ContextShift[IO]): IO[Unit] =
+      chunkSize: Int
+  ): IO[Unit] =
     paths
-      .traverse(path => openZipFile(path, chunkSize, blocker).map((path, _)))
+      .traverse(path => openZipFile(path, chunkSize).map((path, _)))
       .use { streams: List[(Path, List[(String, Stream[IO, Byte])])] =>
         logger.info(s"partitionedZips opened all paths: $paths")
 
         val allItems = for {
           (path, parts) <- streams
           (item, strm) <- parts
-          log = Stream.eval_(IO(logger.info(s"opening $path item: $item")))
+          log = Stream.exec(IO(logger.info(s"opening $path item: $item")))
         } yield (path, item, log ++ strm)
 
         val sortKeyed: IO[List[(K, Stream[IO, Byte])]] =
@@ -339,7 +331,7 @@ object FirstRateData {
               // we are in sorted order (so we just combine the pipes)
               .flatMap {
                 case (k, bytes) =>
-                  Stream.eval_(IO(logger.info(s"partitioning key: $k"))) ++
+                  Stream.exec(IO(logger.info(s"partitioning key: $k"))) ++
                     bytes
                       .through(decoder(k))
               }
@@ -356,47 +348,43 @@ object FirstRateData {
       paths: List[Path],
       base: S3Addr,
       awsIO: AWSIO,
-      chunkSize: Int,
-      blocker: Blocker
-  )(implicit ctx: ContextShift[IO]): IO[Unit] =
+      chunkSize: Int
+  ): IO[Unit] =
     partitionZips(
       paths,
       aws(base, awsIO),
       symbolFromPath,
       { symYear: (String, Int) => parseOutput[IO](symYear._1) },
-      chunkSize,
-      blocker
+      chunkSize
     )
 
   def partitionOutputsLocal(
       paths: List[Path],
       base: Path,
-      chunkSize: Int,
-      blocker: Blocker
-  )(implicit ctx: ContextShift[IO]): IO[Unit] =
+      chunkSize: Int
+  ): IO[Unit] =
     partitionZips(
       paths,
       localFs(base),
       symbolFromPath,
       { symYear: (String, Int) => parseOutput[IO](symYear._1) },
-      chunkSize,
-      blocker
+      chunkSize
     )
 }
 
 object FirstRateDataApp extends IOApp {
-  type Cmd = Command[Blocker => IO[ExitCode]]
+  type Cmd = Command[IO[ExitCode]]
 
   private val list =
     Opts.subcommand("list", "list items in a path to a zip") {
       Opts
         .arguments[Path]("files to list")
-        .map { paths => blocker: Blocker =>
+        .map { paths =>
           paths
             .traverse_ { path =>
               IO(System.err.println(s"in: $path")) *>
                 FirstRateData
-                  .openZipFile(path, 1 << 16, blocker)
+                  .openZipFile(path, 1 << 16)
                   .use(_.traverse_ { case (name, _) => IO(println(name)) })
             }
             .as(ExitCode.Success)
@@ -408,13 +396,13 @@ object FirstRateDataApp extends IOApp {
       (
         Opts.option[Path]("path", "files to cat"),
         Opts.options[String]("part", "a part inside")
-      ).mapN { (path, parts) => blocker: Blocker =>
+      ).mapN { (path, parts) =>
         FirstRateData
-          .openZipFileNames(path, parts.toList, 1 << 16, blocker)
+          .openZipFileNames(path, parts.toList, 1 << 16)
           .use { items =>
             Stream
               .emits(items)
-              .flatMap(_._2.through(fs2.io.stdout(blocker)))
+              .flatMap(_._2.through(fs2.io.stdout))
               .compile
               .drain
           }
@@ -430,9 +418,9 @@ object FirstRateDataApp extends IOApp {
         Opts
           .option[Int]("chunk_size", "blocksize to read (default 32KB)")
           .withDefault(1 << 16)
-      ).mapN { (path, symbol, chunkSize) => blocker: Blocker =>
+      ).mapN { (path, symbol, chunkSize) =>
         FirstRateData
-          .openZipFile(path, chunkSize, blocker)
+          .openZipFile(path, chunkSize)
           .use { items =>
             Stream
               .emits(items)
@@ -458,8 +446,7 @@ object FirstRateDataApp extends IOApp {
 
   private def fetchS3(
       s3s: NonEmptyList[S3Addr],
-      aio: AWSIO,
-      blocker: Blocker
+      aio: AWSIO
   ): Resource[IO, NonEmptyList[Path]] =
     for {
       temps <- s3s.traverse(uri =>
@@ -467,7 +454,7 @@ object FirstRateDataApp extends IOApp {
       )
       _ <- temps.traverse {
         case (s3, path) =>
-          Resource.liftF(aio.download(s3, path, blocker))
+          Resource.eval(aio.download(s3, path))
       }
     } yield temps.map(_._2)
 
@@ -489,57 +476,53 @@ object FirstRateDataApp extends IOApp {
           .withDefault(1 << 16)
       ).mapN {
         case (paths, s3s, Left(base), chunkSize) =>
-          blocker: Blocker =>
-            val fromS3Res = NonEmptyList.fromList(s3s) match {
-              case None => Resource.pure[IO, List[Path]](Nil)
-              case Some(nel) =>
-                AWSIO.resource
-                  .flatMap(fetchS3(nel, _, blocker))
-                  .map(_.toList)
+          val fromS3Res = NonEmptyList.fromList(s3s) match {
+            case None => Resource.pure[IO, List[Path]](Nil)
+            case Some(nel) =>
+              AWSIO.resource
+                .flatMap(fetchS3(nel, _))
+                .map(_.toList)
+          }
+
+          fromS3Res
+            .use { temps =>
+              FirstRateData
+                .partitionOutputsLocal(
+                  paths ::: temps,
+                  base,
+                  chunkSize
+                )
+                .as(ExitCode.Success)
+            }
+        case (paths, s3s, Right(base), chunkSize) =>
+          val aioPaths =
+            AWSIO.resource.flatMap { aio =>
+              val pathsRes = NonEmptyList.fromList(s3s) match {
+                case None =>
+                  Resource.pure[IO, List[Path]](Nil)
+                case Some(nel) =>
+                  fetchS3(nel, aio).map(_.toList)
+              }
+
+              pathsRes.map((aio, _))
             }
 
-            fromS3Res
-              .use { temps =>
+          aioPaths
+            .use {
+              case (aio, temps) =>
                 FirstRateData
-                  .partitionOutputsLocal(
+                  .partitionOutputsAws(
                     paths ::: temps,
                     base,
-                    chunkSize,
-                    blocker
+                    aio,
+                    chunkSize
                   )
                   .as(ExitCode.Success)
-              }
-        case (paths, s3s, Right(base), chunkSize) =>
-          blocker: Blocker =>
-            val aioPaths =
-              AWSIO.resource.flatMap { aio =>
-                val pathsRes = NonEmptyList.fromList(s3s) match {
-                  case None =>
-                    Resource.pure[IO, List[Path]](Nil)
-                  case Some(nel) =>
-                    fetchS3(nel, aio, blocker).map(_.toList)
-                }
-
-                pathsRes.map((aio, _))
-              }
-
-            aioPaths
-              .use {
-                case (aio, temps) =>
-                  FirstRateData
-                    .partitionOutputsAws(
-                      paths ::: temps,
-                      base,
-                      aio,
-                      chunkSize,
-                      blocker
-                    )
-                    .as(ExitCode.Success)
-              }
+            }
       }
     }
 
-  val cmd: Command[Blocker => IO[ExitCode]] =
+  val cmd: Command[IO[ExitCode]] =
     Command("firstrate", "partition first rate data") {
       list
         .orElse(cat)
@@ -549,7 +532,7 @@ object FirstRateDataApp extends IOApp {
 
   def run(args: List[String]) =
     cmd.parse(args) match {
-      case Right(fn) => Blocker[IO].use(fn)
+      case Right(fn) => Resource.unit[IO].use(_ => fn)
       case Left(err) =>
         IO {
           System.err.println(err.toString)

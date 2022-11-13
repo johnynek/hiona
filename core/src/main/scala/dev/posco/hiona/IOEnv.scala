@@ -31,7 +31,7 @@ object IOEnv {
       e match {
         case Right(a) => IO.pure(a)
         case Left(err) =>
-          IO.suspend {
+          IO.defer {
             System.err.println(err.toString)
             IO.raiseError(new Exception(s"could not parse args: $err"))
           }

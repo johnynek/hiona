@@ -21,7 +21,7 @@ final class LazyToString(build: () => Any) {
 
   override def toString = result.toString
   override def hashCode = result.hashCode
-  override def equals(that: Any) = result.equals(that)
+  override def equals(that: Any) = result == that
 }
 
 object LazyToString {

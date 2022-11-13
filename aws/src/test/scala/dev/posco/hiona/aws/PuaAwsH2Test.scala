@@ -18,11 +18,13 @@ package dev.posco.hiona.aws
 
 import cats.Defer
 import cats.data.NonEmptyList
-import cats.effect.concurrent.{Ref, Semaphore}
-import cats.effect.{Blocker, ContextShift, IO, Resource, Timer}
+import cats.effect.std.Semaphore
+import cats.effect.unsafe.IORuntime
+import cats.effect.{IO, Resource}
+import cats.effect.{Ref, Temporal}
 import com.amazonaws.services.lambda.runtime.Context
 import doobie._
-import doobie.enum.TransactionIsolation.TransactionSerializable
+import doobie.enumerated.TransactionIsolation.TransactionSerializable
 import io.circe.Json
 import org.scalacheck.Prop
 import scala.concurrent.Await
@@ -44,20 +46,21 @@ class H2DBControl(transactor: Transactor[IO], sem: Semaphore[IO])
     extends PostgresDBControl(transactor) {
   override def run[A](con: ConnectionIO[A]): IO[A] =
     // H2 seems to have bugs with serializability
-    sem.withPermit(super.run(con))
+    for {
+      _ <- sem.acquire
+      a <- super.run(con)
+      _ <- sem.release
+    } yield a
 }
 
 object H2DBControl {
-  def apply(
-      blocker: Blocker
-  )(implicit ctx: ContextShift[IO]): Resource[IO, H2DBControl] = {
+  def apply(): Resource[IO, H2DBControl] = {
     val xa0 = Transactor.fromDriverManager[IO](
       classOf[org.h2.Driver].getName,
       "jdbc:h2:mem:test;DB_CLOSE_DELAY=-1;LOCK_MODE=1",
       // "jdbc:h2:~/test;LOCK_MODE=1",
       "sa", // user
-      "", // password
-      blocker
+      "" // password
     )
 
     val b = for {
@@ -69,14 +72,14 @@ object H2DBControl {
 
     val xa = Transactor.before.set(xa0, b)
 
-    Resource.liftF(Semaphore[IO](1).map(new H2DBControl(xa, _)))
+    Resource.eval(Semaphore[IO](1).map(new H2DBControl(xa, _)))
   }
 
   def resender[A](
       stop: IO[Boolean],
       dur: FiniteDuration,
       action: IO[Unit]
-  )(implicit t: Timer[IO], ctx: ContextShift[IO]): IO[Unit] =
+  )(implicit t: Temporal[IO]): IO[Unit] =
     Defer[IO]
       .fix[Unit] { recur =>
         for {
@@ -93,7 +96,7 @@ object H2DBControl {
       pua: Pua,
       dir0: PuaLocal.Directory,
       inputs: List[Json]
-  )(implicit ctxShift: ContextShift[IO]): IO[List[Json]] = {
+  ): IO[List[Json]] = {
     // make the rng deterministic
     val rng = new java.util.Random(123)
     // assign a random name for the lambda
@@ -126,13 +129,13 @@ object H2DBControl {
       Ref.unsafe(_ => IO.raiseError(new Exception("unitialized")))
 
     val invokeWorker: Json => IO[Json] = { j: Json =>
-      IO.suspend {
+      IO.defer {
         workerRef.get.flatMap(_(j))
       }
     }
 
     val invokeCaller: Json => IO[Unit] = { j: Json =>
-      IO.suspend {
+      IO.defer {
         callerRef.get.flatMap(_(j))
       }
     }
@@ -152,11 +155,8 @@ object H2DBControl {
       override def setup = IO.pure(callerState)
     }
 
-    implicit val timer =
-      IO.timer(scala.concurrent.ExecutionContext.global)
-
     val setupH2Worker: PuaWorker.State =
-      PuaWorker.State(dbControl, timer)
+      PuaWorker.State(dbControl)
 
     val worker = new PuaWorker {
       override def setup = IO.pure(setupH2Worker)
@@ -255,12 +255,10 @@ object H2DBControl {
   }
 
   def await30[A](io: IO[A]): A =
-    Await.result(io.unsafeToFuture(), FiniteDuration(30, "s"))
+    Await.result(io.unsafeToFuture()(IORuntime.global), FiniteDuration(30, "s"))
 }
 
 class PuaAwsTest extends munit.ScalaCheckSuite {
-  implicit val ctx = IO.contextShift(scala.concurrent.ExecutionContext.global)
-
   override def scalaCheckTestParameters =
     super.scalaCheckTestParameters
       .withMinSuccessfulTests(
@@ -276,9 +274,7 @@ class PuaAwsTest extends munit.ScalaCheckSuite {
         fn: Json => IO[Json]
     ) = {
       val computation =
-        Blocker[IO]
-          .flatMap(H2DBControl(_))
-          .use(H2DBControl.makeComputation(_, pua, dir0, inputs))
+        H2DBControl().use(H2DBControl.makeComputation(_, pua, dir0, inputs))
 
       H2DBControl.await30(
         (computation.attempt, inputs.traverse(fn).attempt)

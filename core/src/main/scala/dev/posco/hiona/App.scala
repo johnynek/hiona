@@ -19,9 +19,11 @@ package dev.posco.hiona
 import cats.Semigroupal
 import cats.arrow.FunctionK
 import cats.data.{Validated, ValidatedNel}
-import cats.effect.{Blocker, ContextShift, ExitCode, IO, IOApp, Resource}
+import cats.effect.{ExitCode, IO, IOApp, Resource}
 import com.monovore.decline.{Argument, Command, Opts}
+import fs2.text._
 import fs2.{Pipe, Pull, Stream}
+import java.nio.charset.StandardCharsets
 import java.nio.file.Path
 
 import cats.implicits._
@@ -29,12 +31,12 @@ import cats.implicits._
 class App[A](options: Opts[A], out: A => Output) extends IOApp {
 
   override def run(args: List[String]): IO[ExitCode] =
-    IO.suspend {
+    IO.defer {
       val cmdA = App.commandWith(App.command, options)
       IOEnv.read.flatMap { env =>
         cmdA.parse(args, env) match {
           case Right((cmd, a)) =>
-            Blocker[IO].use(cmd.run(out(a), _))
+            Resource.unit[IO].use(_ => cmd.run(out(a)))
           case Left(err) =>
             IO {
               System.err.println(err)
@@ -55,18 +57,15 @@ object App extends GenApp {
 
   def inputFactory[E[_]: Emittable, A](
       inputs: Iterable[(String, Ref)],
-      e: E[A],
-      blocker: Blocker
-  )(implicit ctx: ContextShift[IO]): Resource[IO, InputFactory[IO]] =
+      e: E[A]
+  ): Resource[IO, InputFactory[IO]] =
     Resource.pure[IO, InputFactory[IO]](
-      InputFactory.fromPaths(inputs, e, blocker)
+      InputFactory.fromPaths(inputs, e)
     )
 
-  override def read[A](input: Ref, codec: PipeCodec[A], blocker: Blocker)(
-      implicit ctx: ContextShift[IO]
-  ): Stream[IO, A] =
+  override def read[A](input: Ref, codec: PipeCodec[A]): Stream[IO, A] =
     Fs2Tools
-      .fromPath[IO](input, 1 << 16, blocker)
+      .fromPath[IO](input, 1 << 16)
       .through(codec.decode)
 
   override def sink[A](
@@ -104,17 +103,14 @@ abstract class GenApp { self =>
 
   def sink[A](output: Ref, codec: PipeCodec[A]): Pipe[IO, A, Nothing]
 
-  def read[A](input: Ref, codec: PipeCodec[A], blocker: Blocker)(implicit
-      ctx: ContextShift[IO]
-  ): Stream[IO, A]
+  def read[A](input: Ref, codec: PipeCodec[A]): Stream[IO, A]
 
   def inputFactory[E[_]: Emittable, A](
       inputs: Iterable[(String, Ref)],
-      e: E[A],
-      blocker: Blocker
-  )(implicit ctx: ContextShift[IO]): Resource[IO, InputFactory[IO]]
+      e: E[A]
+  ): Resource[IO, InputFactory[IO]]
 
-  def pipe[A](implicit ctx: ContextShift[IO]): Pipe[IO, A, A] = { strm =>
+  def pipe[A]: Pipe[IO, A, A] = { strm =>
     strm
       .chunkMin(1024)
       .flatMap(Stream.chunk(_))
@@ -127,13 +123,10 @@ abstract class GenApp { self =>
       args: Output,
       inputs: List[(String, Ref)],
       output: Ref,
-      blocker: Blocker,
       onInput: Pipe[IO, Point, Point],
       onOutput: FunctionK[StreamRes, StreamRes]
-  )(implicit
-      ctx: ContextShift[IO]
   ): IO[Unit] =
-    inputFactory(inputs, args.value, blocker)
+    inputFactory(inputs, args.value)
       .use { input =>
         val codec = PipeCodec.csv[args.Type]()(args.row)
 
@@ -165,9 +158,7 @@ abstract class GenApp { self =>
     }
 
   sealed abstract class Cmd {
-    def run(args: Output, blocker: Blocker)(implicit
-        ctx: ContextShift[IO]
-    ): IO[ExitCode]
+    def run(args: Output): IO[ExitCode]
   }
 
   case class RunCmd(
@@ -177,9 +168,7 @@ abstract class GenApp { self =>
       limit: Option[Int],
       tb: TimeBound
   ) extends Cmd {
-    def run(args: Output, blocker: Blocker)(implicit
-        ctx: ContextShift[IO]
-    ): IO[ExitCode] = {
+    def run(args: Output): IO[ExitCode] = {
 
       val loggerFn: Pipe[IO, Point, Point] =
         logDelta match {
@@ -262,7 +251,7 @@ abstract class GenApp { self =>
       val inputFn = tb.filterInput[IO, Point](_.ts).andThen(loggerFn)
       val outputFn = lowerBoundFn.andThen(limitFn)
       self
-        .run(args, inputs, output, blocker, inputFn, outputFn)
+        .run(args, inputs, output, inputFn, outputFn)
         .map(_ => ExitCode.Success)
     }
   }
@@ -302,9 +291,7 @@ abstract class GenApp { self =>
     }
 
   case object ShowCmd extends Cmd {
-    def run(args: Output, blocker: Blocker)(implicit
-        ctx: ContextShift[IO]
-    ): IO[ExitCode] = {
+    def run(args: Output): IO[ExitCode] = {
       val cols = args.row.columnNames(0)
       val srcs = Emittable[Emittable.Value].sourcesAndOffsetsOf(args.value).keys
       val lookups = Emittable[Emittable.Value].toEither(args.value) match {
@@ -329,7 +316,8 @@ abstract class GenApp { self =>
 
   case class SortCmd(
       inputs: List[(String, Ref)],
-      outputs: List[(String, Ref)]
+      outputs: List[(String, Ref)],
+      chunkSize: Option[Int]
   ) extends Cmd {
     def toMap[K, V](
         items: Iterable[(K, V)]
@@ -355,9 +343,7 @@ abstract class GenApp { self =>
       else
         Left((m1.keySet -- m2.keySet, m2.keySet -- m1.keySet))
 
-    def run(arg: Output, blocker: Blocker)(implicit
-        ctx: ContextShift[IO]
-    ): IO[ExitCode] = {
+    def run(arg: Output): IO[ExitCode] = {
       val data: IO[List[(String, ((Ref, Ref), Event.Source[_]))]] = {
         def pathMap[V](
             label: String,
@@ -415,12 +401,13 @@ abstract class GenApp { self =>
       def sortRef[A](
           input: Ref,
           output: Ref,
-          ev: Event.Source[A]
+          ev: Event.Source[A],
+          chunkSize: Int
       ): IO[Unit] = {
         import scala.collection.mutable.ArrayBuffer
 
         val e: Event[A] = ev
-        val resIF = inputFactory(List((ev.name, input)), e, blocker)
+        val resIF = inputFactory(List((ev.name, input)), e)
 
         resIF
           .use { infac =>
@@ -439,7 +426,7 @@ abstract class GenApp { self =>
               ait = ps.iterator.map {
                 case Point.Sourced(_, a, _, _) => a.asInstanceOf[A]
               }
-              aitStream = Stream.fromIterator[IO](ait)
+              aitStream = Stream.fromIterator[IO](ait, chunkSize)
               _ <- aitStream.through(sink(output, ev.codec)).compile.drain
             } yield ()
           }
@@ -448,7 +435,8 @@ abstract class GenApp { self =>
       for {
         d <- data
         _ <- d.parTraverse_ {
-          case (_, ((in, out), ev)) => sortRef(in, out, ev)
+          case (_, ((in, out), ev)) =>
+            sortRef(in, out, ev, chunkSize.getOrElse(1 << 16))
         }
       } yield ExitCode.Success
     }
@@ -465,8 +453,11 @@ abstract class GenApp { self =>
           .orEmpty,
         Opts
           .options[(String, Ref)]("output", "named path to target CSV")
-          .orEmpty
-      ).mapN(SortCmd(_, _))
+          .orEmpty,
+        Opts
+          .option[Int]("chunkSize", "chunkSize")
+          .orNone
+      ).mapN(SortCmd(_, _, _))
     }
 
   case class DiffCmd(
@@ -476,16 +467,14 @@ abstract class GenApp { self =>
       limitIn: Option[Int],
       limit: Option[Int]
   ) extends Cmd {
-    def run(args: Output, blocker: Blocker)(implicit
-        ctx: ContextShift[IO]
-    ): IO[ExitCode] = {
+    def run(args: Output): IO[ExitCode] = {
 
       val row: Row[args.Type] = args.row
       val decoder = PipeCodec.csv[args.Type]()(row)
       val s1: Stream[IO, args.Type] =
-        read(input1, decoder, blocker).through(pipe)
+        read(input1, decoder).through(pipe)
       val s2: Stream[IO, args.Type] =
-        read(input2, decoder, blocker).through(pipe)
+        read(input2, decoder).through(pipe)
 
       def toList[A](a: A, row: Row[A]): List[String] = {
         val ary = new Array[String](row.columns)
@@ -534,7 +523,10 @@ abstract class GenApp { self =>
       val outPipe = output match {
         case Some(path) => sink(path, PipeCodec.csv[String]())
         case None =>
-          stream: Stream[IO, String] => stream.lines(System.out).drain
+          stream: Stream[IO, String] =>
+            (lines(stream) through fs2.io.stdoutLines(
+              StandardCharsets.UTF_8
+            )).drain
       }
 
       outPipe(diffStrings).compile.drain.as(ExitCode.Success)

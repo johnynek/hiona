@@ -16,7 +16,7 @@
 
 package dev.posco.hiona
 
-import cats.effect.{Blocker, ContextShift, IO, Resource, Sync}
+import cats.effect.{IO, Resource, Sync}
 import fs2.{Pipe, RaiseThrowable, Stream}
 import io.circe.Codec
 import java.io.PrintWriter
@@ -36,7 +36,7 @@ trait PipeCodec[A] {
 
 final class CsvCodec[A: Row](skipHeader: Boolean) extends PipeCodec[A] {
   override def decode[F[_]: RaiseThrowable: Sync]: Pipe[F, Byte, A] =
-    fs2.text.utf8Decode andThen
+    fs2.text.utf8.decode andThen
       Row.decodeFromCSV[F, A](implicitly[Row[A]], skipHeader)
 
   override def encode(pw: PrintWriter): IO[Iterator[A] => IO[Unit]] =
@@ -45,19 +45,19 @@ final class CsvCodec[A: Row](skipHeader: Boolean) extends PipeCodec[A] {
   override def encode(output: Path): Resource[IO, Iterator[A] => IO[Unit]] =
     Row
       .fileWriter(output)
-      .flatMap(pw => Resource.liftF(encode(pw)))
+      .flatMap(pw => Resource.eval(encode(pw)))
 }
 
 final class JsonCodec[A: Codec]() extends PipeCodec[A] {
   override def decode[F[_]: RaiseThrowable: Sync]: Pipe[F, Byte, A] =
-    fs2.text.utf8Decode andThen
+    fs2.text.utf8.decode andThen
       io.circe.fs2.stringArrayParser andThen
       io.circe.fs2.decoder[F, A]
 
   override def encode(output: Path): Resource[IO, Iterator[A] => IO[Unit]] =
     Row
       .fileWriter(output)
-      .flatMap(pw => Resource.liftF(encode(pw)))
+      .flatMap(pw => Resource.eval(encode(pw)))
 
   override def encode(pw: PrintWriter): IO[Iterator[A] => IO[Unit]] =
     IO { (iter: Iterator[A]) =>
@@ -77,11 +77,8 @@ object PipeCodec {
 
   def json[A: Codec]: PipeCodec[A] = new JsonCodec[A]()
 
-  def stream[F[_]: Sync: ContextShift, A: PipeCodec](
-      path: Path,
-      blocker: Blocker
-  ): Stream[F, A] =
+  def stream[F[_]: Sync, A: PipeCodec](path: Path): Stream[F, A] =
     Fs2Tools
-      .fromPath[F](path, 1 << 16, blocker)
+      .fromPath[F](path, 1 << 16)
       .through(implicitly[PipeCodec[A]].decode)
 }

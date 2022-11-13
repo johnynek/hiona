@@ -340,10 +340,10 @@ object FinnhubDBCandle extends aws.DBS3CliApp {
   def eventOutput: Output = Output.labeledEvent[Result](srcResult.labeled)
 
   val transactor: Resource[IO, doobie.Transactor[IO]] =
-    Resource.liftF(
+    Resource.eval(
       Databases
         .pmdbProdTransactor[IO]
-        .apply(blocker, contextShift)
+        .apply()
     )
 }
 

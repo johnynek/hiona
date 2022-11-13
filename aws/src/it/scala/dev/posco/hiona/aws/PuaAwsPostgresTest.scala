@@ -1,14 +1,12 @@
 package dev.posco.hiona.aws
 
-import cats.effect.{Blocker, IO}
+import cats.effect.IO
 import io.circe.Json
 import org.scalacheck.Prop
 
 import cats.implicits._
 
 class PuaAwsPostgresTest extends munit.ScalaCheckSuite {
-  implicit val ctx = IO.contextShift(scala.concurrent.ExecutionContext.global)
-  val timer = IO.timer(scala.concurrent.ExecutionContext.global)
 
   override def scalaCheckTestParameters =
     super.scalaCheckTestParameters
@@ -26,12 +24,8 @@ class PuaAwsPostgresTest extends munit.ScalaCheckSuite {
         inputs: List[Json],
         fn: Json => IO[Json]
     ) = {
-      val computation =
-        Blocker[IO]
-          .flatMap { blocker =>
-            PostgresDBControl("sbt_it_tests", "sbtester", "sbtpw", blocker)
-          }
-          .use(H2DBControl.makeComputation(_, pua, dir0, inputs))
+      val computation = PostgresDBControl("sbt_it_tests", "sbtester", "sbtpw")
+        .use(H2DBControl.makeComputation(_, pua, dir0, inputs))
 
       H2DBControl.await30 {
         (computation.attempt, inputs.traverse(fn).attempt)

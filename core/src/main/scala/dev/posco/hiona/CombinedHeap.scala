@@ -129,14 +129,13 @@ sealed abstract class CombinedHeap[A, B] {
   ): Option[(A, B, CombinedHeap[A, B])] =
     this match {
       case Tree(a, b, subtrees) => Some((a, b, combineAll(subtrees)))
-      case Leaf()               => None
+      case _                    => None
     }
 
   def keys: LazyList[A] =
     this match {
-      case Tree(key, _, rest) =>
-        key #:: rest.to(LazyList).flatMap(_.keys)
-      case Leaf() => LazyList.empty
+      case Tree(key, _, rest) => key #:: rest.to(LazyList).flatMap(_.keys)
+      case _                  => LazyList.empty
     }
 
   /**
